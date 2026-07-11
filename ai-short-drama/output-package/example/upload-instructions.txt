@@ -1,0 +1,8 @@
+Manual upload checklist
+1. Confirm final.mp4 hash matches qc-report.json/master record.
+2. Confirm the approved title, description, hashtags, cover, visibility, and schedule.
+3. Confirm the platform AI/adapted-content declaration.
+4. Upload through the platform's official UI or authorized API.
+5. Record the returned platform work ID and URL in the publication task.
+
+This example does not authorize browser automation or a real upload.

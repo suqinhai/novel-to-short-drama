@@ -1,0 +1,1575 @@
+{
+  "name": "12 Quality Control Final Review and Publish",
+  "id": "wf_qc_review_publish",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "episode_id"
+            },
+            {
+              "name": "shot_id"
+            },
+            {
+              "name": "stage"
+            },
+            {
+              "name": "action"
+            },
+            {
+              "name": "generation_version",
+              "type": "number"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            },
+            {
+              "name": "master_id"
+            },
+            {
+              "name": "qc_report_id"
+            },
+            {
+              "name": "metadata_id"
+            },
+            {
+              "name": "review_status"
+            },
+            {
+              "name": "reviewer_comment"
+            },
+            {
+              "name": "rejection_scope"
+            },
+            {
+              "name": "rejection_entity_ids",
+              "type": "array"
+            },
+            {
+              "name": "rejection_reason"
+            },
+            {
+              "name": "revision_instruction"
+            },
+            {
+              "name": "override_blocking_issues",
+              "type": "boolean"
+            },
+            {
+              "name": "override_reason"
+            },
+            {
+              "name": "platform"
+            },
+            {
+              "name": "provider"
+            }
+          ]
+        }
+      },
+      "id": "12-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto');\nconst i=$json||{},raw=i.payload&&typeof i.payload==='object'&&!Array.isArray(i.payload)?i.payload:{};\nconst bool=(v,d=false)=>v===undefined||v===null||v===''?d:(v===true||String(v).toLowerCase()==='true'||String(v)==='1');\nconst cleanId=(v,name,required=true)=>{const s=v==null?'':String(v).trim();if(!s&&!required)return null;if(!s||s.length>160||!/^[A-Za-z0-9_-]+$/.test(s))throw new Error('INVALID_'+name.toUpperCase());return s};\nconst secret=/authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie|signature/i;\nconst scrub=(v,depth=0)=>{if(depth>8)return'[depth-limited]';if(Array.isArray(v))return v.slice(0,200).map(x=>scrub(x,depth+1));if(v&&typeof v==='object'){const o={};for(const[k,x]of Object.entries(v)){if(secret.test(k))continue;if(/base64|binary/i.test(k)&&x)throw new Error('BASE64_MEDIA_NOT_ALLOWED');o[k]=scrub(x,depth+1)}return o}if(typeof v==='string'){if(/^data:[^,]*;base64,/i.test(v)||v.length>250000)throw new Error('BASE64_MEDIA_NOT_ALLOWED');return v.length>20000?v.slice(0,20000)+'[truncated]':v}return v};\nconst p=scrub({...raw});\nfor(const k of ['master_id','qc_report_id','metadata_id','review_status','reviewer_comment','rejection_scope','rejection_entity_ids','rejection_reason','revision_instruction','override_blocking_issues','override_reason','platform','provider','scheduled_at','visibility','selected_title','description','hashtags','selected_cover_url','cover_asset_id'])if(i[k]!==undefined&&p[k]===undefined)p[k]=scrub(i[k]);\nconst project_id=cleanId(i.project_id||p.project_id,'project_id'),episode_id=cleanId(i.episode_id||p.episode_id,'episode_id');\nconst rawAction=String(i.action||p.action||'run').trim().toLowerCase();\nconst allowed=['run','retry','regenerate','review','resume','cancel','render','qc','publish','schedule','generate_package','final_review','publication_metadata','publication_metadata_review'];\nif(!allowed.includes(rawAction))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported action '+rawAction);\nconst entity=String(p.entity_type||p.review_type||p.target||'').toLowerCase(),checkpoint=String(p.checkpoint||p.target_stage||'').toLowerCase();\nlet route;\nif(rawAction==='final_review')route='final_review';\nelse if(rawAction==='publication_metadata_review')route='metadata_review';\nelse if(rawAction==='publication_metadata')route='metadata_generate';\nelse if(rawAction==='review')route=(entity==='publication_metadata'||p.metadata_id)&&!p.qc_report_id?'metadata_review':'final_review';\nelse if(['publish','schedule','generate_package'].includes(rawAction))route='publish';\nelse if(rawAction==='resume')route=/publication_metadata_approved|publication_submitted|publish/.test(checkpoint)?'publish':/final_review_approved|publication_metadata|cover|metadata/.test(checkpoint+' '+entity)?'metadata_generate':'qc';\nelse if(rawAction==='regenerate')route=/publication_metadata|cover|metadata/.test(entity+' '+checkpoint)?'metadata_generate':'qc';\nelse route='qc';\nif(route==='final_review'){\n  p.master_id=cleanId(p.master_id,'master_id');p.qc_report_id=cleanId(p.qc_report_id,'qc_report_id');\n  p.review_status=String(p.review_status||'').toLowerCase();\n  if(!['approved','rejected'].includes(p.review_status))throw new Error('FINAL_REVIEW_REQUIRED: review_status must be approved or rejected');\n  p.rejection_entity_ids=Array.isArray(p.rejection_entity_ids)?p.rejection_entity_ids.map(x=>cleanId(x,'rejection_entity_id')).slice(0,100):[];\n  if(p.review_status==='rejected'){\n    p.rejection_scope=String(p.rejection_scope||'').toLowerCase();\n    if(!['episode','timeline','shot','dialogue','subtitle','audio_mix','cover','metadata'].includes(p.rejection_scope))throw new Error('FINAL_REVIEW_REJECTED: valid rejection_scope is required');\n    if(!String(p.rejection_reason||'').trim())throw new Error('FINAL_REVIEW_REJECTED: rejection_reason is required');\n    if(['shot','dialogue','subtitle'].includes(p.rejection_scope)&&!p.rejection_entity_ids.length)throw new Error('FINAL_REVIEW_REJECTED: precise rejection_entity_ids are required');\n  }\n  p.override_blocking_issues=bool(p.override_blocking_issues,false);\n  if(p.override_blocking_issues&&!String(p.override_reason||'').trim())throw new Error('QC_BLOCKING_ISSUES: override_reason is required');\n}\nif(route==='metadata_review'){\n  p.metadata_id=cleanId(p.metadata_id,'metadata_id');p.review_status=String(p.review_status||'').toLowerCase();\n  if(!['approved','rejected'].includes(p.review_status))throw new Error('PUBLICATION_METADATA_NOT_APPROVED: review_status must be approved or rejected');\n}\nconst generation_version=Math.max(1,Number.parseInt(i.generation_version||p.generation_version||1,10)||1);\nconst action=rawAction==='final_review'||rawAction==='publication_metadata_review'?'review':rawAction==='publication_metadata'?'resume':rawAction;\nreturn[{json:{project_id,episode_id,shot_id:cleanId(i.shot_id||p.shot_id,'shot_id',false),stage:'qc_review_publish',action,raw_action:rawAction,route,generation_version,test_mode:bool(i.test_mode??p.test_mode,false),mock_mode:bool(p.mock_mode??$env.MOCK_MODE,false),trace_id:cleanId(i.trace_id||p.trace_id||('trace_qc_'+crypto.randomUUID()),'trace_id'),payload:p,started_ms:Date.now()}}];"
+      },
+      "id": "12-normalize",
+      "name": "Normalize QC Review Publish Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1580,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "qc",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "qc"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "final_review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "final_review"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "metadata_generate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "metadata_generate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "metadata_review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "metadata_review"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "publish",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "publish"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "12-route",
+      "name": "Route QC Review Metadata or Publish",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH m AS MATERIALIZED(\n  SELECT * FROM drama.episode_masters\n   WHERE project_id=$1 AND episode_id=$2 AND master_type='final' AND is_current AND status='ready'\n     AND ($3::text IS NULL OR master_id=$3)\n   ORDER BY generation_version DESC LIMIT 1\n),tl AS MATERIALIZED(\n  SELECT t.* FROM drama.edit_timelines t JOIN m ON m.timeline_id=t.timeline_id LIMIT 1\n),es AS MATERIALIZED(\n  SELECT * FROM drama.episode_scripts WHERE project_id=$1 AND episode_id=$2 AND status='approved' ORDER BY version DESC LIMIT 1\n),cues AS(\n  SELECT COALESCE(jsonb_agg(jsonb_build_object('subtitle_cue_id',s.subtitle_cue_id,'dialogue_id',s.dialogue_id,'shot_id',s.shot_id,'sequence_number',s.sequence_number,'text',s.text,'start_ms',s.start_ms,'end_ms',s.end_ms,'status',s.status) ORDER BY s.start_ms,s.sequence_number),'[]'::jsonb) items\n    FROM drama.subtitle_cues s WHERE s.project_id=$1 AND s.episode_id=$2 AND s.status<>'rejected'\n),dialogues AS(\n  SELECT COALESCE(jsonb_agg(jsonb_build_object('dialogue_id',d.dialogue_id,'dialogue_type',d.dialogue_type,'speaker_name',d.speaker_name,'text',d.text,'scene_id',d.scene_id,'sequence_number',d.sequence_number) ORDER BY sc.scene_number,d.sequence_number),'[]'::jsonb) items\n    FROM drama.dialogues d JOIN drama.script_scenes sc ON sc.scene_id=d.scene_id JOIN es ON es.script_id=sc.script_id\n),shots AS(\n  SELECT COALESCE(jsonb_agg(jsonb_build_object('shot_id',sh.shot_id,'shot_order',sh.shot_order,'duration_ms',round(sh.duration_seconds*1000),'subtitle_text',sh.subtitle_text,'action_description',sh.action_description) ORDER BY sh.shot_order),'[]'::jsonb) items\n    FROM drama.storyboards b JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id\n   WHERE b.project_id=$1 AND b.episode_id=$2 AND b.status='approved'\n)\nSELECT $4::jsonb request,to_jsonb(m) master,to_jsonb(tl) timeline,to_jsonb(es) script,\n       (SELECT items FROM cues) subtitle_cues,(SELECT items FROM dialogues) dialogues,(SELECT items FROM shots) shots\n  FROM (SELECT 1) seed LEFT JOIN m ON true LEFT JOIN tl ON true LEFT JOIN es ON true;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.master_id||null,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "12-qc-context",
+      "name": "Load Current Final Master and QC Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        -480
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),row=$json,r=row.request||$('Normalize QC Review Publish Request').item.json;\nconst obj=v=>{if(v&&typeof v==='object')return v;if(typeof v==='string')try{return JSON.parse(v)}catch{}return null};\nconst arr=v=>{const x=obj(v);return Array.isArray(x)?x:[]};\nconst m=obj(row.master),t=obj(row.timeline),script=obj(row.script);\nif(!m)throw new Error('FINAL_MASTER_NOT_FOUND: current ready final master is required');\nif(!m.local_path&&!m.storage_url)throw new Error('MEDIA_FILE_NOT_FOUND: final master has no readable path or URL');\nif(/^data:/i.test(String(m.storage_url||''))||/^data:/i.test(String(m.local_path||'')))throw new Error('BASE64_MEDIA_NOT_ALLOWED');\nconst configVersion=Math.max(1,Number.parseInt(r.payload.qc_config_version||1,10)||1),qcType=String(r.payload.qc_type||'combined');\nconst hash=String(m.content_hash||crypto.createHash('sha256').update(String(m.local_path||m.storage_url)).digest('hex'));\nconst key=r.payload.idempotency_key||[m.master_id,hash,qcType,configVersion].join(':');\nconst digest=crypto.createHash('sha1').update(key).digest('hex').slice(0,20),qc_job_id='qcjob_'+digest,qc_report_id='qcreport_'+digest;\nconst technical_request={project_id:r.project_id,episode_id:r.episode_id,master_id:m.master_id,trace_id:r.trace_id,input_path:m.local_path||null,input_url:m.storage_url||null,content_hash:hash,expected:{width:m.width,height:m.height,fps:m.fps,duration_ms:m.duration_ms,video_codec:m.video_codec,audio_codec:m.audio_codec,sample_rate:m.sample_rate,aspect_ratio:m.aspect_ratio},checks:{max_black_seconds:Number($env.QC_MAX_BLACK_SECONDS||1),max_silence_seconds:Number($env.QC_MAX_SILENCE_SECONDS||2),duration_tolerance_percent:Number($env.QC_DURATION_TOLERANCE_PERCENT||10),audio_video_drift_ms:Number($env.QC_AUDIO_VIDEO_DRIFT_MS||200),target_loudness_lufs:Number($env.TARGET_LOUDNESS_LUFS||-16),target_true_peak_db:Number($env.TARGET_TRUE_PEAK_DB||-1),frame_sample_per_shot:Number($env.QC_FRAME_SAMPLE_PER_SHOT||3)},timeline_id:m.timeline_id};\nreturn[{json:{...r,master:m,timeline:t,script,context:{subtitle_cues:arr(row.subtitle_cues),dialogues:arr(row.dialogues),shots:arr(row.shots)},qc_type:qcType,qc_config_version:configVersion,master_content_hash:hash,idempotency_key:key,qc_job_id,qc_report_id,technical_request}}];"
+      },
+      "id": "12-qc-prepare",
+      "name": "Prepare Idempotent QC Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        -480
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH guard AS MATERIALIZED(SELECT pg_advisory_xact_lock(hashtextextended($2::text,0))),\nexisting AS MATERIALIZED(SELECT q.* FROM drama.qc_jobs q CROSS JOIN guard WHERE q.idempotency_key=$2 FOR UPDATE OF q),\nins AS MATERIALIZED(\n  INSERT INTO drama.qc_jobs(qc_job_id,idempotency_key,trace_id,project_id,episode_id,master_id,master_content_hash,qc_config_version,qc_type,status,started_at)\n  SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'processing',now() WHERE NOT EXISTS(SELECT 1 FROM existing)\n  ON CONFLICT DO NOTHING RETURNING *\n),retry AS MATERIALIZED(\n  UPDATE drama.qc_jobs q SET status='processing',trace_id=$3,started_at=now(),completed_at=NULL,error_code=NULL,error_message=NULL\n   FROM existing e WHERE q.id=e.id AND e.status IN('failed','timeout') AND $10 IN('retry','resume','regenerate')\n  RETURNING q.*\n),chosen AS(\n  SELECT 'execute'::text decision,to_jsonb(i) job FROM ins i\n  UNION ALL SELECT 'execute',to_jsonb(x) FROM retry x\n  UNION ALL SELECT CASE WHEN e.status='succeeded' THEN 'cached' WHEN e.status IN('pending','claimed','processing') THEN 'running' ELSE 'rejected' END,to_jsonb(e)\n    FROM existing e WHERE NOT EXISTS(SELECT 1 FROM retry)\n),rep AS(\n  SELECT r.* FROM drama.qc_reports r WHERE r.master_id=$6 AND r.version=$8 ORDER BY r.created_at DESC LIMIT 1\n)\nSELECT COALESCE((SELECT decision FROM chosen LIMIT 1),'rejected') decision,\n       COALESCE((SELECT job FROM chosen LIMIT 1),jsonb_build_object('qc_job_id',$1,'status','failed','error_code','PARTIAL_SAVE_REQUIRES_RECOVERY')) job,\n       (SELECT to_jsonb(rep) FROM rep) report,$11::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.qc_job_id,$json.idempotency_key,$json.trace_id,$json.project_id,$json.episode_id,$json.master.master_id,$json.master_content_hash,$json.qc_config_version,$json.qc_type,$json.action,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "12-qc-claim",
+      "name": "Claim or Reuse QC Job Atomically",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -680,
+        -480
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d=String($json.decision||'rejected'),job=$json.job||{},request=$json.request||{};\nif(d==='cached'){if(!$json.report)throw new Error('PARTIAL_SAVE_REQUIRES_RECOVERY: succeeded QC job has no report');return[{json:{route:'cached',job,report:$json.report,request}}]}\nif(d==='running')return[{json:{route:'running',job,request}}];\nif(d==='execute')return[{json:{route:'execute',job,request}}];\nthrow new Error(String(job.error_code||'QC_JOB_NOT_RETRYABLE')+': identical failed QC requires explicit retry or regenerate');"
+      },
+      "id": "12-qc-task-route",
+      "name": "Route QC Task State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        -480
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "cached",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "cached"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "running",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "execute",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "execute"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "12-qc-state-switch",
+      "name": "Switch Cached Running or Execute QC",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -240,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json;return[{json:{success:true,project_id:x.request.project_id,episode_id:x.request.episode_id,trace_id:x.request.trace_id,stage:'qc_review_publish',status:'qc_completed',data_ref:{entity_type:'qc_report',entity_id:x.report.qc_report_id,master_id:x.request.master.master_id,severity:x.report.severity,cached:true},metrics:{overall_score:x.report.overall_score},error:null}}];"
+      },
+      "id": "12-qc-cached",
+      "name": "Return Cached QC Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json;return[{json:{success:true,project_id:x.request.project_id,episode_id:x.request.episode_id,trace_id:x.request.trace_id,stage:'qc_review_publish',status:'processing',data_ref:{entity_type:'qc_job',entity_id:x.job.qc_job_id,master_id:x.request.master.master_id,reused:true},metrics:{},error:null}}];"
+      },
+      "id": "12-qc-running",
+      "name": "Return Existing Running QC Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.request.mock_mode||$json.request.test_mode}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "12-qc-mock-if",
+      "name": "Mock QC Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$json.request||$json,sim=String(r.payload.simulate||'').toLowerCase();\nif(sim==='qc_failure')throw new Error('QC_TECHNICAL_FAILED: simulated QC failure');\nconst issue=(code,severity,scope,message,ids=[])=>({code,severity,scope,message,entity_ids:ids,automatic_retry_allowed:false});\nconst tech=[],sub=[],content=[],compliance=[],tid=r.timeline?.timeline_id?[r.timeline.timeline_id]:[r.master.master_id];\nif(['black_screen','black','black_frame'].includes(sim))tech.push(issue('BLACK_FRAME_EXCESS','blocking','timeline','Black frame duration exceeds the configured limit.',tid));\nif(['silence','audio_silence'].includes(sim))tech.push(issue('AUDIO_SILENCE_EXCESS','blocking','audio_mix','Silence duration exceeds the configured limit.',tid));\nif(['loudness','peak'].includes(sim))tech.push(issue('AUDIO_LOUDNESS_INVALID','warning','audio_mix','Audio loudness or true peak is outside target.',tid));\nif(['subtitle_out_of_bounds','subtitle'].includes(sim)){const ids=(r.context.subtitle_cues||[]).slice(-1).map(x=>x.subtitle_cue_id);sub.push(issue('SUBTITLE_OUT_OF_BOUNDS','blocking','subtitle','Subtitle cue extends beyond the master duration.',ids))}\nif(['face_change','visual_identity'].includes(sim)){const sid=r.shot_id||(r.context.shots||[])[0]?.shot_id;content.push(issue('CHARACTER_IDENTITY_DRIFT','failed','shot','Character identity visibly changes in sampled frames.',sid?[sid]:[]))}\nif(['compliance','compliance_failure'].includes(sim))compliance.push(issue('COMPLIANCE_POLICY_RISK','blocking','episode','Mock compliance risk requires human review.',[r.episode_id]));\nconst report=(name,issues,metrics={})=>({check:name,status:issues.some(x=>x.severity==='blocking')?'blocked':issues.length?'warning':'passed',score:Math.max(0,100-issues.reduce((n,x)=>n+(x.severity==='blocking'?45:x.severity==='failed'?30:12),0)),issues,metrics,mock:true});\nreturn[{json:{request:r,technical_report:report('technical',tech,{ffprobe_readable:true,black_seconds:sim.includes('black')?2:0,silence_seconds:sim.includes('silence')?3:0}),subtitle_report:report('subtitle',sub,{cue_count:(r.context.subtitle_cues||[]).length}),content_report:report('content',content,{sampled_frames:Math.max(1,(r.context.shots||[]).length)}),compliance_report:report('compliance',compliance),vision_frame_urls:[],use_vision:false}}];"
+      },
+      "id": "12-qc-mock",
+      "name": "Build Deterministic Mock QC Reports",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        -520
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:3000').replace(/\\/$/,'')+'/qc/technical'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{$json.request.trace_id}}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{$json.request.idempotency_key}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify($json.request.technical_request)}}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": "={{Number($env.MEDIA_RENDER_TIMEOUT_MINUTES||30)*60000}}"
+        }
+      },
+      "id": "12-qc-http",
+      "name": "POST Media Worker Technical QC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        -300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Route QC Task State').item.json.request||{},raw=$json||{},status=Number(raw.statusCode||raw.status||200),body=raw.body&&typeof raw.body==='object'?raw.body:raw;\nif(status>=400||body.success===false)throw new Error('QC_TECHNICAL_FAILED: '+String(body.error?.message||body.message||('media worker returned '+status)));\nconst rejectBinary=(v,depth=0)=>{if(depth>10)return;if(Array.isArray(v)){for(const x of v)rejectBinary(x,depth+1);return}if(v&&typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/base64|binary/i.test(k)&&x)throw new Error('BASE64_MEDIA_NOT_ALLOWED');rejectBinary(x,depth+1)}return}if(typeof v==='string'&&/^data:[^,]*;base64,/i.test(v))throw new Error('BASE64_MEDIA_NOT_ALLOWED')};rejectBinary(body);\nconst issues=v=>Array.isArray(v)?v.map(x=>typeof x==='string'?{code:x,severity:'warning',scope:'timeline',message:x,entity_ids:[]}:x):[];\nconst tech0=body.technical_report||body.report||body,techIssues=[...issues(tech0.issues),...issues(tech0.blocking_issues).map(x=>({...x,severity:'blocking'}))];\nconst technical_report={...tech0,check:'technical',status:techIssues.some(x=>['blocking','critical'].includes(String(x.severity)))?'blocked':techIssues.length?'warning':'passed',score:Number(tech0.score??(techIssues.length?75:100)),issues:techIssues};\nconst cues=r.context.subtitle_cues||[],dialogues=r.context.dialogues||[],duration=Number(r.master.duration_ms||0),subIssues=[],byDialogue=new Map(cues.map(x=>[x.dialogue_id,x]));\nfor(const c of cues){if(Number(c.start_ms)<0||Number(c.end_ms)<=Number(c.start_ms)||duration&&Number(c.end_ms)>duration)subIssues.push({code:'SUBTITLE_OUT_OF_BOUNDS',severity:'blocking',scope:'subtitle',message:'Subtitle cue is outside master duration.',entity_ids:[c.subtitle_cue_id]})}\nfor(let n=1;n<cues.length;n++)if(Number(cues[n].start_ms)<Number(cues[n-1].end_ms))subIssues.push({code:'SUBTITLE_OVERLAP',severity:'warning',scope:'subtitle',message:'Adjacent subtitle cues overlap.',entity_ids:[cues[n-1].subtitle_cue_id,cues[n].subtitle_cue_id]});\nfor(const d of dialogues)if(!byDialogue.has(d.dialogue_id))subIssues.push({code:'SUBTITLE_DIALOGUE_MISSING',severity:'warning',scope:'subtitle',message:'Dialogue has no subtitle cue.',entity_ids:[d.dialogue_id]});\nconst subtitle_report={check:'subtitle',status:subIssues.some(x=>x.severity==='blocking')?'blocked':subIssues.length?'warning':'passed',score:Math.max(0,100-subIssues.reduce((n,x)=>n+(x.severity==='blocking'?35:8),0)),issues:subIssues,metrics:{cue_count:cues.length,dialogue_count:dialogues.length,duration_ms:duration}};\nconst frames=[];for(const x of [...(body.frame_urls||[]),...(body.sampled_frame_urls||[]),...(body.frames||[])]){const u=typeof x==='string'?x:x?.url;if(u&&/^https?:\\/\\//i.test(u)&&!/^data:/i.test(u)&&!frames.includes(u))frames.push(u)}\nconst enabled=String($env.QC_CONTENT_ENABLED||'true').toLowerCase()==='true',model=String($env.QC_VISION_MODEL||'').trim();\nconst content_report=body.content_report||{check:'content',status:'passed',score:100,issues:[],metrics:{vision_skipped:!enabled||!model||!frames.length}};\nconst compliance_report=body.compliance_report||{check:'compliance',status:'passed',score:100,issues:[],metrics:{vision_skipped:!enabled||!model||!frames.length}};\nreturn[{json:{request:r,technical_report,subtitle_report,content_report,compliance_report,vision_frame_urls:frames.slice(0,Math.max(1,Number($env.QC_FRAME_SAMPLE_PER_SHOT||3)*Math.max(1,(r.context.shots||[]).length))),use_vision:enabled&&Boolean(model)&&frames.length>0}}];"
+      },
+      "id": "12-qc-checks",
+      "name": "Prepare Technical Subtitle and Frame QC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.use_vision}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "12-qc-vision-if",
+      "name": "Optional Vision QC Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.LITELLM_BASE_URL||'http://litellm:4000').replace(/\\/$/,'')+'/v1/chat/completions'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer '+$env.LITELLM_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{$json.request.trace_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify({model:$env.QC_VISION_MODEL,messages:[{role:'user',content:[{type:'text',text:'Inspect only the supplied sampled-frame URLs. Return JSON with content_report and compliance_report; each has score 0-100 and issues [{code,severity,scope,message,entity_ids}]. Never request or return base64.'},...$json.vision_frame_urls.map(url=>({type:'image_url',image_url:{url}}))]}],temperature:0,response_format:{type:'json_object'}})}}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": "={{Number($env.MODEL_REQUEST_TIMEOUT_SECONDS||180)*1000}}"
+        }
+      },
+      "id": "12-qc-vision-http",
+      "name": "Call Optional Vision Content Compliance QC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$('Prepare Technical Subtitle and Frame QC').item.json,raw=$json||{},status=Number(raw.statusCode||raw.status||200),body=raw.body&&typeof raw.body==='object'?raw.body:raw;\nlet parsed=null,warning=null;\ntry{if(status>=400)throw new Error('vision HTTP '+status);let s=body.choices?.[0]?.message?.content??body;if(typeof s==='string')s=s.replace(/^\\x60\\x60\\x60(?:json)?\\s*/i,'').replace(/\\x60\\x60\\x60$/,'').trim();parsed=typeof s==='string'?JSON.parse(s):s}catch(e){warning={code:'QC_CONTENT_FAILED',severity:'warning',scope:'episode',message:'Optional vision QC unavailable: '+String(e.message).slice(0,200),entity_ids:[b.request.episode_id]}}\nconst norm=(name,x,fallback)=>{x=x&&typeof x==='object'?x:fallback;const is=Array.isArray(x.issues)?x.issues:[];return{...x,check:name,status:is.some(z=>['blocking','critical'].includes(String(z.severity)))?'blocked':is.length?'warning':'passed',score:Number(x.score??(is.length?75:100)),issues:is}};\nlet content=norm('content',parsed?.content_report||parsed?.content,b.content_report),compliance=norm('compliance',parsed?.compliance_report||parsed?.compliance,b.compliance_report);\nif(warning)content={...content,status:'warning',score:Math.min(Number(content.score||100),80),issues:[...(content.issues||[]),warning]};\nreturn[{json:{...b,content_report:content,compliance_report:compliance}}];"
+      },
+      "id": "12-qc-vision-merge",
+      "name": "Normalize Optional Vision QC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json;return[{json:{...b,content_report:{...b.content_report,metrics:{...(b.content_report?.metrics||{}),vision_skipped:true}},compliance_report:{...b.compliance_report,metrics:{...(b.compliance_report?.metrics||{}),vision_skipped:true}}}}];"
+      },
+      "id": "12-qc-no-vision",
+      "name": "Record Vision QC Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -220
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),x=$json,r=x.request;\nconst reports=[x.technical_report,x.subtitle_report,x.content_report,x.compliance_report].map(z=>z&&typeof z==='object'?z:{status:'failed',score:0,issues:[{code:'QC_REPORT_MISSING',severity:'blocking',scope:'episode',message:'QC sub-report is missing.',entity_ids:[r.episode_id]}]});\nconst all=reports.flatMap(z=>Array.isArray(z.issues)?z.issues:[]).map(z=>typeof z==='string'?{code:z,severity:'warning',scope:'episode',message:z,entity_ids:[r.episode_id]}:{...z,severity:String(z.severity||'warning').toLowerCase(),entity_ids:Array.isArray(z.entity_ids)?z.entity_ids:[]});\nconst blocking=all.filter(z=>['blocking','critical'].includes(z.severity)||z.blocking===true),warnings=all.filter(z=>!blocking.includes(z));\nconst target=scope=>({shot:'image_to_video',dialogue:'voice_audio',subtitle:'voice_audio',audio_mix:'edit_compose',timeline:'edit_compose',cover:'publication_metadata',metadata:'publication_metadata',episode:'edit_compose'}[scope]||'qc_review_publish');\nconst defaults=scope=>scope==='timeline'&&r.timeline?.timeline_id?[r.timeline.timeline_id]:scope==='episode'?[r.episode_id]:[];\nconst routing=[];for(const z of all){const scope=String(z.scope||'episode'),ids=z.entity_ids.length?z.entity_ids:defaults(scope),key=[scope,target(scope),...ids,z.code].join(':');if(!routing.some(q=>q._key===key))routing.push({_key:key,scope,target_stage:target(scope),entity_ids:ids,reason:String(z.message||z.code),automatic_retry_allowed:false,requires_explicit_resume:true})}\nfor(const q of routing)delete q._key;\nconst scores=reports.map(z=>Math.max(0,Math.min(100,Number(z.score??0)))),overall=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length),severity=blocking.length?'blocked':all.some(z=>z.severity==='failed')?'failed':warnings.length?'warning':'passed';\nconst actions=routing.map(q=>({action:'resume',target_stage:q.target_stage,scope:q.scope,entity_ids:q.entity_ids,automatic_retry_allowed:false}));\nreturn[{json:{request:r,qc_report_id:r.qc_report_id,technical_report:reports[0],subtitle_report:reports[1],content_report:reports[2],compliance_report:reports[3],overall_score:overall,severity,blocking_issues:blocking,warnings,recommended_actions:actions,routing_decisions:routing,status:'completed',version:r.qc_config_version,report_hash:crypto.createHash('sha256').update(JSON.stringify({reports,overall,severity,routing})).digest('hex')}}];"
+      },
+      "id": "12-qc-aggregate",
+      "name": "Aggregate QC Severity and Precise Routing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH j AS(\n  UPDATE drama.qc_jobs SET status='succeeded',completed_at=now(),error_code=NULL,error_message=NULL\n   WHERE qc_job_id=$1 RETURNING *\n),r AS(\n  INSERT INTO drama.qc_reports(qc_report_id,qc_job_id,project_id,episode_id,master_id,technical_report,subtitle_report,content_report,compliance_report,overall_score,severity,blocking_issues,warnings,recommended_actions,routing_decisions,status,version)\n  SELECT $2,$1,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb,'completed',$16 FROM j\n  ON CONFLICT(master_id,version) DO UPDATE SET qc_job_id=excluded.qc_job_id,technical_report=excluded.technical_report,subtitle_report=excluded.subtitle_report,content_report=excluded.content_report,compliance_report=excluded.compliance_report,overall_score=excluded.overall_score,severity=excluded.severity,blocking_issues=excluded.blocking_issues,warnings=excluded.warnings,recommended_actions=excluded.recommended_actions,routing_decisions=excluded.routing_decisions,status='completed'\n  RETURNING *\n),p AS(\n  UPDATE drama.projects SET current_stage='qc_completed',status='waiting_final_review' WHERE project_id=$3 RETURNING project_id\n),n AS(\n  INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n  SELECT 'notify_'||$2,$3,$4,'final_review_required',CASE WHEN $11 IN('blocked','failed') THEN 'error' WHEN $11='warning' THEN 'warning' ELSE 'info' END,'Final review required','QC completed; human final review is required before publication.',jsonb_build_object('master_id',$5,'qc_report_id',$2,'severity',$11,'routing_decisions',$15::jsonb),'pending'\n  WHERE EXISTS(SELECT 1 FROM r) ON CONFLICT(notification_id) DO NOTHING\n)\nSELECT jsonb_build_object('success',true,'project_id',$3,'episode_id',$4,'trace_id',$17::text,'stage','qc_review_publish','status','qc_completed','data_ref',jsonb_build_object('entity_type','qc_report','entity_id',(SELECT qc_report_id FROM r),'master_id',$5,'severity',$11,'blocking_issue_count',jsonb_array_length($12::jsonb)),'metrics',jsonb_build_object('overall_score',$10,'duration_ms',$18::bigint),'next_action',jsonb_build_object('action','review','payload',jsonb_build_object('entity_type','final_review','master_id',$5,'qc_report_id',(SELECT qc_report_id FROM r))),'error',NULL) response;",
+        "options": {
+          "queryReplacement": "={{[$json.request.qc_job_id,$json.qc_report_id,$json.request.project_id,$json.request.episode_id,$json.request.master.master_id,JSON.stringify($json.technical_report),JSON.stringify($json.subtitle_report),JSON.stringify($json.content_report),JSON.stringify($json.compliance_report),$json.overall_score,$json.severity,JSON.stringify($json.blocking_issues),JSON.stringify($json.warnings),JSON.stringify($json.recommended_actions),JSON.stringify($json.routing_decisions),$json.version,$json.request.trace_id,Date.now()-$json.request.started_ms]}}"
+        }
+      },
+      "id": "12-qc-save",
+      "name": "Save QC Job Report and Review Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1540,
+        -300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-qc-result",
+      "name": "QC Completed Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH m AS MATERIALIZED(\n  SELECT * FROM drama.episode_masters WHERE project_id=$1 AND episode_id=$2 AND master_id=$3 AND master_type='final' AND is_current AND status='ready'\n),q AS MATERIALIZED(\n  SELECT r.* FROM drama.qc_reports r JOIN m ON m.master_id=r.master_id WHERE r.qc_report_id=$4 AND r.status='completed'\n),issue_count AS(\n  SELECT CASE jsonb_typeof(blocking_issues) WHEN 'array' THEN jsonb_array_length(blocking_issues) WHEN 'object' THEN CASE WHEN blocking_issues='{}'::jsonb THEN 0 ELSE 1 END ELSE 0 END n FROM q\n),saved AS(\n  INSERT INTO drama.final_reviews(final_review_id,trace_id,project_id,episode_id,master_id,qc_report_id,review_status,reviewer_comment,rejection_scope,rejection_entity_ids,rejection_reason,revision_instruction,override_blocking_issues,override_reason,reviewed_at)\n  SELECT 'finalreview_'||substr(md5(q.qc_report_id),1,20),$14,$1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,now() FROM q\n   WHERE ($5='rejected' OR COALESCE((SELECT n FROM issue_count),0)=0 OR ($11 AND NULLIF(btrim(COALESCE($12,'')),'') IS NOT NULL))\n  ON CONFLICT(qc_report_id) DO UPDATE SET trace_id=excluded.trace_id,review_status=excluded.review_status,reviewer_comment=excluded.reviewer_comment,rejection_scope=excluded.rejection_scope,rejection_entity_ids=excluded.rejection_entity_ids,rejection_reason=excluded.rejection_reason,revision_instruction=excluded.revision_instruction,override_blocking_issues=excluded.override_blocking_issues,override_reason=excluded.override_reason,reviewed_at=now()\n  RETURNING *\n),p AS(\n  UPDATE drama.projects SET current_stage=CASE WHEN $5='approved' THEN 'final_review_approved' ELSE 'waiting_final_review' END,status=CASE WHEN $5='approved' THEN 'preparing_publication' ELSE 'waiting_final_review' END\n   WHERE project_id=$1 AND EXISTS(SELECT 1 FROM saved) RETURNING project_id\n),n AS(\n  INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n  SELECT 'notify_'||final_review_id,$1,$2,CASE WHEN $5='approved' THEN 'final_review_approved' ELSE 'final_review_rejected' END,CASE WHEN $5='approved' THEN 'info' ELSE 'warning' END,CASE WHEN $5='approved' THEN 'Final master approved' ELSE 'Final master rejected' END,CASE WHEN $5='approved' THEN 'Generate and review publication metadata next.' ELSE 'Revision requires an explicit resume or regenerate request; no paid service was called.' END,jsonb_build_object('master_id',$3,'qc_report_id',$4,'rejection_scope',$7,'entity_ids',$8::jsonb,'revision_instruction',$10),'pending' FROM saved\n  ON CONFLICT(notification_id) DO UPDATE SET severity=excluded.severity,title=excluded.title,message=excluded.message,data=excluded.data,status='pending',sent_at=NULL\n)\nSELECT jsonb_build_object('success',EXISTS(SELECT 1 FROM saved),'project_id',$1,'episode_id',$2,'trace_id',$14,'stage','qc_review_publish','status',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN $5 ELSE 'failed' END,'data_ref',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN jsonb_build_object('entity_type','final_review','entity_id',(SELECT final_review_id FROM saved),'master_id',$3,'qc_report_id',$4,'resume_instruction',CASE WHEN $5='rejected' THEN jsonb_build_object('action','resume','scope',$7,'entity_ids',$8::jsonb,'target_stage',CASE $7 WHEN 'shot' THEN 'image_to_video' WHEN 'dialogue' THEN 'voice_audio' WHEN 'subtitle' THEN 'voice_audio' WHEN 'audio_mix' THEN 'edit_compose' WHEN 'cover' THEN 'publication_metadata' WHEN 'metadata' THEN 'publication_metadata' ELSE 'edit_compose' END,'automatic_retry_allowed',false,'requires_explicit_paid_model_authorization',true) ELSE jsonb_build_object('action','resume','checkpoint','final_review_approved','target_stage','publication_metadata') END) ELSE NULL END,'metrics',jsonb_build_object(),'error',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN NULL WHEN NOT EXISTS(SELECT 1 FROM m) THEN jsonb_build_object('code','FINAL_REVIEW_REQUIRED','message','Current ready final master was not found.','retryable',false) WHEN NOT EXISTS(SELECT 1 FROM q) THEN jsonb_build_object('code','QC_REPORT_NOT_FOUND','message','Completed QC report was not found for this master.','retryable',false) ELSE jsonb_build_object('code','QC_BLOCKING_ISSUES','message','Blocking QC issues require an explicit override and reason.','retryable',false) END) response;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.master_id,$json.payload.qc_report_id,$json.payload.review_status,$json.payload.reviewer_comment||null,$json.payload.rejection_scope||null,JSON.stringify($json.payload.rejection_entity_ids||[]),$json.payload.rejection_reason||null,$json.payload.revision_instruction||null,Boolean($json.payload.override_blocking_issues),$json.payload.override_reason||null,$json.payload.reviewed_by||null,$json.trace_id]}}"
+        }
+      },
+      "id": "12-final-review",
+      "name": "Record Human Final Review Without Auto Regeneration",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-final-review-result",
+      "name": "Final Review Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH m AS MATERIALIZED(\n SELECT * FROM drama.episode_masters WHERE project_id=$1 AND episode_id=$2 AND master_type='final' AND is_current AND status='ready' AND ($3::text IS NULL OR master_id=$3) ORDER BY generation_version DESC LIMIT 1\n),f AS MATERIALIZED(\n SELECT x.* FROM drama.final_reviews x JOIN m ON m.master_id=x.master_id WHERE x.review_status='approved' ORDER BY x.reviewed_at DESC LIMIT 1\n),q AS MATERIALIZED(\n SELECT r.* FROM drama.qc_reports r JOIN f ON f.qc_report_id=r.qc_report_id WHERE r.status='completed'\n),eo AS MATERIALIZED(SELECT * FROM drama.episode_outlines WHERE project_id=$1 AND episode_id=$2 LIMIT 1),\nes AS MATERIALIZED(SELECT * FROM drama.episode_scripts WHERE project_id=$1 AND episode_id=$2 AND status='approved' ORDER BY version DESC LIMIT 1),\ncovers AS(\n SELECT COALESCE(jsonb_agg(jsonb_build_object('asset_id',i.image_asset_id,'shot_id',i.shot_id,'url',COALESCE(NULLIF(i.storage_url,''),i.image_url),'source','storyboard_image') ORDER BY sh.shot_order) FILTER(WHERE COALESCE(NULLIF(i.storage_url,''),i.image_url) IS NOT NULL),'[]'::jsonb) items\n FROM drama.storyboard_images i JOIN drama.storyboard_shots sh ON sh.shot_id=i.shot_id WHERE i.project_id=$1 AND i.episode_id=$2 AND i.is_current AND i.review_status='approved'\n),latest AS(\n SELECT p.* FROM drama.publication_metadata p JOIN m ON m.master_id=p.master_id WHERE p.platform=$4 ORDER BY p.version DESC LIMIT 1\n)\nSELECT $5::jsonb request,to_jsonb(m) master,to_jsonb(f) final_review,to_jsonb(q) qc_report,to_jsonb(eo) episode,to_jsonb(es) script,(SELECT items FROM covers) covers,to_jsonb(latest) latest_metadata\nFROM (SELECT 1) seed LEFT JOIN m ON true LEFT JOIN f ON true LEFT JOIN q ON true LEFT JOIN eo ON true LEFT JOIN es ON true LEFT JOIN latest ON true;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.master_id||null,$json.payload.platform||$env.PUBLISH_PLATFORM||'douyin',JSON.stringify($json)]}}"
+        }
+      },
+      "id": "12-metadata-context",
+      "name": "Load Approved Master for Publication Metadata",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),obj=v=>{if(v&&typeof v==='object')return v;if(typeof v==='string')try{return JSON.parse(v)}catch{}return null},r=$json.request||$('Normalize QC Review Publish Request').item.json,m=obj($json.master),f=obj($json.final_review),ep=obj($json.episode),script=obj($json.script),latest=obj($json.latest_metadata);\nif(!m)throw new Error('FINAL_REVIEW_REQUIRED: current final master not found');if(!f)throw new Error('FINAL_REVIEW_REQUIRED: approved final review is required');\nconst platform=String(r.payload.platform||$env.PUBLISH_PLATFORM||'douyin').toLowerCase(),regen=r.action==='regenerate',version=latest?(regen?Number(latest.version)+1:Number(latest.version)):1;\nconst trim=(s,n)=>String(s||'').replace(/\\s+/g,' ').trim().slice(0,n),title=trim(ep?.title||script?.title||('Episode '+(ep?.episode_number||'')),80),hook=trim(ep?.opening_hook||ep?.logline||script?.opening_hook||title,80),conflict=trim(ep?.main_conflict||ep?.ending_hook||script?.ending_hook||hook,80),num=Number(ep?.episode_number||1);\nconst candidates=[title,'第'+num+'集｜'+title,trim(hook,48),trim(title+'：'+conflict,55),trim(hook+'，结局意想不到',55)].filter(Boolean).filter((x,n,a)=>a.indexOf(x)===n).slice(0,5);while(candidates.length<3)candidates.push('第'+num+'集｜精彩继续 '+(candidates.length+1));\nlet covers=Array.isArray($json.covers)?$json.covers:(typeof $json.covers==='string'?JSON.parse($json.covers):[]);if(m.thumbnail_url)covers.unshift({asset_id:null,shot_id:null,url:m.thumbnail_url,source:'master_thumbnail'});\ncovers=covers.filter((x,n,a)=>x&&x.url&&!/^data:/i.test(String(x.url))&&a.findIndex(y=>y.url===x.url)===n).slice(0,5);\nconst hashtags=Array.isArray(r.payload.hashtags)?r.payload.hashtags:['小说改编','AI短剧','短剧',title.replace(/\\s/g,''),platform].map(x=>String(x).replace(/^#/,'').slice(0,30)).filter(Boolean);\nconst description=trim(r.payload.description||[ep?.logline,ep?.opening_hook,ep?.ending_hook].filter(Boolean).join('；')||hook,1000),selected=trim(r.payload.selected_title||candidates[0],300);\nconst metadata_id=latest&&!regen?latest.metadata_id:'metadata_'+crypto.createHash('sha1').update([m.master_id,platform,version].join(':')).digest('hex').slice(0,20);\nreturn[{json:{...r,master:m,metadata_id,platform,version,title:selected,title_candidates:candidates,description,hashtags,cover_candidates:covers,cover_asset_id:r.payload.cover_asset_id||covers[0]?.asset_id||null,cover_url:r.payload.selected_cover_url||covers[0]?.url||null,scheduled_at:r.payload.scheduled_at||null,visibility:r.payload.visibility||$env.PUBLISH_DEFAULT_VISIBILITY||'private',content_declaration:{ai_generated:true,adapted_content:true,...(r.payload.content_declaration||{})},platform_options:{episode_number:num,cover_title_candidates:candidates.slice(0,3),needs_manual_cover:covers.length===0,...(r.payload.platform_options||{})}}}];"
+      },
+      "id": "12-metadata-build",
+      "name": "Generate 3 to 5 Titles Tags and Cover Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        120
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ins AS(\n INSERT INTO drama.publication_metadata(metadata_id,project_id,episode_id,master_id,platform,title,description,hashtags,title_candidates,cover_candidates,cover_asset_id,cover_url,scheduled_at,visibility,content_declaration,platform_options,version,review_status)\n VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,'pending')\n ON CONFLICT(master_id,platform,version) DO UPDATE SET title=excluded.title,description=excluded.description,hashtags=excluded.hashtags,title_candidates=excluded.title_candidates,cover_candidates=excluded.cover_candidates,cover_asset_id=excluded.cover_asset_id,cover_url=excluded.cover_url,scheduled_at=excluded.scheduled_at,visibility=excluded.visibility,content_declaration=excluded.content_declaration,platform_options=excluded.platform_options,review_status='pending',reviewed_at=NULL,reviewer_comment=NULL\n WHERE drama.publication_metadata.review_status<>'approved'\n RETURNING *\n),chosen AS(\n SELECT * FROM ins UNION ALL SELECT * FROM drama.publication_metadata WHERE master_id=$4 AND platform=$5 AND version=$17 AND NOT EXISTS(SELECT 1 FROM ins) LIMIT 1\n),p AS(\n UPDATE drama.projects SET current_stage=CASE WHEN (SELECT review_status FROM chosen)='approved' THEN 'publication_metadata_approved' ELSE 'waiting_publication_metadata_review' END,status=CASE WHEN (SELECT review_status FROM chosen)='approved' THEN 'preparing_publication' ELSE 'waiting_publication_metadata_review' END WHERE project_id=$2 RETURNING project_id\n),n AS(\n INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n SELECT 'notify_'||metadata_id,$2,$3,'publication_metadata_review_required','info','Publication metadata review required','Select a title and cover, confirm description, hashtags, declaration, visibility, and schedule.',jsonb_build_object('metadata_id',metadata_id,'master_id',$4,'platform',$5,'version',$17),'pending' FROM chosen WHERE review_status<>'approved'\n ON CONFLICT(notification_id) DO UPDATE SET data=excluded.data,status='pending',sent_at=NULL\n)\nSELECT jsonb_build_object('success',true,'project_id',$2,'episode_id',$3,'trace_id',$18::text,'stage','qc_review_publish','status',CASE WHEN (SELECT review_status FROM chosen)='approved' THEN 'publication_metadata_approved' ELSE 'waiting_publication_metadata_review' END,'data_ref',jsonb_build_object('entity_type','publication_metadata','entity_id',(SELECT metadata_id FROM chosen),'master_id',$4,'platform',$5,'version',$17,'review_status',(SELECT review_status FROM chosen),'title_candidates',$9::jsonb,'cover_candidates',$10::jsonb),'metrics',jsonb_build_object('title_candidate_count',jsonb_array_length($9::jsonb),'cover_candidate_count',jsonb_array_length($10::jsonb)),'error',NULL) response;",
+        "options": {
+          "queryReplacement": "={{[$json.metadata_id,$json.project_id,$json.episode_id,$json.master.master_id,$json.platform,$json.title,$json.description,JSON.stringify($json.hashtags),JSON.stringify($json.title_candidates),JSON.stringify($json.cover_candidates),$json.cover_asset_id||null,$json.cover_url||null,$json.scheduled_at||null,$json.visibility,JSON.stringify($json.content_declaration),JSON.stringify($json.platform_options),$json.version,$json.trace_id]}}"
+        }
+      },
+      "id": "12-metadata-save",
+      "name": "Save Publication Metadata Pending Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -680,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-metadata-result",
+      "name": "Publication Metadata Generated Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH m AS MATERIALIZED(\n SELECT * FROM drama.episode_masters WHERE project_id=$1 AND episode_id=$2 AND master_type='final' AND is_current AND status='ready'\n),f AS MATERIALIZED(\n SELECT x.* FROM drama.final_reviews x JOIN m ON m.master_id=x.master_id WHERE x.review_status='approved' ORDER BY x.reviewed_at DESC LIMIT 1\n),target AS MATERIALIZED(\n SELECT p.* FROM drama.publication_metadata p JOIN m ON m.master_id=p.master_id WHERE p.metadata_id=$3 AND p.project_id=$1 AND p.episode_id=$2\n),candidate AS(\n SELECT t.*,COALESCE(NULLIF($5::jsonb#>>'{payload,selected_title}',''),t.title) new_title,\n        COALESCE(NULLIF($5::jsonb#>>'{payload,description}',''),t.description) new_description,\n        CASE WHEN ($5::jsonb->'payload')?'hashtags' THEN $5::jsonb#>'{payload,hashtags}' ELSE t.hashtags END new_hashtags\n FROM target t\n),saved AS(\n UPDATE drama.publication_metadata p SET review_status=$4,title=c.new_title,description=c.new_description,hashtags=c.new_hashtags,\n   cover_asset_id=COALESCE(NULLIF($5::jsonb#>>'{payload,cover_asset_id}',''),p.cover_asset_id),\n   cover_url=COALESCE(NULLIF($5::jsonb#>>'{payload,selected_cover_url}',''),p.cover_url),\n   scheduled_at=CASE WHEN ($5::jsonb->'payload')?'scheduled_at' THEN NULLIF($5::jsonb#>>'{payload,scheduled_at}','')::timestamptz ELSE p.scheduled_at END,\n   visibility=COALESCE(NULLIF($5::jsonb#>>'{payload,visibility}',''),p.visibility),\n   content_declaration=CASE WHEN ($5::jsonb->'payload')?'content_declaration' THEN $5::jsonb#>'{payload,content_declaration}' ELSE p.content_declaration END,\n   platform_options=CASE WHEN ($5::jsonb->'payload')?'platform_options' THEN $5::jsonb#>'{payload,platform_options}' ELSE p.platform_options END,\n   reviewed_at=now(),reviewer_comment=$6\n FROM candidate c WHERE p.id=c.id AND EXISTS(SELECT 1 FROM f) AND ($4='rejected' OR (NULLIF(btrim(c.new_title),'') IS NOT NULL AND NULLIF(btrim(c.new_description),'') IS NOT NULL AND jsonb_typeof(c.new_hashtags)='array' AND jsonb_array_length(c.new_hashtags)>0))\n RETURNING p.*\n),p AS(\n UPDATE drama.projects SET current_stage=CASE WHEN $4='approved' THEN 'publication_metadata_approved' ELSE 'waiting_publication_metadata_review' END,status=CASE WHEN $4='approved' THEN 'preparing_publication' ELSE 'waiting_publication_metadata_review' END WHERE project_id=$1 AND EXISTS(SELECT 1 FROM saved) RETURNING project_id\n),n AS(\n INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n SELECT 'notify_metadata_review_'||metadata_id,$1,$2,CASE WHEN $4='approved' THEN 'publication_metadata_approved' ELSE 'publication_metadata_rejected' END,CASE WHEN $4='approved' THEN 'info' ELSE 'warning' END,CASE WHEN $4='approved' THEN 'Publication metadata approved' ELSE 'Publication metadata rejected' END,CASE WHEN $4='approved' THEN 'Publication may now be submitted.' ELSE 'Only publication metadata or cover should be regenerated; the video master remains unchanged.' END,jsonb_build_object('metadata_id',metadata_id,'master_id',master_id,'review_comment',$6),'pending' FROM saved\n ON CONFLICT(notification_id) DO UPDATE SET severity=excluded.severity,title=excluded.title,message=excluded.message,data=excluded.data,status='pending',sent_at=NULL\n)\nSELECT jsonb_build_object('success',EXISTS(SELECT 1 FROM saved),'project_id',$1,'episode_id',$2,'trace_id',$7::text,'stage','qc_review_publish','status',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN $4 ELSE 'failed' END,'data_ref',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN jsonb_build_object('entity_type','publication_metadata','entity_id',$3,'review_status',$4,'resume_instruction',CASE WHEN $4='rejected' THEN jsonb_build_object('action','resume','target_stage','publication_metadata','scope','metadata','automatic_retry_allowed',false) ELSE jsonb_build_object('action','publish','checkpoint','publication_metadata_approved') END) ELSE NULL END,'metrics',jsonb_build_object(),'error',CASE WHEN EXISTS(SELECT 1 FROM saved) THEN NULL WHEN NOT EXISTS(SELECT 1 FROM target) THEN jsonb_build_object('code','PUBLICATION_METADATA_NOT_FOUND','message','Publication metadata does not belong to the current final master.','retryable',false) WHEN NOT EXISTS(SELECT 1 FROM f) THEN jsonb_build_object('code','FINAL_REVIEW_REQUIRED','message','Approved final review is required.','retryable',false) ELSE jsonb_build_object('code','PUBLICATION_METADATA_NOT_APPROVED','message','Approved metadata requires a title, description, and at least one hashtag.','retryable',false) END) response;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.metadata_id,$json.payload.review_status,JSON.stringify($json),$json.payload.reviewer_comment||$json.payload.rejection_reason||null,$json.trace_id]}}"
+        }
+      },
+      "id": "12-metadata-review",
+      "name": "Review Publication Metadata Atomically",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-metadata-review-result",
+      "name": "Publication Metadata Review Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH m AS MATERIALIZED(\n SELECT * FROM drama.episode_masters WHERE project_id=$1 AND episode_id=$2 AND master_type='final' AND is_current AND status='ready' AND ($3::text IS NULL OR master_id=$3) ORDER BY generation_version DESC LIMIT 1\n),f AS MATERIALIZED(\n SELECT x.* FROM drama.final_reviews x JOIN m ON m.master_id=x.master_id WHERE x.review_status='approved' ORDER BY x.reviewed_at DESC LIMIT 1\n),q AS MATERIALIZED(\n SELECT r.* FROM drama.qc_reports r JOIN f ON f.qc_report_id=r.qc_report_id WHERE r.status='completed'\n),md AS MATERIALIZED(\n SELECT p.* FROM drama.publication_metadata p JOIN m ON m.master_id=p.master_id WHERE p.project_id=$1 AND p.episode_id=$2 AND p.review_status='approved' AND p.platform=$4 AND ($5::text IS NULL OR p.metadata_id=$5) ORDER BY p.version DESC LIMIT 1\n)\nSELECT $6::jsonb request,to_jsonb(m) master,to_jsonb(f) final_review,to_jsonb(q) qc_report,to_jsonb(md) metadata\nFROM (SELECT 1) seed LEFT JOIN m ON true LEFT JOIN f ON true LEFT JOIN q ON true LEFT JOIN md ON true;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.master_id||null,$json.payload.platform||$env.PUBLISH_PLATFORM||'douyin',$json.payload.metadata_id||null,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "12-publish-load",
+      "name": "Load Fully Approved Publish Input",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1120,
+        620
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),obj=v=>{if(v&&typeof v==='object')return v;if(typeof v==='string')try{return JSON.parse(v)}catch{}return null},r=$json.request||$('Normalize QC Review Publish Request').item.json,m=obj($json.master),f=obj($json.final_review),q=obj($json.qc_report),md=obj($json.metadata);\nif(!m)throw new Error('FINAL_REVIEW_REQUIRED: current ready final master not found');if(!f||!q)throw new Error('FINAL_REVIEW_REQUIRED: approved final review and completed QC are required');if(!md)throw new Error('PUBLICATION_METADATA_NOT_APPROVED');\nconst forced=r.test_mode||r.mock_mode||r.action==='generate_package',provider=forced?'manual_package':String(r.payload.provider||$env.PUBLISH_PROVIDER||'manual_package'),platform=md.platform,account=String(r.payload.account_reference||$env.PUBLISH_ACCOUNT_REFERENCE||'default'),scheduled=r.payload.scheduled_at??md.scheduled_at??null;\nconst material=[platform,account,m.master_id,md.version,scheduled||'immediate'].join(':'),key=r.payload.idempotency_key||crypto.createHash('sha256').update(material).digest('hex'),task='pubtask_'+crypto.createHash('sha1').update(key).digest('hex').slice(0,20);\nconst media=String(m.storage_url||m.local_path||'');if(!media||/^data:/i.test(media))throw new Error('MEDIA_FILE_NOT_FOUND: publishable master path or URL is missing');\nreturn[{json:{...r,provider,platform,project_id:r.project_id,episode_id:r.episode_id,master_id:m.master_id,metadata_id:md.metadata_id,publication_task_id:task,video_url:media,cover_url:md.cover_url||m.thumbnail_url||'',title:md.title,description:md.description,hashtags:md.hashtags||[],scheduled_at:scheduled,visibility:md.visibility,content_declaration:md.content_declaration||{},platform_options:{...(md.platform_options||{}),metadata_version:md.version},account_reference:account,idempotency_key:key,trace_id:r.trace_id,action:r.action,test_mode:r.test_mode,mock_mode:r.mock_mode,payload:{...r.payload,metadata_version:md.version}}}];"
+      },
+      "id": "12-publish-prepare",
+      "name": "Prepare Safe Publish Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        620
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_publish_provider_adapter",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "provider": "={{$json.provider}}",
+            "platform": "={{$json.platform}}",
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "master_id": "={{$json.master_id}}",
+            "metadata_id": "={{$json.metadata_id}}",
+            "publication_task_id": "={{$json.publication_task_id}}",
+            "video_url": "={{$json.video_url}}",
+            "cover_url": "={{$json.cover_url}}",
+            "title": "={{$json.title}}",
+            "description": "={{$json.description}}",
+            "hashtags": "={{$json.hashtags}}",
+            "scheduled_at": "={{$json.scheduled_at}}",
+            "visibility": "={{$json.visibility}}",
+            "content_declaration": "={{$json.content_declaration}}",
+            "platform_options": "={{$json.platform_options}}",
+            "account_reference": "={{$json.account_reference}}",
+            "idempotency_key": "={{$json.idempotency_key}}",
+            "trace_id": "={{$json.trace_id}}",
+            "action": "={{$json.action}}",
+            "test_mode": "={{$json.test_mode}}",
+            "mock_mode": "={{$json.mock_mode}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "12-call-adapter",
+      "name": "Execute 12a Publish Provider Adapter",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -680,
+        620
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const req=$('Prepare Safe Publish Dispatch').item.json,res=$json||{};if(res.success!==true)throw new Error(String(res.error?.code||'PUBLISH_UPLOAD_FAILED')+': '+String(res.error?.message||'publish adapter rejected request'));return[{json:{request:req,result:res}}];"
+      },
+      "id": "12-adapter-normalize",
+      "name": "Validate Publish Adapter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        620
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(\n UPDATE drama.projects SET current_stage=CASE $1 WHEN 'published' THEN 'published' WHEN 'processing' THEN 'publication_submitted' WHEN 'manual_required' THEN 'stage_5_completed' ELSE 'stage_5_failed' END,\n status=CASE $1 WHEN 'published' THEN 'published' WHEN 'processing' THEN 'publishing' WHEN 'manual_required' THEN 'stage_5_completed' ELSE 'stage_5_failed' END WHERE project_id=$2 RETURNING *\n),n AS(\n INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n VALUES('notify_publish_'||$3,$2,$4,CASE $1 WHEN 'published' THEN 'published' WHEN 'manual_required' THEN 'manual_package_ready' ELSE 'publication_submitted' END,'info',CASE $1 WHEN 'published' THEN 'Episode published' WHEN 'manual_required' THEN 'Manual publication package ready' ELSE 'Publication submitted' END,CASE $1 WHEN 'published' THEN 'The platform work ID and URL were saved.' WHEN 'manual_required' THEN 'Upload the generated package manually; no platform success was fabricated.' ELSE 'An asynchronous publication task is being polled.' END,jsonb_build_object('publication_task_id',$3,'master_id',$5::text,'platform_work_id',$6::text,'published_url',$7::text,'package_url',$8::text),'pending')\n ON CONFLICT(notification_id) DO UPDATE SET title=excluded.title,message=excluded.message,data=excluded.data,status='pending',sent_at=NULL\n)\nSELECT jsonb_build_object('success',true,'project_id',$2,'episode_id',$4,'trace_id',$9::text,'stage','qc_review_publish','status',$1,'data_ref',jsonb_build_object('entity_type','publication_task','entity_id',$3,'master_id',$5::text,'platform_work_id',$6::text,'published_url',$7::text,'package_url',$8::text),'metrics',jsonb_build_object(),'error',NULL) response;",
+        "options": {
+          "queryReplacement": "={{[$json.result.status,$json.request.project_id,$json.result.publication_task_id||$json.request.publication_task_id,$json.request.episode_id,$json.request.master_id,$json.result.platform_work_id||null,$json.result.published_url||null,$json.result.package_url||null,$json.request.trace_id]}}"
+        }
+      },
+      "id": "12-publish-save",
+      "name": "Save Project Publication Checkpoint",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        620
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-publish-result",
+      "name": "Publish or Package Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let r={};try{r=$('Normalize QC Review Publish Request').first().json||{}}catch{}let q={};try{q=$('Prepare Idempotent QC Job').first().json||{}}catch{}\nlet m=String($json.error?.message||$json.message||'QC/review/publication workflow failed').replace(/Bearer\\s+[A-Za-z0-9._-]+/gi,'Bearer [redacted]').slice(0,1500);\nlet code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_').toUpperCase();\nif(/429|RATE.?LIMIT/i.test(m))code=code.startsWith('PUBLISH')?'PUBLISH_RATE_LIMITED':'QC_CONTENT_FAILED';\nelse if(/MEDIA WORKER|TECHNICAL/i.test(m)&&!code.startsWith('QC_'))code='QC_TECHNICAL_FAILED';\nelse if(/TIMEOUT/i.test(m)&&!code.includes('TIMEOUT'))code=r.route==='publish'?'PUBLISH_TIMEOUT':'QC_TECHNICAL_FAILED';\nconst retryable=/429|timeout|5\\d\\d|network|temporar|ECONN/i.test(m),response={success:false,project_id:r.project_id||null,episode_id:r.episode_id||null,trace_id:r.trace_id||null,stage:'qc_review_publish',status:/REQUIRED|NOT_APPROVED|BLOCKING|REJECTED|NOT_FOUND/.test(code)?'waiting_review':'failed',data_ref:null,metrics:{},error:{code,message:m.replace(/^[A-Z0-9_]+:\\s*/,''),retryable}};\nreturn[{json:{response,qc_job_id:q.qc_job_id||null,project_id:r.project_id||null,episode_id:r.episode_id||null,trace_id:r.trace_id||null,code,message:response.error.message}}];"
+      },
+      "id": "12-failure",
+      "name": "Normalize QC Review Publish Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH j AS(\n UPDATE drama.qc_jobs SET status='failed',completed_at=now(),error_code=$1,error_message=$2 WHERE qc_job_id=$3 AND status<>'succeeded' RETURNING qc_job_id\n),n AS(\n INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)\n SELECT 'notify_failure_'||substr(md5(COALESCE($4,'')||COALESCE($3,'')||$1),1,20),$4,$5,'workflow_failure','error','QC/review/publication workflow failed',$2,jsonb_build_object('error_code',$1,'qc_job_id',$3,'trace_id',$6::text,'retryable',$7::boolean),'pending'\n WHERE $4 IS NOT NULL AND EXISTS(SELECT 1 FROM drama.projects WHERE project_id=$4)\n ON CONFLICT(notification_id) DO UPDATE SET message=excluded.message,data=excluded.data,status='pending',sent_at=NULL\n)\nSELECT $8::jsonb response;",
+        "options": {
+          "queryReplacement": "={{[$json.code,$json.message,$json.qc_job_id,$json.project_id,$json.episode_id,$json.trace_id,Boolean($json.response.error.retryable),JSON.stringify($json.response)]}}"
+        }
+      },
+      "id": "12-failure-save",
+      "name": "Persist Sanitized QC Workflow Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        900
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return[{json:$json.response}];"
+      },
+      "id": "12-failure-result",
+      "name": "QC Review Publish Failed Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        900
+      ]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize QC Review Publish Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize QC Review Publish Request": {
+      "main": [
+        [
+          {
+            "node": "Route QC Review Metadata or Publish",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route QC Review Metadata or Publish": {
+      "main": [
+        [
+          {
+            "node": "Load Current Final Master and QC Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Human Final Review Without Auto Regeneration",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Approved Master for Publication Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Review Publication Metadata Atomically",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Fully Approved Publish Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Current Final Master and QC Context": {
+      "main": [
+        [
+          {
+            "node": "Prepare Idempotent QC Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Idempotent QC Job": {
+      "main": [
+        [
+          {
+            "node": "Claim or Reuse QC Job Atomically",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim or Reuse QC Job Atomically": {
+      "main": [
+        [
+          {
+            "node": "Route QC Task State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route QC Task State": {
+      "main": [
+        [
+          {
+            "node": "Switch Cached Running or Execute QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Cached Running or Execute QC": {
+      "main": [
+        [
+          {
+            "node": "Return Cached QC Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Existing Running QC Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mock QC Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock QC Mode?": {
+      "main": [
+        [
+          {
+            "node": "Build Deterministic Mock QC Reports",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "POST Media Worker Technical QC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Deterministic Mock QC Reports": {
+      "main": [
+        [
+          {
+            "node": "Aggregate QC Severity and Precise Routing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST Media Worker Technical QC": {
+      "main": [
+        [
+          {
+            "node": "Prepare Technical Subtitle and Frame QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Technical Subtitle and Frame QC": {
+      "main": [
+        [
+          {
+            "node": "Optional Vision QC Available?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optional Vision QC Available?": {
+      "main": [
+        [
+          {
+            "node": "Call Optional Vision Content Compliance QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Vision QC Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Optional Vision Content Compliance QC": {
+      "main": [
+        [
+          {
+            "node": "Normalize Optional Vision QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Optional Vision QC": {
+      "main": [
+        [
+          {
+            "node": "Aggregate QC Severity and Precise Routing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Vision QC Skip": {
+      "main": [
+        [
+          {
+            "node": "Aggregate QC Severity and Precise Routing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate QC Severity and Precise Routing": {
+      "main": [
+        [
+          {
+            "node": "Save QC Job Report and Review Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save QC Job Report and Review Notification": {
+      "main": [
+        [
+          {
+            "node": "QC Completed Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Human Final Review Without Auto Regeneration": {
+      "main": [
+        [
+          {
+            "node": "Final Review Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Approved Master for Publication Metadata": {
+      "main": [
+        [
+          {
+            "node": "Generate 3 to 5 Titles Tags and Cover Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate 3 to 5 Titles Tags and Cover Candidates": {
+      "main": [
+        [
+          {
+            "node": "Save Publication Metadata Pending Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Publication Metadata Pending Review": {
+      "main": [
+        [
+          {
+            "node": "Publication Metadata Generated Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Publication Metadata Atomically": {
+      "main": [
+        [
+          {
+            "node": "Publication Metadata Review Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Fully Approved Publish Input": {
+      "main": [
+        [
+          {
+            "node": "Prepare Safe Publish Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Safe Publish Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Execute 12a Publish Provider Adapter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 12a Publish Provider Adapter": {
+      "main": [
+        [
+          {
+            "node": "Validate Publish Adapter Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Publish Adapter Result": {
+      "main": [
+        [
+          {
+            "node": "Save Project Publication Checkpoint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Project Publication Checkpoint": {
+      "main": [
+        [
+          {
+            "node": "Publish or Package Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize QC Review Publish Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize QC Review Publish Failure": {
+      "main": [
+        [
+          {
+            "node": "Persist Sanitized QC Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Sanitized QC Workflow Failure": {
+      "main": [
+        [
+          {
+            "node": "QC Review Publish Failed Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-100000000012",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -1558,6 +1558,192 @@
         20,
         2380
       ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/stage5",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "00-stage5-webhook",
+      "name": "Stage 5 Resume Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-1080, 2640],
+      "webhookId": "ai-short-drama-stage5"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),b=$json.body||$json,p=b.payload||{},project_id=b.project_id||p.project_id,episode_id=b.episode_id||p.episode_id,action=b.action||p.action||'resume',allowed=['run','retry','regenerate','review','resume','cancel','render','qc','publish','schedule','generate_package'];if(!project_id)throw new Error('PROJECT_NOT_FOUND: project_id is required');if(!episode_id)throw new Error('EPISODE_NOT_FOUND: episode_id is required');if(!allowed.includes(action))throw new Error('TIMELINE_VALIDATION_FAILED: unsupported stage 5 action');return [{json:{project_id,episode_id,shot_id:b.shot_id||p.shot_id||null,stage:'orchestrator',action,generation_version:Math.max(1,Number(b.generation_version||p.generation_version||1)),test_mode:b.test_mode===undefined?Boolean(p.test_mode):Boolean(b.test_mode),trace_id:b.trace_id||p.trace_id||'trace_stage5_'+crypto.randomUUID(),breakpoint:b.breakpoint||p.breakpoint||null,payload:{...p,entity_type:b.entity_type||p.entity_type||null,entity_id:b.entity_id||p.entity_id||null,review_status:b.review_status||p.review_status||null,reviewer_comment:b.reviewer_comment||p.reviewer_comment||'',rejection_scope:b.rejection_scope||p.rejection_scope||null,rejection_entity_ids:b.rejection_entity_ids||p.rejection_entity_ids||[],rejection_reason:b.rejection_reason||p.rejection_reason||'',revision_instruction:b.revision_instruction||p.revision_instruction||''}}}];"
+      },
+      "id": "00-stage5-normalize",
+      "name": "Normalize Stage 5 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-860, 2640],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(SELECT * FROM drama.projects WHERE project_id=$1),ep AS(SELECT e.* FROM drama.episode_outlines e JOIN p ON p.project_id=e.project_id WHERE e.episode_id=$2),latest_render AS(SELECT r.* FROM drama.render_jobs r JOIN ep ON ep.episode_id=r.episode_id ORDER BY r.created_at DESC LIMIT 1),current_master AS(SELECT m.* FROM drama.episode_masters m JOIN ep ON ep.episode_id=m.episode_id WHERE m.is_current AND m.master_type='final'ORDER BY m.generation_version DESC LIMIT 1),latest_qc AS(SELECT q.* FROM drama.qc_reports q JOIN current_master m ON m.master_id=q.master_id ORDER BY q.version DESC LIMIT 1),latest_review AS(SELECT f.* FROM drama.final_reviews f JOIN current_master m ON m.master_id=f.master_id ORDER BY f.created_at DESC LIMIT 1),latest_meta AS(SELECT m.* FROM drama.publication_metadata m JOIN current_master cm ON cm.master_id=m.master_id ORDER BY m.version DESC LIMIT 1),latest_pub AS(SELECT t.* FROM drama.publication_tasks t JOIN current_master cm ON cm.master_id=t.master_id ORDER BY t.created_at DESC LIMIT 1)SELECT $3::jsonb request,(SELECT to_jsonb(p.*)FROM p)project,(SELECT to_jsonb(ep.*)FROM ep)episode,(SELECT to_jsonb(latest_render.*)FROM latest_render)render_job,(SELECT to_jsonb(current_master.*)FROM current_master)master,(SELECT to_jsonb(latest_qc.*)FROM latest_qc)qc_report,(SELECT to_jsonb(latest_review.*)FROM latest_review)final_review,(SELECT to_jsonb(latest_meta.*)FROM latest_meta)publication_metadata,(SELECT to_jsonb(latest_pub.*)FROM latest_pub)publication_task,(SELECT count(*)::int FROM drama.storyboard_shots sh JOIN drama.storyboards b ON b.storyboard_id=sh.storyboard_id WHERE b.project_id=$1 AND b.episode_id=$2 AND b.status='approved')required_shots,(SELECT count(*)::int FROM drama.shot_videos v WHERE v.project_id=$1 AND v.episode_id=$2 AND v.is_current AND v.status='succeeded'AND v.review_status='approved')approved_videos,(SELECT count(*)::int FROM drama.dialogues d WHERE d.project_id=$1 AND d.episode_id=$2)required_dialogues,(SELECT count(*)::int FROM drama.dialogue_audio a WHERE a.project_id=$1 AND a.episode_id=$2 AND a.is_current AND a.status='succeeded'AND a.auto_qc_status<>'failed')ready_audio,(SELECT count(*)::int FROM drama.episode_audio_plans a WHERE a.project_id=$1 AND a.episode_id=$2 AND a.status IN('ready','completed'))ready_audio_plans;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "00-stage5-resolve",
+      "name": "Resolve Stage 5 Breakpoint",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-640, 2640],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json,r=x.request||{};if(!x.project)throw new Error('PROJECT_NOT_FOUND: project not found');if(!x.episode)throw new Error('EPISODE_NOT_FOUND: episode does not belong to project');const project=x.project,bp=r.breakpoint||project.current_stage,render=x.render_job||{},master=x.master||{},qc=x.qc_report||{},review=x.final_review||{},meta=x.publication_metadata||{},pub=x.publication_task||{};if(pub.status==='published'||bp==='published')return[{json:{...r,route:'idle',resolved_breakpoint:'published',response:{success:true,project_id:r.project_id,episode_id:r.episode_id,trace_id:r.trace_id,stage:'orchestrator',status:'published',data_ref:{publication_task_id:pub.publication_task_id||null,published_url:pub.published_url||null},metrics:{},error:null}}}];if(['uploading','processing','publication_submitted'].includes(pub.status)||bp==='publication_submitted')return[{json:{...r,route:'idle',resolved_breakpoint:'publication_submitted',response:{success:true,project_id:r.project_id,episode_id:r.episode_id,trace_id:r.trace_id,stage:'orchestrator',status:'publication_submitted',data_ref:{publication_task_id:pub.publication_task_id||null},metrics:{progress:Number(pub.progress||0)},error:null}}}];let route='idle',nextAction=r.action,nextPayload={...r.payload};if(['stage_4_completed','stage_4_failed','preparing_timeline','edit_timeline_ready'].includes(bp)){route='edit';nextAction=r.action==='resume'?'run':r.action;nextPayload={...nextPayload,render_type:nextPayload.render_type||'preview',preview_approved:false};}else if(bp==='preview_rendered'){if(nextPayload.preview_approved){route='edit';nextAction='render';nextPayload={...nextPayload,render_type:'master',preview_approved:true,timeline_id:render.timeline_id||nextPayload.timeline_id};}}else if(['final_rendered','waiting_qc'].includes(bp)||(master.master_id&&!qc.qc_report_id)){route='qc';nextAction='qc';nextPayload={...nextPayload,master_id:master.master_id||nextPayload.master_id};}else if(['final_review_approved','preparing_publication'].includes(bp)||review.review_status==='approved'&&!meta.metadata_id){route='qc';nextAction='resume';nextPayload={...nextPayload,breakpoint:'final_review_approved',master_id:master.master_id,qc_report_id:qc.qc_report_id};}else if(['publication_metadata_approved'].includes(bp)||meta.review_status==='approved'&&!pub.publication_task_id){route='qc';nextAction=r.action==='schedule'?'schedule':'publish';nextPayload={...nextPayload,master_id:master.master_id,metadata_id:meta.metadata_id};}const assets={required_shots:Number(x.required_shots||0),approved_videos:Number(x.approved_videos||0),required_dialogues:Number(x.required_dialogues||0),ready_audio:Number(x.ready_audio||0),ready_audio_plans:Number(x.ready_audio_plans||0)};if(route==='edit'&&(assets.required_shots===0||assets.approved_videos<assets.required_shots||assets.required_dialogues===0||assets.ready_audio<assets.required_dialogues||assets.ready_audio_plans<1))throw new Error('MEDIA_ASSETS_INCOMPLETE: stage 4 media is incomplete');const response={success:true,project_id:r.project_id,episode_id:r.episode_id,trace_id:r.trace_id,stage:'orchestrator',status:bp,data_ref:{render_job_id:render.render_job_id||null,master_id:master.master_id||null,qc_report_id:qc.qc_report_id||null,metadata_id:meta.metadata_id||null},metrics:assets,error:null};return[{json:{...r,route,resolved_breakpoint:bp,next_action:nextAction,payload:nextPayload,response}}];"
+      },
+      "id": "00-stage5-plan",
+      "name": "Plan Stage 5 Resume Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 2640],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "edit", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true,
+              "outputKey": "edit"
+            },
+            {
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "qc", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true,
+              "outputKey": "qc_review_publish"
+            },
+            {
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "idle", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" },
+              "renameOutput": true,
+              "outputKey": "idle"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "00-stage5-switch",
+      "name": "Switch Stage 5 Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-160, 2640]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "wf_edit_compose", "mode": "id" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "edit_compose",
+            "action": "={{$json.next_action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": { "waitForSubWorkflow": true }
+      },
+      "id": "00-stage5-run11",
+      "name": "Execute 11 Edit Compose",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [80, 2520],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "wf_qc_review_publish", "mode": "id" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "qc_review_publish",
+            "action": "={{$json.next_action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": { "waitForSubWorkflow": true }
+      },
+      "id": "00-stage5-run12",
+      "name": "Execute 12 QC Review Publish",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [80, 2640],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": { "jsCode": "return [{json:$json.response||$json}];" },
+      "id": "00-stage5-idle",
+      "name": "Stage 5 Await External Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 2760]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "00-stage5-response",
+      "name": "Stage 5 Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [340, 2640]
+    },
+    {
+      "parameters": {
+        "jsCode": "let r={};try{r=$('Normalize Stage 5 Request').item.json||{};}catch{}const m=String($json.error?.message||$json.message||'stage 5 resume failed').replace(/(api[_-]?key|token|authorization|password)\\s*[:=]\\s*[^\\s,;]+/ig,'$1=[REDACTED]').slice(0,2000),code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_');return[{json:{success:false,project_id:r.project_id||null,episode_id:r.episode_id||null,trace_id:r.trace_id||null,stage:'orchestrator',status:code==='MEDIA_ASSETS_INCOMPLETE'?'waiting_media':'stage_5_failed',data_ref:null,metrics:{},error:{code,message:m,retryable:/timeout|network|database|5\\d\\d/i.test(m)}}}];"
+      },
+      "id": "00-stage5-failure",
+      "name": "Stage 5 Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 2900]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "00-stage5-failed-response",
+      "name": "Stage 5 Failed Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [340, 2900]
     }
   ],
   "connections": {
@@ -2340,6 +2526,33 @@
           }
         ]
       ]
+    },
+    "Stage 5 Resume Webhook": {
+      "main": [[{ "node": "Normalize Stage 5 Request", "type": "main", "index": 0 }]]
+    },
+    "Normalize Stage 5 Request": {
+      "main": [[{ "node": "Resolve Stage 5 Breakpoint", "type": "main", "index": 0 }],[{ "node": "Stage 5 Failure Response", "type": "main", "index": 0 }]]
+    },
+    "Resolve Stage 5 Breakpoint": {
+      "main": [[{ "node": "Plan Stage 5 Resume Route", "type": "main", "index": 0 }],[{ "node": "Stage 5 Failure Response", "type": "main", "index": 0 }]]
+    },
+    "Plan Stage 5 Resume Route": {
+      "main": [[{ "node": "Switch Stage 5 Route", "type": "main", "index": 0 }],[{ "node": "Stage 5 Failure Response", "type": "main", "index": 0 }]]
+    },
+    "Switch Stage 5 Route": {
+      "main": [[{ "node": "Execute 11 Edit Compose", "type": "main", "index": 0 }],[{ "node": "Execute 12 QC Review Publish", "type": "main", "index": 0 }],[{ "node": "Stage 5 Await External Event", "type": "main", "index": 0 }]]
+    },
+    "Execute 11 Edit Compose": {
+      "main": [[{ "node": "Stage 5 Webhook Response", "type": "main", "index": 0 }],[{ "node": "Stage 5 Failure Response", "type": "main", "index": 0 }]]
+    },
+    "Execute 12 QC Review Publish": {
+      "main": [[{ "node": "Stage 5 Webhook Response", "type": "main", "index": 0 }],[{ "node": "Stage 5 Failure Response", "type": "main", "index": 0 }]]
+    },
+    "Stage 5 Await External Event": {
+      "main": [[{ "node": "Stage 5 Webhook Response", "type": "main", "index": 0 }]]
+    },
+    "Stage 5 Failure Response": {
+      "main": [[{ "node": "Stage 5 Failed Webhook Response", "type": "main", "index": 0 }]]
     }
   },
   "pinData": {},

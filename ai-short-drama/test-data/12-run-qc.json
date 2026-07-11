@@ -1,0 +1,15 @@
+{
+  "project_id": "p_001",
+  "episode_id": "ep_001",
+  "shot_id": null,
+  "stage": "qc_review_publish",
+  "action": "qc",
+  "generation_version": 1,
+  "test_mode": true,
+  "trace_id": "trace_12_qc_001",
+  "payload": {
+    "master_id": "master_p_001_ep_001_final_v1",
+    "qc_type": "combined",
+    "simulate": null
+  }
+}

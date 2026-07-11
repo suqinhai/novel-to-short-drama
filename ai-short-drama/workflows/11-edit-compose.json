@@ -1,0 +1,191 @@
+{
+  "id": "wf_edit_compose",
+  "name": "11 剪辑与合成",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "project_id" },
+            { "name": "episode_id" },
+            { "name": "shot_id" },
+            { "name": "stage" },
+            { "name": "action" },
+            { "name": "generation_version", "type": "number" },
+            { "name": "test_mode", "type": "boolean" },
+            { "name": "trace_id" },
+            { "name": "payload", "type": "object" }
+          ]
+        }
+      },
+      "id": "11-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1460, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},action=i.action||'run',allowed=['run','retry','regenerate','resume','render','cancel'];const base={...i,payload:p,stage:'edit_compose',action,generation_version:Math.max(1,Number(i.generation_version||1)),test_mode:Boolean(i.test_mode),trace_id:i.trace_id||'trace_edit_'+crypto.randomUUID(),task_id:'task_edit_'+crypto.randomUUID()};const fail=(code,message,retryable=false,details={})=>[{json:{...base,valid:false,error:{code,message,retryable,category:'business',details}}}];if(!i.project_id)return fail('PROJECT_NOT_FOUND','project_id is required');if(!i.episode_id)return fail('EPISODE_NOT_FOUND','episode_id is required');if(!allowed.includes(action))return fail('TIMELINE_VALIDATION_FAILED','unsupported edit action');const render_type=p.render_type||((p.preview_approved||action==='render')?'master':'preview');if(!['preview','master','subtitle_preview','cover','audio_mix'].includes(render_type))return fail('TIMELINE_VALIDATION_FAILED','unsupported render_type');if(render_type==='master'&&!p.preview_approved&&!['regenerate','retry'].includes(action))return fail('TIMELINE_VALIDATION_FAILED','final render requires preview_approved=true');const config={width:Number(p.width||$env.OUTPUT_WIDTH||1080),height:Number(p.height||$env.OUTPUT_HEIGHT||1920),aspect_ratio:p.aspect_ratio||$env.OUTPUT_ASPECT_RATIO||'9:16',fps:Number(p.fps||$env.OUTPUT_FPS||24),video_codec:p.video_codec||$env.OUTPUT_VIDEO_CODEC||'libx264',audio_codec:p.audio_codec||$env.OUTPUT_AUDIO_CODEC||'aac',sample_rate:Number(p.sample_rate||$env.OUTPUT_SAMPLE_RATE||48000),pixel_format:p.pixel_format||$env.OUTPUT_PIXEL_FORMAT||'yuv420p',crf:Number(p.crf||$env.OUTPUT_CRF||20),preset:p.preset||$env.OUTPUT_PRESET||'medium',burn_subtitles:p.burn_subtitles===undefined?String($env.BURN_SUBTITLES||'true')==='true':Boolean(p.burn_subtitles),generate_clean_master:p.generate_clean_master===undefined?String($env.GENERATE_CLEAN_MASTER||'true')==='true':Boolean(p.generate_clean_master),bgm_ducking_db:Number(p.bgm_ducking_db||$env.BGM_DUCKING_DB||-12)};if(!Number.isInteger(config.width)||!Number.isInteger(config.height)||config.width<64||config.height<64||config.fps<=0||config.sample_rate<=0)return fail('TIMELINE_VALIDATION_FAILED','invalid render dimensions, fps, or sample rate');const config_hash=crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');const idempotency_key=[i.project_id,i.episode_id,base.generation_version,render_type,config_hash].join(':');return [{json:{...base,valid:true,render_type,render_config:config,render_config_hash:config_hash,idempotency_key}}];"
+      },
+      "id": "11-normalize",
+      "name": "Validate Compose Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1240, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{$json.valid}}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "11-request-valid",
+      "name": "Compose Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-1020, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(SELECT * FROM drama.projects WHERE project_id=$1),ep AS(SELECT e.* FROM drama.episode_outlines e JOIN p ON p.project_id=e.project_id WHERE e.episode_id=$2),es AS(SELECT s.* FROM drama.episode_scripts s JOIN ep ON ep.episode_id=s.episode_id WHERE s.status='approved' ORDER BY s.version DESC LIMIT 1),sb AS(SELECT b.* FROM drama.storyboards b JOIN es ON es.script_id=b.script_id WHERE b.status='approved' ORDER BY b.version DESC LIMIT 1),shots AS(SELECT sh.*,v.shot_video_id,v.storyboard_id video_storyboard_id,v.generation_version video_generation_version,v.storage_url video_storage_url,v.original_url video_original_url,v.actual_duration_seconds,v.requested_duration_seconds,v.review_status video_review_status,v.status video_status,v.content_hash video_content_hash FROM sb JOIN drama.storyboard_shots sh ON sh.storyboard_id=sb.storyboard_id LEFT JOIN LATERAL(SELECT sv.* FROM drama.shot_videos sv WHERE sv.shot_id=sh.shot_id AND sv.is_current ORDER BY sv.generation_version DESC LIMIT 1)v ON true ORDER BY sh.shot_order),dialogue_media AS(SELECT d.*,s.scene_number,a.dialogue_audio_id,a.generation_version audio_generation_version,a.storage_url audio_storage_url,a.original_url audio_original_url,a.actual_duration_ms audio_duration_ms,a.status audio_status,a.auto_qc_status audio_qc_status,a.voice_profile_id,vp.lock_status voice_lock_status,vp.review_status voice_review_status,coalesce((SELECT jsonb_agg(jsonb_build_object('subtitle_cue_id',c.subtitle_cue_id,'shot_id',c.shot_id,'sequence_number',c.sequence_number,'speaker_name',c.speaker_name,'text',c.text,'start_ms',c.start_ms,'end_ms',c.end_ms,'duration_ms',c.duration_ms,'style_config',c.style_config,'status',c.status)ORDER BY c.sequence_number)FROM drama.subtitle_cues c WHERE c.dialogue_id=d.dialogue_id AND c.dialogue_audio_id=a.dialogue_audio_id),'[]'::jsonb)subtitle_cues FROM es JOIN drama.script_scenes s ON s.script_id=es.script_id JOIN drama.dialogues d ON d.scene_id=s.scene_id LEFT JOIN LATERAL(SELECT da.* FROM drama.dialogue_audio da WHERE da.dialogue_id=d.dialogue_id AND da.is_current ORDER BY da.generation_version DESC LIMIT 1)a ON true LEFT JOIN drama.voice_profiles vp ON vp.voice_profile_id=a.voice_profile_id ORDER BY s.scene_number,d.sequence_number),ap AS(SELECT a.* FROM drama.episode_audio_plans a JOIN es ON es.script_id=a.script_id WHERE a.status IN('ready','completed')ORDER BY a.version DESC LIMIT 1),prior AS(SELECT coalesce(max(version),0)::int max_version FROM drama.edit_timelines WHERE project_id=$1 AND episode_id=$2)SELECT $3::jsonb request,(SELECT to_jsonb(p.*)FROM p)project,(SELECT to_jsonb(ep.*)FROM ep)episode,(SELECT to_jsonb(es.*)FROM es)script,(SELECT to_jsonb(sb.*)FROM sb)storyboard,coalesce((SELECT jsonb_agg(to_jsonb(shots.*)ORDER BY shot_order)FROM shots),'[]'::jsonb)shots,coalesce((SELECT jsonb_agg(to_jsonb(dialogue_media.*)ORDER BY scene_number,sequence_number)FROM dialogue_media),'[]'::jsonb)dialogues,(SELECT to_jsonb(ap.*)FROM ap)audio_plan,(SELECT max_version FROM prior)max_timeline_version;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "11-load-assets",
+      "name": "Load Approved Episode Media",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-800, -100],
+      "credentials": { "postgres": { "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),x=$json,r=x.request||{},p=r.payload||{},fail=(code,message,details={})=>[{json:{...r,valid:false,error:{code,message,retryable:false,category:'media',details}}}];if(!x.project)return fail('PROJECT_NOT_FOUND','project does not exist');if(!x.episode)return fail('EPISODE_NOT_FOUND','episode does not belong to project');if(r.test_mode&&Number(x.episode.episode_number||1)>Number($env.TEST_MAX_EPISODES||1))return fail('TIMELINE_VALIDATION_FAILED','TEST_MODE only allows configured first episodes',{episode_number:x.episode.episode_number});if(!x.script)return fail('SOURCE_VERSION_MISMATCH','no approved episode script');if(!x.storyboard)return fail('SOURCE_VERSION_MISMATCH','no approved storyboard for approved script');if(!x.audio_plan)return fail('MEDIA_ASSETS_INCOMPLETE','episode audio plan is not ready',{missing_audio_plan:true});const shots=Array.isArray(x.shots)?x.shots:[],dialogues=Array.isArray(x.dialogues)?x.dialogues:[];if(!shots.length)return fail('MEDIA_ASSETS_INCOMPLETE','approved storyboard has no shots',{missing_shot_ids:[]});const orders=shots.map(s=>Number(s.shot_order)),expected=orders.map((_,i)=>i+1),orderBad=orders.some((v,i)=>v!==expected[i])||new Set(orders).size!==orders.length;const missingShots=shots.filter(s=>!s.shot_video_id).map(s=>s.shot_id),unapproved=shots.filter(s=>s.shot_video_id&&(s.video_status!=='succeeded'||s.video_review_status!=='approved'||s.video_storyboard_id!==x.storyboard.storyboard_id)).map(s=>s.shot_video_id),missingDialogue=dialogues.filter(d=>!d.dialogue_audio_id||d.audio_status!=='succeeded'||d.audio_qc_status==='failed').map(d=>d.dialogue_id),unlocked=dialogues.filter(d=>d.dialogue_audio_id&&d.voice_profile_id&&(d.voice_lock_status!=='locked'||d.voice_review_status!=='approved')).map(d=>d.dialogue_id);const cueInvalid=[];for(const d of dialogues)for(const c of(d.subtitle_cues||[]))if(!['aligned','reviewed','approved'].includes(c.status)||Number(c.start_ms)<0||Number(c.end_ms)<=Number(c.start_ms))cueInvalid.push(c.subtitle_cue_id);if(orderBad||missingShots.length||unapproved.length||missingDialogue.length||unlocked.length||cueInvalid.length)return fail('MEDIA_ASSETS_INCOMPLETE','episode media assets are incomplete',{shot_sequence_invalid:orderBad,missing_shot_ids:missingShots,unapproved_shot_video_ids:unapproved,missing_dialogue_ids:missingDialogue,unlocked_voice_dialogue_ids:unlocked,invalid_subtitle_cue_ids:cueInvalid});const trimPath=(v)=>{let s=String(v||'');while(s.endsWith('/')||s.endsWith(String.fromCharCode(92)))s=s.slice(0,-1);return s;},root=trimPath($env.MEDIA_STORAGE_PATH||'/data/storage'),publicBase=trimPath($env.MEDIA_PUBLIC_BASE_URL||''),ref=(url)=>{const u=String(url||'');if(u.startsWith(root+'/'))return{source_path:u,source_url:null};if(publicBase&&u.startsWith(publicBase+'/')){let tail=u.slice(publicBase.length);while(tail.startsWith('/'))tail=tail.slice(1);return{source_path:root+'/'+tail,source_url:u};}return{source_path:null,source_url:u||null};};const tracks={video:[],dialogue:[],narration:[],bgm:[],sound_effect:[],ambience:[],subtitle:[],overlay:[]},items=[],transitions=[];let cursor=0;for(const s of shots){const assetMs=Math.max(1,Math.round(Number(s.actual_duration_seconds||s.requested_duration_seconds||s.duration_seconds)*1000)),targetMs=Math.max(1,Math.round(Number(s.duration_seconds||assetMs/1000)*1000)),minSpeed=Number($env.MIN_VIDEO_SPEED||0.9),maxSpeed=Number($env.MAX_VIDEO_SPEED||1.1),rawSpeed=assetMs/targetMs,speed=Math.max(minSpeed,Math.min(maxSpeed,rawSpeed)),duration=Math.max(1,Math.round(assetMs/speed)),m=ref(s.video_storage_url||s.video_original_url),item={timeline_item_id:'item_'+crypto.createHash('sha1').update(r.project_id+':'+r.episode_id+':video:'+s.shot_id+':'+r.generation_version).digest('hex').slice(0,24),track_type:'video',track_number:1,sequence_number:tracks.video.length+1,entity_type:'shot_video',entity_id:s.shot_video_id,shot_id:s.shot_id,...m,timeline_start_ms:cursor,timeline_end_ms:cursor+duration,source_in_ms:0,source_out_ms:assetMs,duration_ms:duration,volume:1,fade_in_ms:0,fade_out_ms:0,transform_config:{fit:'cover',safe_crop:true,speed},effect_config:{pixel_format:r.render_config.pixel_format},status:'ready'};tracks.video.push(item);items.push(item);if((s.transition_type||'cut')!=='cut')transitions.push({from_shot_id:shots[Math.max(0,tracks.video.length-2)]?.shot_id||null,to_shot_id:s.shot_id,type:s.transition_type,duration_ms:Number($env.DEFAULT_TRANSITION_DURATION_MS||200)});cursor+=duration;}const total=cursor,shotForDialogue=(d)=>shots.find(s=>(s.dialogue_ids||[]).includes(d.dialogue_id));for(const d of dialogues){const cues=d.subtitle_cues||[],shot=shotForDialogue(d),video=shot?tracks.video.find(v=>v.shot_id===shot.shot_id):null,first=cues[0],start=Math.max(0,Math.min(total-1,first?Number(first.start_ms):(video?video.timeline_start_ms:0))),dur=Math.max(1,Math.min(Number(d.audio_duration_ms||d.estimated_duration_ms||1),total-start)),m=ref(d.audio_storage_url||d.audio_original_url),kind=d.dialogue_type==='narration'?'narration':'dialogue',audio={timeline_item_id:'item_'+crypto.createHash('sha1').update(r.project_id+':'+r.episode_id+':audio:'+d.dialogue_id+':'+r.generation_version).digest('hex').slice(0,24),track_type:kind,track_number:kind==='narration'?2:1,sequence_number:tracks[kind].length+1,entity_type:'dialogue_audio',entity_id:d.dialogue_audio_id,dialogue_id:d.dialogue_id,...m,timeline_start_ms:start,timeline_end_ms:start+dur,source_in_ms:0,source_out_ms:Number(d.audio_duration_ms||dur),duration_ms:dur,volume:1,fade_in_ms:0,fade_out_ms:0,transform_config:{},effect_config:{normalize_loudness_lufs:Number($env.TARGET_LOUDNESS_LUFS||-16),true_peak_db:Number($env.TARGET_TRUE_PEAK_DB||-1)},status:'ready'};tracks[kind].push(audio);items.push(audio);for(const c of cues){const cs=Math.max(0,Math.min(total-1,Number(c.start_ms))),ce=Math.max(cs+1,Math.min(total,Number(c.end_ms)));if(ce>total||cs>=ce)return fail('SUBTITLE_CUE_INVALID','subtitle cue exceeds timeline',{subtitle_cue_id:c.subtitle_cue_id});const sub={timeline_item_id:'item_'+crypto.createHash('sha1').update(r.project_id+':'+r.episode_id+':subtitle:'+c.subtitle_cue_id+':'+r.generation_version).digest('hex').slice(0,24),track_type:'subtitle',track_number:1,sequence_number:tracks.subtitle.length+1,entity_type:'subtitle_cue',entity_id:c.subtitle_cue_id,source_url:null,source_path:null,timeline_start_ms:cs,timeline_end_ms:ce,source_in_ms:0,source_out_ms:ce-cs,duration_ms:ce-cs,volume:1,fade_in_ms:0,fade_out_ms:0,transform_config:{text:String(c.text||''),speaker_name:c.speaker_name||'',style_config:c.style_config||{}},effect_config:{},status:'ready'};tracks.subtitle.push(sub);items.push(sub);}}const plan=x.audio_plan||{};for(const [field,kind]of[['bgm_cues','bgm'],['sound_effect_cues','sound_effect'],['ambience_cues','ambience']])for(const c of(plan[field]||[])){const licensed=Boolean(c.licensed||c.license_verified||c.usage_rights==='cleared'||r.test_mode&&c.test_asset===true),m=ref(c.storage_url||c.source_url||c.local_path);if(kind==='bgm'&&!licensed)continue;if(!m.source_path&&!m.source_url)continue;const start=Math.max(0,Math.min(total-1,Number(c.start_ms||0))),end=Math.max(start+1,Math.min(total,Number(c.end_ms||total))),a={timeline_item_id:'item_'+crypto.createHash('sha1').update(r.project_id+':'+r.episode_id+':'+kind+':'+(c.cue_id||tracks[kind].length)+':'+r.generation_version).digest('hex').slice(0,24),track_type:kind,track_number:1,sequence_number:tracks[kind].length+1,entity_type:kind,entity_id:c.cue_id||kind+'_'+(tracks[kind].length+1),...m,timeline_start_ms:start,timeline_end_ms:end,source_in_ms:0,source_out_ms:end-start,duration_ms:end-start,volume:Number(c.volume??(kind==='bgm'?0.35:0.7)),fade_in_ms:Number(c.fade_in_ms||0),fade_out_ms:Number(c.fade_out_ms||0),transform_config:{loop:Boolean(c.loop)},effect_config:kind==='bgm'?{ducking:{enabled:String($env.BGM_DUCKING_ENABLED||'true')==='true',under_tracks:['dialogue','narration'],gain_db:Number(r.render_config.bgm_ducking_db)}}:{},authorized:kind==='bgm'?licensed:true,status:'ready'};tracks[kind].push(a);items.push(a);}const version=Math.max(Number(r.generation_version||1),r.action==='regenerate'?Number(x.max_timeline_version||0)+1:1),timelineSeed=[r.project_id,r.episode_id,version,r.render_config_hash].join(':'),timelineSuffix=crypto.createHash('sha256').update(timelineSeed).digest('hex').slice(0,20),renderSuffix=crypto.createHash('sha256').update(timelineSeed+':'+r.render_type).digest('hex').slice(0,20),timeline_id=p.timeline_id||'timeline_'+timelineSuffix,render_job_id='render_'+renderSuffix,baseDir=root+'/renders/'+r.project_id+'/'+r.episode_id+'/v'+version,manifest_path=baseDir+'/'+render_job_id+'.manifest.json',subtitle_srt_path=baseDir+'/'+timeline_id+'.srt',subtitle_ass_path=baseDir+'/'+timeline_id+'.ass',output_path=baseDir+'/'+r.render_type+'.mp4';const timeline={timeline_id,project_id:r.project_id,episode_id:r.episode_id,script_id:x.script.script_id,storyboard_id:x.storyboard.storyboard_id,audio_plan_id:x.audio_plan.audio_plan_id,version,settings:r.render_config,tracks,total_duration_ms:total,transitions,source_versions:{script_version:x.script.version,storyboard_version:x.storyboard.version,audio_plan_version:x.audio_plan.version,shot_video_versions:Object.fromEntries(shots.map(s=>[s.shot_id,s.video_generation_version])),dialogue_audio_versions:Object.fromEntries(dialogues.map(d=>[d.dialogue_id,d.audio_generation_version]))}};return [{json:{...r,valid:true,timeline,timeline_id,version,render_job_id,items,manifest_path,subtitle_srt_path,subtitle_ass_path,output_path,target_duration_ms:total}}];"
+      },
+      "id": "11-build-timeline",
+      "name": "Validate Assets and Build Timeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, -100],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{$json.valid}}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "11-assets-valid",
+      "name": "Timeline and Assets Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-320, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\nconst x = $json;\nconst root = path.resolve(String($env.MEDIA_STORAGE_PATH || '/data/storage'));\nconst inside = (candidate) => {\n  const resolved = path.resolve(candidate);\n  if (resolved !== root && !resolved.startsWith(root + path.sep)) throw new Error('MEDIA_PATH_NOT_ALLOWED');\n  return resolved;\n};\nconst formatSrt = (ms) => {\n  const h = Math.floor(ms / 3600000);\n  const m = Math.floor((ms % 3600000) / 60000);\n  const s = Math.floor((ms % 60000) / 1000);\n  const z = ms % 1000;\n  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + ',' + String(z).padStart(3, '0');\n};\nconst formatAss = (ms) => {\n  const h = Math.floor(ms / 3600000);\n  const m = Math.floor((ms % 3600000) / 60000);\n  const s = Math.floor((ms % 60000) / 1000);\n  const z = Math.floor((ms % 1000) / 10);\n  return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(z).padStart(2, '0');\n};\nfor (const candidate of [x.manifest_path, x.subtitle_srt_path, x.subtitle_ass_path, x.output_path]) inside(candidate);\nfs.mkdirSync(path.dirname(x.manifest_path), { recursive: true });\nconst NL = String.fromCharCode(10);\nconst CR = String.fromCharCode(13);\nconst safe = (value) => String(value || '').replaceAll(CR, ' ').replaceAll(NL, ' ').trim();\nconst subtitles = x.timeline.tracks.subtitle || [];\nconst srt = subtitles.map((cue, index) => [\n  String(index + 1),\n  formatSrt(cue.timeline_start_ms) + ' --> ' + formatSrt(cue.timeline_end_ms),\n  safe(cue.transform_config.text),\n  ''\n].join(NL)).join(NL);\nconst assHeader = [\n  '[Script Info]',\n  'ScriptType: v4.00+',\n  'PlayResX: ' + x.render_config.width,\n  'PlayResY: ' + x.render_config.height,\n  'WrapStyle: 0',\n  '',\n  '[V4+ Styles]',\n  'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',\n  'Style: Default,Arial,52,&H00FFFFFF,&H000000FF,&H00101010,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,70,70,160,1',\n  '',\n  '[Events]',\n  'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'\n].join(NL) + NL;\nconst ass = assHeader + subtitles.map((cue) => {\n  const text = safe(cue.transform_config.text).replaceAll('{', '').replaceAll('}', '');\n  return 'Dialogue: 0,' + formatAss(cue.timeline_start_ms) + ',' + formatAss(cue.timeline_end_ms) + ',Default,,0,0,0,,' + text;\n}).join(NL) + NL;\nfs.writeFileSync(inside(x.subtitle_srt_path), srt, { encoding: 'utf8', mode: 0o640 });\nfs.writeFileSync(inside(x.subtitle_ass_path), ass, { encoding: 'utf8', mode: 0o640 });\nconst manifest = {\n  schema_version: 1,\n  render_job_id: x.render_job_id,\n  project_id: x.project_id,\n  episode_id: x.episode_id,\n  timeline_id: x.timeline_id,\n  timeline_version: x.version,\n  render_type: x.render_type,\n  settings: x.render_config,\n  total_duration_ms: x.target_duration_ms,\n  inputs: {\n    video: x.timeline.tracks.video,\n    audio: [\n      ...x.timeline.tracks.dialogue,\n      ...x.timeline.tracks.narration,\n      ...x.timeline.tracks.bgm,\n      ...x.timeline.tracks.sound_effect,\n      ...x.timeline.tracks.ambience\n    ]\n  },\n  subtitles: {\n    path: x.subtitle_ass_path,\n    srt_path: x.subtitle_srt_path,\n    ass_path: x.subtitle_ass_path,\n    burn: x.render_type !== 'audio_mix' && x.render_type !== 'cover' && x.render_config.burn_subtitles\n  },\n  transitions: x.timeline.transitions,\n  output: {\n    path: x.output_path,\n    generate_clean_master: x.render_config.generate_clean_master\n  },\n  limits: {\n    threads: Number($env.MEDIA_MAX_THREADS || 2),\n    timeout_minutes: Number($env.MEDIA_RENDER_TIMEOUT_MINUTES || 30)\n  },\n  mock_mode: String($env.MOCK_MODE || 'true') === 'true'\n};\nfs.writeFileSync(inside(x.manifest_path), JSON.stringify(manifest, null, 2), { encoding: 'utf8', mode: 0o640 });\nreturn [{ json: { ...x, manifest_written: true } }];"
+      },
+      "id": "11-write-manifest",
+      "name": "Write Safe Manifest and Subtitles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-80, -220],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH wt AS(INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at)VALUES($1,$2,$3,'edit_compose',$4,'episode',$5,$6,$7,'running',$8,$9::jsonb,now())ON CONFLICT(idempotency_key)DO UPDATE SET trace_id=excluded.trace_id,status=CASE WHEN drama.workflow_tasks.status='failed'AND excluded.action IN('retry','regenerate','resume')THEN'running'ELSE drama.workflow_tasks.status END,retry_count=CASE WHEN drama.workflow_tasks.status='failed'AND excluded.action IN('retry','regenerate','resume')THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END RETURNING *),tl AS(INSERT INTO drama.edit_timelines(timeline_id,project_id,episode_id,script_id,storyboard_id,audio_plan_id,version,resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,tracks,transitions,subtitle_config,render_config,source_versions,status)VALUES($10,$3,$5,$11,$12,$13,$6,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22::jsonb,$23::jsonb,$24::jsonb,$25::jsonb,'ready')ON CONFLICT(timeline_id)DO UPDATE SET tracks=excluded.tracks,transitions=excluded.transitions,subtitle_config=excluded.subtitle_config,render_config=excluded.render_config,source_versions=excluded.source_versions,target_duration_ms=excluded.target_duration_ms,status=CASE WHEN drama.edit_timelines.status IN('completed','rendering')THEN drama.edit_timelines.status ELSE'ready'END RETURNING *),ins_items AS(INSERT INTO drama.edit_timeline_items(timeline_item_id,timeline_id,project_id,episode_id,track_type,track_number,sequence_number,entity_type,entity_id,source_url,source_path,timeline_start_ms,timeline_end_ms,source_in_ms,source_out_ms,duration_ms,volume,fade_in_ms,fade_out_ms,transform_config,effect_config,status)SELECT z.timeline_item_id,$10,$3,$5,z.track_type,z.track_number,z.sequence_number,z.entity_type,z.entity_id,z.source_url,z.source_path,z.timeline_start_ms,z.timeline_end_ms,z.source_in_ms,z.source_out_ms,z.duration_ms,z.volume,z.fade_in_ms,z.fade_out_ms,z.transform_config,z.effect_config,z.status FROM jsonb_to_recordset($26::jsonb)z(timeline_item_id text,track_type text,track_number int,sequence_number int,entity_type text,entity_id text,source_url text,source_path text,timeline_start_ms bigint,timeline_end_ms bigint,source_in_ms bigint,source_out_ms bigint,duration_ms bigint,volume numeric,fade_in_ms int,fade_out_ms int,transform_config jsonb,effect_config jsonb,status text)ON CONFLICT(timeline_item_id)DO UPDATE SET source_url=excluded.source_url,source_path=excluded.source_path,timeline_start_ms=excluded.timeline_start_ms,timeline_end_ms=excluded.timeline_end_ms,source_in_ms=excluded.source_in_ms,source_out_ms=excluded.source_out_ms,duration_ms=excluded.duration_ms,volume=excluded.volume,fade_in_ms=excluded.fade_in_ms,fade_out_ms=excluded.fade_out_ms,transform_config=excluded.transform_config,effect_config=excluded.effect_config,status=excluded.status RETURNING timeline_item_id),job AS(INSERT INTO drama.render_jobs(render_job_id,idempotency_key,trace_id,project_id,episode_id,timeline_id,timeline_version,render_type,status,progress,command_template_id,input_manifest_path,output_path,render_config_hash,retry_count,max_retries,estimated_cost)VALUES($27,$7,$2,$3,$5,$10,$6,$28,'pending',0,'ffmpeg_episode_v1',$29,$30,$31,0,$8,0)ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.render_jobs.status IN('failed','timeout')AND $4 IN('retry','regenerate','resume')AND drama.render_jobs.retry_count<drama.render_jobs.max_retries THEN'pending'ELSE drama.render_jobs.status END,retry_count=CASE WHEN drama.render_jobs.status IN('failed','timeout')AND $4 IN('retry','regenerate','resume')THEN drama.render_jobs.retry_count+1 ELSE drama.render_jobs.retry_count END,error_code=CASE WHEN drama.render_jobs.status IN('failed','timeout')AND $4 IN('retry','regenerate','resume')THEN NULL ELSE drama.render_jobs.error_code END,error_message=CASE WHEN drama.render_jobs.status IN('failed','timeout')AND $4 IN('retry','regenerate','resume')THEN NULL ELSE drama.render_jobs.error_message END RETURNING *),done AS(UPDATE drama.workflow_tasks SET status='completed',completed_at=now(),output_data=jsonb_build_object('success',true,'project_id',$3,'episode_id',$5,'trace_id',$2,'stage','edit_compose','status',CASE WHEN(SELECT status FROM job)='succeeded'THEN'preview_rendered'ELSE'render_pending'END,'data_ref',jsonb_build_object('timeline_id',$10,'render_job_id',$27,'manifest_path',$29,'output_path',$30),'metrics',jsonb_build_object('timeline_items',(SELECT count(*)FROM ins_items),'duration_ms',$20,'timeline_version',$6),'error',NULL)WHERE idempotency_key=$7 RETURNING output_data),pr AS(UPDATE drama.projects SET current_stage=CASE WHEN(SELECT status FROM job)='succeeded'THEN'preview_rendered'ELSE'rendering'END,status=CASE WHEN(SELECT status FROM job)='succeeded'THEN'waiting_qc'ELSE'rendering'END WHERE project_id=$3)SELECT(SELECT output_data FROM done)output_data,(SELECT status FROM job)render_job_status;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.episode_id,$json.version,$json.idempotency_key,Number($env.MEDIA_MAX_RETRIES||2),JSON.stringify($json),$json.timeline_id,$json.timeline.script_id,$json.timeline.storyboard_id,$json.timeline.audio_plan_id,$json.render_config.width+'x'+$json.render_config.height,$json.render_config.aspect_ratio,$json.render_config.fps,$json.render_config.video_codec,$json.render_config.audio_codec,$json.render_config.sample_rate,$json.target_duration_ms,JSON.stringify($json.timeline.tracks),JSON.stringify($json.timeline.transitions),JSON.stringify({formats:['srt','ass'],srt_path:$json.subtitle_srt_path,ass_path:$json.subtitle_ass_path,burn:$json.render_config.burn_subtitles,safe_area:{bottom_percent:8,left_percent:6,right_percent:6},max_lines:2,outline:3,shadow:1,dialogue_style:'Default',narration_style:'Default'}),JSON.stringify($json.render_config),JSON.stringify($json.timeline.source_versions),JSON.stringify($json.items),$json.render_job_id,$json.render_type,$json.manifest_path,$json.output_path,$json.render_config_hash]}}"
+        }
+      },
+      "id": "11-save",
+      "name": "Save Timeline Items and Render Job",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [160, -220],
+      "credentials": { "postgres": { "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.output_data||{success:true,stage:'edit_compose',status:'render_pending',data_ref:{render_job_id:$json.render_job_id||null},error:null}}];"
+      },
+      "id": "11-success",
+      "name": "Compose Accepted Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, -220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const src=$json,err=src.error||{},msg=String(err.message||src.message||'edit compose failed').replace(/(api[_-]?key|token|authorization|password)\\s*[:=]\\s*[^\\s,;]+/ig,'$1=[REDACTED]').slice(0,2000),known=['PROJECT_NOT_FOUND','EPISODE_NOT_FOUND','MEDIA_ASSETS_INCOMPLETE','SHOT_VIDEO_NOT_APPROVED','DIALOGUE_AUDIO_MISSING','SUBTITLE_CUE_INVALID','SOURCE_VERSION_MISMATCH','TIMELINE_VALIDATION_FAILED','MEDIA_FILE_NOT_FOUND','MEDIA_FILE_INVALID','MEDIA_PATH_NOT_ALLOWED','DATABASE_WRITE_FAILED','STORAGE_WRITE_FAILED'];let code=err.code||src.code||known.find(k=>msg.includes(k))||((src.node&&String(src.node.type||'').includes('postgres'))?'DATABASE_WRITE_FAILED':'TIMELINE_VALIDATION_FAILED');return [{json:{project_id:src.project_id||null,episode_id:src.episode_id||null,trace_id:src.trace_id||'trace_edit_failure',task_id:src.task_id||'task_edit_failure',idempotency_key:src.idempotency_key||['edit_failure',src.project_id||'unknown',src.episode_id||'unknown',src.trace_id||Date.now()].join(':'),action:src.action||'run',generation_version:Number(src.generation_version||1),stage:'edit_compose',error:{code,message:msg,retryable:['DATABASE_WRITE_FAILED','STORAGE_WRITE_FAILED'].includes(code),category:code.includes('DATABASE')?'database':'media',details:err.details||{}}}}];"
+      },
+      "id": "11-normalize-failure",
+      "name": "Normalize Compose Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-60, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(SELECT project_id FROM drama.projects WHERE project_id=$1),t AS(INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,output_data,error_code,error_message,completed_at)SELECT $2,$3,p.project_id,'edit_compose',$4,'episode',coalesce($5,''),$6,$7,'failed',$8,'{}'::jsonb,$9::jsonb,$10,$11,now()FROM p ON CONFLICT(idempotency_key)DO UPDATE SET status='failed',output_data=excluded.output_data,error_code=excluded.error_code,error_message=excluded.error_message,completed_at=now()RETURNING task_id),n AS(INSERT INTO drama.workflow_notifications(notification_id,project_id,episode_id,notification_type,severity,title,message,data,status)SELECT 'notify_'||substr(md5($7),1,24),p.project_id,NULLIF($5,''),'workflow_error','error','Edit compose failed',$11,$9::jsonb,'pending'FROM p ON CONFLICT(notification_id)DO NOTHING),pr AS(UPDATE drama.projects SET current_stage='stage_5_failed',status='stage_5_failed',error_message=$11 WHERE project_id=$1)SELECT jsonb_build_object('success',false,'project_id',$1,'episode_id',NULLIF($5,''),'trace_id',$3,'stage','edit_compose','status',CASE WHEN $10='MEDIA_ASSETS_INCOMPLETE'THEN'waiting_media'ELSE'failed'END,'error',$9::jsonb)response;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.task_id,$json.trace_id,$json.action,$json.episode_id,$json.generation_version,$json.idempotency_key,Number($env.MEDIA_MAX_RETRIES||2),JSON.stringify($json.error),$json.error.code,$json.error.message]}}"
+        }
+      },
+      "id": "11-save-failure",
+      "name": "Save Compose Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [180, 180],
+      "credentials": { "postgres": { "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL" } }
+    },
+    {
+      "parameters": { "jsCode": "return [{json:$json.response||$json}];" },
+      "id": "11-failed-final",
+      "name": "Compose Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 180]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": { "main": [[{ "node": "Validate Compose Request", "type": "main", "index": 0 }]] },
+    "Validate Compose Request": { "main": [[{ "node": "Compose Request Valid?", "type": "main", "index": 0 }]] },
+    "Compose Request Valid?": { "main": [[{ "node": "Load Approved Episode Media", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Load Approved Episode Media": { "main": [[{ "node": "Validate Assets and Build Timeline", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Validate Assets and Build Timeline": { "main": [[{ "node": "Timeline and Assets Valid?", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Timeline and Assets Valid?": { "main": [[{ "node": "Write Safe Manifest and Subtitles", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Write Safe Manifest and Subtitles": { "main": [[{ "node": "Save Timeline Items and Render Job", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Save Timeline Items and Render Job": { "main": [[{ "node": "Compose Accepted Response", "type": "main", "index": 0 }],[{ "node": "Normalize Compose Failure", "type": "main", "index": 0 }]] },
+    "Normalize Compose Failure": { "main": [[{ "node": "Save Compose Failure", "type": "main", "index": 0 }]] },
+    "Save Compose Failure": { "main": [[{ "node": "Compose Failure Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "versionId": "phase5-edit-compose-v1",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

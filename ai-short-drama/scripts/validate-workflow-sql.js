@@ -12,6 +12,11 @@ const files = [
   '10a-tts-provider-adapter.json',
   '10b-audio-task-poller-process.json',
   '10-voice-audio.json',
+  '11-edit-compose.json',
+  '11a-media-processing-worker.json',
+  '12-qc-review-publish.json',
+  '12a-publish-provider-adapter.json',
+  '12b-publish-task-poller.json',
 ];
 
 function splitStatements(sql) {

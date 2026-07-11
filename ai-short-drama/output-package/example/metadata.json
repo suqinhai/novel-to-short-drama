@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project_id": "p_001",
+  "episode_id": "ep_001",
+  "master_id": "master_p_001_ep_001_final_v1",
+  "platform": "douyin",
+  "title": "示例标题（运行时替换）",
+  "description": "示例简介（运行时替换）",
+  "hashtags": ["AI短剧", "小说改编"],
+  "visibility": "private",
+  "scheduled_at": null,
+  "content_declaration": {
+    "ai_generated": true,
+    "adapted_content": true
+  },
+  "platform_options": {}
+}

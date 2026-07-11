@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "description": "Sanitized fixtures for 12a publish adapter and 12b poller. All URLs and IDs are non-production mock values.",
+  "manual_package": {
+    "success": true,
+    "provider": "manual_package",
+    "mode": "manual",
+    "provider_task_id": null,
+    "status": "manual_required",
+    "platform_work_id": null,
+    "published_url": null,
+    "package_url": "http://localhost:8088/results/p_001/ep_001/publication/pubtask_mock/",
+    "error": null
+  },
+  "generic_sync_publish": {
+    "statusCode": 200,
+    "body": {
+      "status": "published",
+      "platform_work_id": "mockwork_sync_001",
+      "published_url": "https://mock.invalid/douyin/mockwork_sync_001",
+      "progress": 100,
+      "mock": true
+    }
+  },
+  "generic_async_submit": {
+    "statusCode": 202,
+    "body": {
+      "status": "processing",
+      "provider_task_id": "mockpub_async_001",
+      "progress": 5,
+      "mock": true,
+      "mock_complete_after_polls": 2
+    }
+  },
+  "generic_async_poll_1": {
+    "statusCode": 200,
+    "body": {
+      "status": "processing",
+      "provider_task_id": "mockpub_async_001",
+      "progress": 50,
+      "mock": true,
+      "poll_count": 1
+    }
+  },
+  "generic_async_poll_2": {
+    "statusCode": 200,
+    "body": {
+      "status": "published",
+      "provider_task_id": "mockpub_async_001",
+      "platform_work_id": "mockwork_async_001",
+      "published_url": "https://mock.invalid/douyin/mockwork_async_001",
+      "progress": 100,
+      "mock": true,
+      "poll_count": 2
+    }
+  },
+  "errors": {
+    "rate_limited": {
+      "statusCode": 429,
+      "body": {
+        "error": {
+          "code": "rate_limited",
+          "message": "mock rate limit"
+        }
+      }
+    },
+    "auth_failed": {
+      "statusCode": 401,
+      "body": {
+        "error": {
+          "code": "unauthorized",
+          "message": "mock authorization failure"
+        }
+      }
+    },
+    "timeout": {
+      "error": {
+        "message": "mock publish timeout"
+      }
+    },
+    "async_task_id_missing": {
+      "statusCode": 202,
+      "body": {
+        "status": "processing",
+        "progress": 5
+      }
+    },
+    "completed_identity_missing": {
+      "statusCode": 200,
+      "body": {
+        "status": "published",
+        "progress": 100
+      }
+    }
+  }
+}

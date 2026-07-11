@@ -1,0 +1,350 @@
+{
+  "name": "12a Publish Provider Adapter",
+  "id": "wf_publish_provider_adapter",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "provider" },
+            { "name": "platform" },
+            { "name": "project_id" },
+            { "name": "episode_id" },
+            { "name": "master_id" },
+            { "name": "metadata_id" },
+            { "name": "publication_task_id" },
+            { "name": "video_url" },
+            { "name": "cover_url" },
+            { "name": "title" },
+            { "name": "description" },
+            { "name": "hashtags", "type": "array" },
+            { "name": "scheduled_at" },
+            { "name": "visibility" },
+            { "name": "content_declaration", "type": "object" },
+            { "name": "platform_options", "type": "object" },
+            { "name": "account_reference" },
+            { "name": "idempotency_key" },
+            { "name": "trace_id" },
+            { "name": "action" },
+            { "name": "test_mode", "type": "boolean" },
+            { "name": "mock_mode", "type": "boolean" },
+            { "name": "payload", "type": "object" }
+          ]
+        }
+      },
+      "id": "12a00000-0000-4000-8000-000000000001",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1320, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto');const src=$input.first().json||{};const input=src.data&&typeof src.data==='object'&&!Array.isArray(src.data)?{...src,...src.data}:src;const payload=input.payload&&typeof input.payload==='object'&&!Array.isArray(input.payload)?input.payload:{};const bool=(v,d=false)=>v===undefined||v===null||v===''?d:(v===true||String(v).toLowerCase()==='true'||String(v)==='1');const cleanId=(v,n,required=true)=>{const s=v==null?'':String(v).trim();if(!s&&!required)return null;if(!s||s.length>128||!/^[A-Za-z0-9_-]+$/.test(s))throw new Error('INVALID_'+n.toUpperCase());return s};const clamp=(v,d,min,max)=>{const n=Number.parseInt(v,10);return Number.isFinite(n)?Math.min(max,Math.max(min,n)):d};const secret=/authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie|signature/i;const scrub=(v,depth=0)=>{if(depth>8)return'[depth-limited]';if(Array.isArray(v))return v.slice(0,100).map(x=>scrub(x,depth+1));if(v&&typeof v==='object'){const o={};for(const[k,x]of Object.entries(v)){if(secret.test(k))continue;o[k]=scrub(x,depth+1)}return o}if(typeof v==='string'){if(/^data:[^,]*;base64,/i.test(v))return'[omitted-data-uri]';return v.length>12000?v.slice(0,12000)+'[truncated]':v}return v};const requested=String(input.provider||payload.provider||$env.PUBLISH_PROVIDER||'manual_package').trim().toLowerCase();if(!['manual_package','generic_sync_publish','generic_async_publish'].includes(requested))throw new Error('UNSUPPORTED_PUBLISH_PROVIDER');const project_id=cleanId(input.project_id||payload.project_id,'project_id'),episode_id=cleanId(input.episode_id||payload.episode_id,'episode_id'),master_id=cleanId(input.master_id||payload.master_id,'master_id'),metadata_id=cleanId(input.metadata_id||payload.metadata_id,'metadata_id',false);const platform=String(input.platform||payload.platform||$env.PUBLISH_PLATFORM||'douyin').trim().toLowerCase();if(!platform||platform.length>64||!/^[a-z0-9_-]+$/.test(platform))throw new Error('INVALID_PLATFORM');const action=String(input.action||payload.action||'publish').toLowerCase();if(!['publish','retry','resume','schedule','generate_package','regenerate'].includes(action))throw new Error('INVALID_PUBLISH_ACTION');const test_mode=bool($env.TEST_MODE,false)||bool(input.test_mode??payload.test_mode,false),mock_mode=bool($env.MOCK_MODE,false)||bool(input.mock_mode??payload.mock_mode,false),allow_real=bool($env.ALLOW_REAL_PUBLISH,false);let api_base_url=String($env.PUBLISH_API_BASE_URL||'').trim();if(api_base_url){let u;try{u=new URL(api_base_url)}catch{throw new Error('PUBLISH_API_BASE_URL_INVALID')}if(!['http:','https:'].includes(u.protocol)||u.username||u.password)throw new Error('PUBLISH_API_BASE_URL_INVALID');for(const k of u.searchParams.keys())if(secret.test(k))throw new Error('SECRET_IN_PUBLISH_ENDPOINT');api_base_url=u.toString()}const platform_options=scrub(input.platform_options&&typeof input.platform_options==='object'?input.platform_options:(payload.platform_options||{}));let provider=requested,fallback_reason=null;if(requested!=='manual_package'&&!mock_mode&&(test_mode||!allow_real||!api_base_url)){provider='manual_package';fallback_reason=test_mode?'TEST_MODE_MANUAL_ONLY':!allow_real?'REAL_PUBLISH_DISABLED':'PUBLISH_PERMISSION_MISSING'}const scheduled_at=input.scheduled_at||payload.scheduled_at||null;if(provider!=='manual_package'&&scheduled_at&&platform_options.supports_schedule===false){provider='manual_package';fallback_reason='PUBLISH_SCHEDULE_UNSUPPORTED'}const account_reference=String(input.account_reference||payload.account_reference||$env.PUBLISH_ACCOUNT_REFERENCE||'default').trim().slice(0,256);const metadata_version=clamp(payload.metadata_version||platform_options.metadata_version,1,1,9999);const keyMaterial=[platform,account_reference,master_id,metadata_id||('version_'+metadata_version),scheduled_at||'immediate'].join(':');const idempotency_key=String(input.idempotency_key||payload.idempotency_key||crypto.createHash('sha256').update(keyMaterial).digest('hex')).trim().slice(0,256);if(!idempotency_key)throw new Error('INVALID_IDEMPOTENCY_KEY');const publication_task_id=cleanId(input.publication_task_id||payload.publication_task_id||('pubtask_'+crypto.createHash('sha1').update(idempotency_key).digest('hex').slice(0,20)),'publication_task_id');const trace_id=cleanId(input.trace_id||payload.trace_id||('trace_publish_'+crypto.randomUUID()),'trace_id');const claim_token='publish-claim:'+crypto.randomUUID();const hashtags=(Array.isArray(input.hashtags)?input.hashtags:Array.isArray(payload.hashtags)?payload.hashtags:[]).slice(0,30).map(x=>String(x).trim().slice(0,64)).filter(Boolean);const mediaUrl=v=>{const s=String(v||'').trim();if(/^data:/i.test(s)||s.length>4096)throw new Error('BASE64_MEDIA_NOT_ALLOWED');return s};const adapter={requested_provider:requested,effective_provider:provider,fallback_reason,test_mode,mock_mode,api_base_url,timeout_ms:clamp(payload.timeout_ms||$env.PUBLISH_REQUEST_TIMEOUT_SECONDS,120,5,600)*1000,poll_interval_seconds:clamp(payload.poll_interval_seconds||$env.PUBLISH_POLL_INTERVAL_SECONDS,15,5,3600)};return[{json:{publication_task_id,idempotency_key,trace_id,project_id,episode_id,master_id,metadata_id,platform,provider,requested_provider:requested,account_reference,action,claim_token,max_retries:clamp(payload.max_retries||$env.PUBLISH_MAX_RETRIES,3,0,10),max_poll_count:clamp(payload.max_poll_count||$env.PUBLISH_MAX_POLL_COUNT,60,2,240),scheduled_at,video_url:mediaUrl(input.video_url||payload.video_url),cover_url:mediaUrl(input.cover_url||payload.cover_url),title:String(input.title||payload.title||'').slice(0,300),description:String(input.description||payload.description||'').slice(0,5000),hashtags,visibility:String(input.visibility||payload.visibility||$env.PUBLISH_DEFAULT_VISIBILITY||'private').slice(0,32),content_declaration:scrub(input.content_declaration||payload.content_declaration||{}),platform_options,adapter}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000002",
+      "name": "Validate Sanitize and Apply Publish Safety",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1100, 80],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lock_guard AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtextextended($2::text,0))), master AS MATERIALIZED (SELECT m.* FROM drama.episode_masters m WHERE m.master_id=$6 AND m.project_id=$4 AND m.episode_id=$5 AND m.master_type='final' AND m.status='ready' AND m.is_current=true LIMIT 1), approved_review AS MATERIALIZED (SELECT f.* FROM drama.final_reviews f JOIN master m ON m.master_id=f.master_id WHERE f.review_status='approved' ORDER BY f.reviewed_at DESC NULLS LAST,f.created_at DESC LIMIT 1), approved_metadata AS MATERIALIZED (SELECT p.* FROM drama.publication_metadata p JOIN master m ON m.master_id=p.master_id WHERE p.project_id=$4 AND p.episode_id=$5 AND p.platform=$8 AND p.review_status='approved' AND ($7::text IS NULL OR p.metadata_id=$7) ORDER BY p.version DESC,p.updated_at DESC LIMIT 1), clean_master AS MATERIALIZED (SELECT c.local_path,c.storage_url FROM drama.episode_masters c JOIN master m ON c.project_id=m.project_id AND c.episode_id=m.episode_id WHERE c.master_type='clean' AND c.status='ready' AND c.is_current=true ORDER BY c.generation_version DESC,c.updated_at DESC LIMIT 1), qc AS MATERIALIZED (SELECT q.* FROM drama.qc_reports q JOIN approved_review f ON f.qc_report_id=q.qc_report_id JOIN master m ON m.master_id=q.master_id WHERE q.status='completed' ORDER BY q.version DESC LIMIT 1), cues AS MATERIALIZED (SELECT COALESCE(jsonb_agg(jsonb_build_object('subtitle_cue_id',s.subtitle_cue_id,'sequence_number',s.sequence_number,'text',s.text,'start_ms',s.start_ms,'end_ms',s.end_ms) ORDER BY s.start_ms,s.sequence_number),'[]'::jsonb) AS items FROM drama.subtitle_cues s WHERE s.project_id=$4 AND s.episode_id=$5 AND s.status<>'rejected'), authorized AS MATERIALIZED (SELECT m.*,p.metadata_id,p.title,p.description,p.hashtags,p.cover_asset_id,p.cover_url,p.scheduled_at,p.visibility,p.content_declaration,p.platform_options,p.version AS metadata_version,f.final_review_id,to_jsonb(q.*) AS qc_report,(SELECT local_path FROM clean_master) AS clean_local_path,(SELECT storage_url FROM clean_master) AS clean_storage_url,(SELECT items FROM cues) AS subtitle_cues FROM master m JOIN approved_review f ON true JOIN approved_metadata p ON true JOIN qc q ON true), existing AS MATERIALIZED (SELECT t.* FROM drama.publication_tasks t CROSS JOIN lock_guard WHERE t.idempotency_key=$2 FOR UPDATE OF t), inserted AS MATERIALIZED (INSERT INTO drama.publication_tasks(publication_task_id,idempotency_key,trace_id,project_id,episode_id,master_id,metadata_id,platform,provider,account_reference,provider_task_id,status,progress,request_payload,response_payload,retry_count,max_retries,poll_count,max_poll_count,next_poll_at,scheduled_at,published_at,platform_work_id,published_url,error_code,error_message) SELECT $1,$2,$3,$4,$5,$6,a.metadata_id,$8,$9::text,$10,NULL,'uploading',0,jsonb_build_object('provider',$9::text,'platform',$8,'project_id',$4,'episode_id',$5,'master_id',$6,'metadata_id',a.metadata_id,'video_url',COALESCE(NULLIF(a.storage_url,''),NULLIF(a.local_path,'')),'cover_url',a.cover_url,'title',a.title,'description',a.description,'hashtags',a.hashtags,'scheduled_at',a.scheduled_at,'visibility',a.visibility,'content_declaration',a.content_declaration,'platform_options',a.platform_options,'metadata_version',a.metadata_version,'subtitle_cues',a.subtitle_cues,'qc_report',a.qc_report,'assets',jsonb_build_object('master_local_path',a.local_path,'master_storage_url',a.storage_url,'thumbnail_url',a.thumbnail_url,'subtitle_url',a.subtitle_url,'subtitle_burned',a.subtitle_burned,'clean_local_path',a.clean_local_path,'clean_storage_url',a.clean_storage_url),'_adapter',$15::jsonb),jsonb_build_object('_claim_token',$11::text,'submitted_at',clock_timestamp()),0,$12,0,$13,NULL,a.scheduled_at,NULL,NULL,NULL,NULL,NULL FROM authorized a WHERE NOT EXISTS(SELECT 1 FROM existing) ON CONFLICT DO NOTHING RETURNING *), claimed_retry AS MATERIALIZED (UPDATE drama.publication_tasks t SET trace_id=$3,provider=$9::text,account_reference=$10,provider_task_id=NULL,status='uploading',progress=0,request_payload=jsonb_build_object('provider',$9::text,'platform',$8,'project_id',$4,'episode_id',$5,'master_id',$6,'metadata_id',a.metadata_id,'video_url',COALESCE(NULLIF(a.storage_url,''),NULLIF(a.local_path,'')),'cover_url',a.cover_url,'title',a.title,'description',a.description,'hashtags',a.hashtags,'scheduled_at',a.scheduled_at,'visibility',a.visibility,'content_declaration',a.content_declaration,'platform_options',a.platform_options,'metadata_version',a.metadata_version,'subtitle_cues',a.subtitle_cues,'qc_report',a.qc_report,'assets',jsonb_build_object('master_local_path',a.local_path,'master_storage_url',a.storage_url,'thumbnail_url',a.thumbnail_url,'subtitle_url',a.subtitle_url,'subtitle_burned',a.subtitle_burned,'clean_local_path',a.clean_local_path,'clean_storage_url',a.clean_storage_url),'_adapter',$15::jsonb),response_payload=jsonb_build_object('_claim_token',$11::text,'submitted_at',clock_timestamp(),'previous_status',e.status),retry_count=e.retry_count+1,max_retries=LEAST(GREATEST($12,0),10),poll_count=0,max_poll_count=LEAST(GREATEST($13,2),240),next_poll_at=NULL,published_at=NULL,platform_work_id=NULL,published_url=NULL,error_code=NULL,error_message=NULL FROM existing e CROSS JOIN authorized a WHERE t.id=e.id AND e.status IN('failed','timeout') AND $14 IN('retry','regenerate','resume') AND e.retry_count<LEAST(e.max_retries,$12) RETURNING t.*), decision AS (SELECT 'submit'::text action,to_jsonb(i.*) task FROM inserted i UNION ALL SELECT 'submit',to_jsonb(r.*) FROM claimed_retry r UNION ALL SELECT CASE WHEN e.status IN('published','uploading','processing','waiting_schedule','manual_required') THEN 'reuse' ELSE 'reject' END,to_jsonb(e.*) FROM existing e WHERE NOT EXISTS(SELECT 1 FROM inserted) AND NOT EXISTS(SELECT 1 FROM claimed_retry)), rejection AS (SELECT 'reject'::text action,jsonb_build_object('publication_task_id',$1,'idempotency_key',$2,'trace_id',$3,'project_id',$4,'episode_id',$5,'master_id',$6,'platform',$8,'provider',$9::text,'status','failed','retry_count',0,'max_retries',$12,'error_code',CASE WHEN NOT EXISTS(SELECT 1 FROM master) THEN 'MASTER_NOT_PUBLISHABLE' WHEN NOT EXISTS(SELECT 1 FROM approved_review) OR NOT EXISTS(SELECT 1 FROM qc) THEN 'FINAL_REVIEW_REQUIRED' WHEN NOT EXISTS(SELECT 1 FROM approved_metadata) THEN 'PUBLICATION_METADATA_NOT_APPROVED' ELSE 'DUPLICATE_PUBLICATION' END,'error_message',CASE WHEN NOT EXISTS(SELECT 1 FROM master) THEN 'Only a readable, ready, current final master can be published.' WHEN NOT EXISTS(SELECT 1 FROM approved_review) OR NOT EXISTS(SELECT 1 FROM qc) THEN 'Approved final review and completed QC report are required before publication.' WHEN NOT EXISTS(SELECT 1 FROM approved_metadata) THEN 'Approved publication metadata is required before publication.' ELSE 'The task id or idempotency key is already bound to another publication.' END) task WHERE NOT EXISTS(SELECT 1 FROM decision)) SELECT action,task FROM decision UNION ALL SELECT action,task FROM rejection LIMIT 1",
+        "options": {
+          "queryReplacement": "={{[$json.publication_task_id,$json.idempotency_key,$json.trace_id,$json.project_id,$json.episode_id,$json.master_id,$json.metadata_id,$json.platform,$json.provider,$json.account_reference,$json.claim_token,$json.max_retries,$json.max_poll_count,$json.action,JSON.stringify($json.adapter)]}}"
+        }
+      },
+      "id": "12a00000-0000-4000-8000-000000000003",
+      "name": "Authorize and Atomically Claim Publication",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-860, 80],
+      "credentials": {
+        "postgres": {
+          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "name": "AI Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row=$input.first().json||{};let t=row.task||{};if(typeof t==='string'){try{t=JSON.parse(t)}catch{t={}}}const req=t.request_payload&&typeof t.request_payload==='object'?t.request_payload:{};const rp=t.response_payload&&typeof t.response_payload==='object'?t.response_payload:{};const a=req._adapter&&typeof req._adapter==='object'?req._adapter:{};const secret=/authorization|api[-_]?key|access[-_]?token|secret|password|cookie|signature/i;const endpoint=(base,p)=>{if(!base)return'';const rawBase=String(base),rawPath=String(p||'publish');if(rawPath.includes('://')||rawPath.startsWith('//'))throw new Error('UNSAFE_PUBLISH_PROVIDER_ENDPOINT');const cleanBase=rawBase.endsWith('/')?rawBase:rawBase+'/',cleanPath=rawPath.startsWith('/')?rawPath.slice(1):rawPath;let u,b;try{b=new URL(cleanBase);u=new URL(cleanPath,cleanBase)}catch{throw new Error('PUBLISH_API_BASE_URL_INVALID')}if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.origin!==b.origin)throw new Error('UNSAFE_PUBLISH_PROVIDER_ENDPOINT');for(const k of u.searchParams.keys())if(secret.test(k))throw new Error('SECRET_IN_PUBLISH_ENDPOINT');return u.toString()};const options=req.platform_options&&typeof req.platform_options==='object'?req.platform_options:{},scheduleUnsupported=Boolean(req.scheduled_at)&&options.supports_schedule===false,provider=scheduleUnsupported?'manual_package':t.provider,fallback_reason=scheduleUnsupported?'PUBLISH_SCHEDULE_UNSUPPORTED':a.fallback_reason||null;const submitPath=provider==='generic_async_publish'?(options.async_publish_path||'publish/tasks'):(options.sync_publish_path||'publish'),pollPath=options.poll_path||'publish/tasks',mock_mode=a.mock_mode===true;return[{json:{...t,provider,action:String(row.action||'reject'),request_payload:req,claim_token:String(rp._claim_token||''),mock_mode,test_mode:a.test_mode===true,fallback_reason,mode:provider==='manual_package'?'manual':provider==='generic_sync_publish'?'sync':'async',endpoint:provider==='manual_package'||mock_mode?'':endpoint(a.api_base_url,submitPath),poll_base_url:provider==='generic_async_publish'&&!mock_mode?endpoint(a.api_base_url,pollPath):'',timeout_ms:Number(a.timeout_ms||120000),poll_interval_seconds:Number(a.poll_interval_seconds||15)}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000004",
+      "name": "Hydrate Approved Publish Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-620, 80],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ac0000-0000-4000-8000-000000000001", "leftValue": "={{$json.action}}", "rightValue": "submit", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "submit" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ac0000-0000-4000-8000-000000000002", "leftValue": "={{$json.action}}", "rightValue": "reuse", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "reuse" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ac0000-0000-4000-8000-000000000003", "leftValue": "={{$json.action}}", "rightValue": "reject", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "reject" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "12a00000-0000-4000-8000-000000000005",
+      "name": "Route Publication Claim Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-380, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$input.first().json||{},r=t.response_payload&&typeof t.response_payload==='object'?t.response_payload:{},s=String(t.status||'failed'),ok=['published','uploading','processing','waiting_schedule','manual_required'].includes(s);return[{json:{success:ok,provider:t.provider||null,mode:t.provider==='manual_package'?'manual':t.provider==='generic_sync_publish'?'sync':'async',provider_task_id:t.provider_task_id||r.provider_task_id||null,status:s,platform_work_id:t.platform_work_id||r.platform_work_id||null,published_url:t.published_url||r.published_url||null,package_url:r.package_url||null,error:ok?null:{code:t.error_code||'DUPLICATE_PUBLICATION',message:String(t.error_message||'Publication task is not reusable.').slice(0,1000),retryable:false},project_id:t.project_id||null,episode_id:t.episode_id||null,master_id:t.master_id||null,publication_task_id:t.publication_task_id||null,idempotency_key:t.idempotency_key||null,trace_id:t.trace_id||null,reused:true}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000006",
+      "name": "Return Existing Publication",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-120, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$input.first().json||{},n=Number(t.retry_count||0),m=Number(t.max_retries||0);return[{json:{success:false,provider:t.provider||null,mode:t.provider==='manual_package'?'manual':t.provider==='generic_sync_publish'?'sync':'async',provider_task_id:t.provider_task_id||null,status:String(t.status||'failed'),platform_work_id:t.platform_work_id||null,published_url:t.published_url||null,package_url:null,error:{code:t.error_code||(n>=m?'PUBLISH_RETRY_LIMIT_REACHED':'PUBLICATION_TASK_CLAIM_REJECTED'),message:String(t.error_message||'Publication claim was rejected.').slice(0,1000),retryable:n<m},project_id:t.project_id||null,episode_id:t.episode_id||null,master_id:t.master_id||null,publication_task_id:t.publication_task_id||null,idempotency_key:t.idempotency_key||null,trace_id:t.trace_id||null,reused:false}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000007",
+      "name": "Return Publication Rejection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-120, 500]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ap0000-0000-4000-8000-000000000001", "leftValue": "={{$json.provider}}", "rightValue": "manual_package", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "manual_package" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ap0000-0000-4000-8000-000000000002", "leftValue": "={{$json.provider}}", "rightValue": "generic_sync_publish", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "generic_sync_publish" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12ap0000-0000-4000-8000-000000000003", "leftValue": "={{$json.provider}}", "rightValue": "generic_async_publish", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "generic_async_publish" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "12a00000-0000-4000-8000-000000000008",
+      "name": "Switch Publish Provider",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-120, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),path=require('path'),crypto=require('crypto'),ctx=$input.first().json||{},r=ctx.request_payload||{},assets=r.assets||{},root=path.resolve($env.MEDIA_STORAGE_PATH||'/data/storage'),publicRaw=String($env.MEDIA_PUBLIC_BASE_URL||''),publicBase=publicRaw.endsWith('/')?publicRaw.slice(0,-1):publicRaw;const inside=p=>{const x=path.resolve(p),rel=path.relative(root,x);if(rel.startsWith('..')||path.isAbsolute(rel))throw new Error('MEDIA_PATH_NOT_ALLOWED');return x};const local=v=>{if(!v)return null;let s=String(v).trim(),low=s.toLowerCase();if(low.startsWith('file://')){try{s=decodeURIComponent(new URL(s).pathname)}catch{return null}}else if(low.startsWith('http://')||low.startsWith('https://')){if(!publicBase||!s.startsWith(publicBase+'/'))return null;s=s.slice(publicBase.length+1)}if(!path.isAbsolute(s))while(s.charCodeAt(0)===47||s.charCodeAt(0)===92)s=s.slice(1);const p=inside(path.isAbsolute(s)?s:path.join(root,s));return fs.existsSync(p)&&fs.statSync(p).isFile()?p:null};const first=xs=>{for(const x of xs){const p=local(x);if(p)return p}return null};const finalSrc=first([assets.master_local_path,r.video_url,assets.master_storage_url]);if(!finalSrc||fs.statSync(finalSrc).size<16)throw new Error('MEDIA_FILE_NOT_FOUND: approved final master is not readable inside storage');const coverSrc=first([r.cover_url,assets.thumbnail_url]);if(!coverSrc)throw new Error('MEDIA_FILE_NOT_FOUND: approved cover is not readable inside storage');const coverHead=fs.readFileSync(coverSrc).subarray(0,3);if(coverHead.length<3||coverHead[0]!==255||coverHead[1]!==216||coverHead[2]!==255)throw new Error('OUTPUT_FILE_INVALID: manual package cover must be JPEG');const out=inside(path.join(root,'results',ctx.project_id,ctx.episode_id,'publication',ctx.publication_task_id));fs.mkdirSync(out,{recursive:true});fs.copyFileSync(finalSrc,path.join(out,'final.mp4'));const cleanSrc=first([assets.clean_local_path,assets.clean_storage_url]);if(cleanSrc)fs.copyFileSync(cleanSrc,path.join(out,'clean.mp4'));fs.copyFileSync(coverSrc,path.join(out,'cover.jpg'));const fmt=ms=>{const n=Math.max(0,Number(ms)||0),h=Math.floor(n/3600000),m=Math.floor(n%3600000/60000),s=Math.floor(n%60000/1000),z=Math.floor(n%1000);return[String(h).padStart(2,'0'),String(m).padStart(2,'0'),String(s).padStart(2,'0')].join(':')+','+String(z).padStart(3,'0')};const cues=(Array.isArray(r.subtitle_cues)?r.subtitle_cues:[]).filter(x=>Number(x.end_ms)>Number(x.start_ms)).sort((a,b)=>Number(a.start_ms)-Number(b.start_ms));const subtitleSrc=local(assets.subtitle_url);if(subtitleSrc&&path.extname(subtitleSrc).toLowerCase()==='.srt')fs.copyFileSync(subtitleSrc,path.join(out,'subtitles.srt'));else fs.writeFileSync(path.join(out,'subtitles.srt'),cues.map((x,i)=>(i+1)+'\\n'+fmt(x.start_ms)+' --> '+fmt(x.end_ms)+'\\n'+String(x.text||'').replace(/[\\r\\n]+/g,' ')+'\\n').join('\\n'),'utf8');if(subtitleSrc&&path.extname(subtitleSrc).toLowerCase()==='.ass')fs.copyFileSync(subtitleSrc,path.join(out,'subtitles.ass'));const sensitive=/authorization|api[-_]?key|access[-_]?token|secret|password|cookie|signature/i;const scrub=(v,d=0)=>{if(d>8)return'[depth-limited]';if(Array.isArray(v))return v.map(x=>scrub(x,d+1));if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).filter(([k])=>!sensitive.test(k)&&k!=='_adapter'&&k!=='assets'&&k!=='subtitle_cues'&&k!=='qc_report').map(([k,x])=>[k,scrub(x,d+1)]));return typeof v==='string'&&v.length>12000?v.slice(0,12000)+'[truncated]':v};const metadata=scrub(r);fs.writeFileSync(path.join(out,'metadata.json'),JSON.stringify(metadata,null,2),'utf8');fs.writeFileSync(path.join(out,'qc-report.json'),JSON.stringify(r.qc_report||{},null,2),'utf8');const reason=ctx.fallback_reason?'Automatic publishing was not used: '+ctx.fallback_reason+'.\\n':'';fs.writeFileSync(path.join(out,'upload-instructions.txt'),reason+'1. Verify final.mp4, cover.jpg, subtitles.srt, metadata.json and qc-report.json.\\n2. Sign in to the official '+ctx.platform+' creator console.\\n3. Upload the approved final master and cover, then copy only the reviewed metadata.\\n4. Confirm AI/adapted-content declarations before publishing.\\n5. Record the resulting work ID and URL in the publication task.\\n','utf8');const files=fs.readdirSync(out).sort().map(name=>{const p=path.join(out,name),st=fs.statSync(p);return{name,size_bytes:st.size,sha256:crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}});fs.writeFileSync(path.join(out,'package-manifest.json'),JSON.stringify({publication_task_id:ctx.publication_task_id,idempotency_key:ctx.idempotency_key,created_at:new Date().toISOString(),files},null,2),'utf8');const rel=path.relative(root,out).split(path.sep).join('/'),package_url=publicBase?publicBase+'/'+rel+'/':'file://'+out.split(path.sep).join('/')+'/';return[{json:{statusCode:200,body:{success:true,provider:'manual_package',mode:'manual',provider_task_id:null,status:'manual_required',platform_work_id:null,published_url:null,package_url,mock:false,error:null,manifest:{file_count:files.length+1,relative_path:rel}}}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000009",
+      "name": "Generate Idempotent Manual Package",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [140, -140],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "id": "12ai0000-0000-4000-8000-000000000001", "leftValue": "={{$json.mock_mode}}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        }
+      },
+      "id": "12a00000-0000-4000-8000-000000000010",
+      "name": "Use Mock Sync Publish",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [140, 20]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),c=$input.first().json,r=c.request_payload||{},sim=String(r.platform_options?.simulate||'');if(sim==='publish_429')return[{json:{statusCode:429,body:{error:{code:'rate_limited',message:'mock rate limit'}}}}];if(sim==='publish_timeout')return[{json:{error:{message:'mock publish timeout'}}}];if(sim==='publish_auth')return[{json:{statusCode:401,body:{error:{code:'unauthorized',message:'mock authorization failure'}}}}];const work='mockwork_'+crypto.createHash('sha1').update(c.idempotency_key).digest('hex').slice(0,20);return[{json:{statusCode:200,body:{success:true,mock:true,status:'published',platform_work_id:work,published_url:'https://mock.invalid/'+encodeURIComponent(c.platform)+'/'+work,progress:100}}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000011",
+      "name": "Submit Mock Sync Publication",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, -20],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.endpoint}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }, { "name": "Idempotency-Key", "value": "={{$json.idempotency_key}}" }, { "name": "X-Trace-Id", "value": "={{$json.trace_id}}" }] },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify({platform:$json.platform,video_url:$json.request_payload.video_url,cover_url:$json.request_payload.cover_url,title:$json.request_payload.title,description:$json.request_payload.description,hashtags:$json.request_payload.hashtags,scheduled_at:$json.request_payload.scheduled_at,visibility:$json.request_payload.visibility,content_declaration:$json.request_payload.content_declaration,platform_options:$json.request_payload.platform_options})}}",
+        "options": { "response": { "response": { "fullResponse": true, "neverError": true, "responseFormat": "json" } }, "timeout": "={{$json.timeout_ms}}" }
+      },
+      "id": "12a00000-0000-4000-8000-000000000012",
+      "name": "Call Generic Sync Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 100],
+      "credentials": { "httpHeaderAuth": { "id": "__PUBLISH_PROVIDER_HTTP_HEADER_AUTH_ID__", "name": "Publish Provider HTTP Header Auth" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "id": "12ai0000-0000-4000-8000-000000000002", "leftValue": "={{$json.mock_mode}}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        }
+      },
+      "id": "12a00000-0000-4000-8000-000000000013",
+      "name": "Use Mock Async Publish",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [140, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),c=$input.first().json,r=c.request_payload||{},sim=String(r.platform_options?.simulate||'');if(sim==='publish_429')return[{json:{statusCode:429,body:{error:{code:'rate_limited',message:'mock rate limit'}}}}];if(sim==='publish_auth')return[{json:{statusCode:401,body:{error:{code:'unauthorized',message:'mock authorization failure'}}}}];const task='mockpub_'+crypto.createHash('sha1').update(c.idempotency_key).digest('hex').slice(0,20);return[{json:{statusCode:202,body:{success:true,mock:true,status:'processing',provider_task_id:task,progress:5,mock_complete_after_polls:Math.max(2,Number(r.platform_options?.mock_complete_after_polls||2)),simulate:sim||null}}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000014",
+      "name": "Submit Mock Async Publication",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 180],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.endpoint}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }, { "name": "Idempotency-Key", "value": "={{$json.idempotency_key}}" }, { "name": "X-Trace-Id", "value": "={{$json.trace_id}}" }] },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify({platform:$json.platform,video_url:$json.request_payload.video_url,cover_url:$json.request_payload.cover_url,title:$json.request_payload.title,description:$json.request_payload.description,hashtags:$json.request_payload.hashtags,scheduled_at:$json.request_payload.scheduled_at,visibility:$json.request_payload.visibility,content_declaration:$json.request_payload.content_declaration,platform_options:$json.request_payload.platform_options})}}",
+        "options": { "response": { "response": { "fullResponse": true, "neverError": true, "responseFormat": "json" } }, "timeout": "={{$json.timeout_ms}}" }
+      },
+      "id": "12a00000-0000-4000-8000-000000000015",
+      "name": "Call Generic Async Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "credentials": { "httpHeaderAuth": { "id": "__PUBLISH_PROVIDER_HTTP_HEADER_AUTH_ID__", "name": "Publish Provider HTTP Header Auth" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c=$('Hydrate Approved Publish Dispatch').item.json,raw=$input.first().json||{};let body=raw.body!==undefined?raw.body:raw;if(typeof body==='string'){try{body=JSON.parse(body)}catch{body={message:body.slice(0,4000)}}}const sensitive=/authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie|signature/i;const scrub=(v,d=0)=>{if(d>8)return'[depth-limited]';if(Array.isArray(v))return v.slice(0,100).map(x=>scrub(x,d+1));if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).filter(([k])=>!sensitive.test(k)).map(([k,x])=>[k,scrub(x,d+1)]));if(typeof v==='string'){if(/^data:/i.test(v))return'[omitted-data-uri]';return v.length>12000?v.slice(0,12000)+'[truncated]':v}return v};body=scrub(body&&typeof body==='object'?body:{});const sc=Number(raw.statusCode||raw.status||200),transport=raw.error?String(raw.error.message||raw.error).slice(0,1000):'';let status='failed',code=null,message=null,retryable=false,provider_task_id=String(body.provider_task_id||body.task_id||body.id||'').slice(0,256)||null,platform_work_id=String(body.platform_work_id||body.work_id||body.video_id||'').slice(0,256)||null,published_url=String(body.published_url||body.share_url||body.url||'').slice(0,4096)||null,package_url=String(body.package_url||'').slice(0,4096)||null,progress=Number(body.progress||0);const st=String(body.status||'').toLowerCase();if(transport||sc<200||sc>=300){code=sc===401||sc===403?'PUBLISH_AUTH_FAILED':sc===429?'PUBLISH_RATE_LIMITED':sc===408||sc===504||/timeout/i.test(transport)?'PUBLISH_TIMEOUT':'PUBLISH_UPLOAD_FAILED';message=transport||String(body.error?.message||body.message||body.error||'Publish provider request failed.').slice(0,1000);retryable=sc===429||sc===408||sc===504||sc>=500||/timeout|network|socket/i.test(transport)}else if(c.provider==='manual_package'){if(package_url)status='manual_required';else{code='STORAGE_WRITE_FAILED';message='Manual package was not created.'}}else if(c.provider==='generic_sync_publish'){if(['published','completed','success','succeeded'].includes(st)&&platform_work_id&&published_url){status='published';progress=100}else{code='PUBLISH_PROCESSING_FAILED';message='Synchronous provider did not return a verified work id and published URL.'}}else if(['published','completed','success','succeeded'].includes(st)){if(platform_work_id&&published_url){status='published';progress=100}else{code='PUBLISH_PROCESSING_FAILED';message='Completed async publication is missing work id or URL.'}}else if(provider_task_id){status='processing';progress=Math.min(99,Math.max(0,progress||5))}else{code='PUBLISH_UPLOAD_FAILED';message='Async provider did not return a task id.'}let poll_url=null;if(status==='processing'&&!c.mock_mode){const supplied=String(body.status_url||body.poll_url||''),base=String(c.poll_base_url||''),normalizedBase=base.endsWith('/')?base:base+'/';try{const u=supplied?new URL(supplied):new URL(encodeURIComponent(provider_task_id),normalizedBase);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)throw new Error();for(const k of u.searchParams.keys())if(sensitive.test(k))throw new Error();poll_url=u.toString()}catch{status='failed';code='PUBLISH_UPLOAD_FAILED';message='Provider poll URL is missing or unsafe.'}}const error=status==='failed'?{code:code||'PUBLISH_UPLOAD_FAILED',message:String(message||'Publication failed.').replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]').slice(0,1000),retryable}:null;return[{json:{publication_task_id:c.publication_task_id,idempotency_key:c.idempotency_key,trace_id:c.trace_id,project_id:c.project_id,episode_id:c.episode_id,master_id:c.master_id,provider:c.provider,mode:c.mode,claim_token:c.claim_token,provider_task_id,status,progress,poll_interval_seconds:c.poll_interval_seconds,platform_work_id,published_url,package_url,error,response_payload:{success:status!=='failed',provider:c.provider,mode:c.mode,provider_task_id,status,progress,platform_work_id,published_url,package_url,mock_mode:c.mock_mode,mock_complete_after_polls:Math.max(2,Number(body.mock_complete_after_polls||2)),simulate:body.simulate||null,poll_url,submitted_at:new Date().toISOString(),provider_response:body,error}}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000016",
+      "name": "Normalize and Redact Publish Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 80],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (UPDATE drama.publication_tasks SET provider=$12::text,provider_task_id=NULLIF($2::text,''),status=$3,progress=$4,response_payload=$5::jsonb,next_poll_at=CASE WHEN $3='processing' THEN clock_timestamp()+($6::int*interval '1 second') ELSE NULL END,published_at=CASE WHEN $3='published' THEN clock_timestamp() ELSE published_at END,platform_work_id=NULLIF($7::text,''),published_url=NULLIF($8::text,''),error_code=NULLIF($9::text,''),error_message=NULLIF($10::text,'') WHERE publication_task_id=$1 AND status='uploading' AND COALESCE(response_payload->>'_claim_token','')=$11 RETURNING *) SELECT EXISTS(SELECT 1 FROM updated) persisted,COALESCE((SELECT to_jsonb(u.*) FROM updated u LIMIT 1),jsonb_build_object('publication_task_id',$1,'status','failed','provider',$12::text,'error_code','PUBLICATION_CLAIM_TOKEN_MISMATCH','error_message','Publication ownership changed before provider state was saved.','response_payload',$5::jsonb)) task",
+        "options": {
+          "queryReplacement": "={{[$json.publication_task_id,$json.provider_task_id||'',$json.status,$json.progress,JSON.stringify($json.response_payload),$json.poll_interval_seconds,$json.platform_work_id||'',$json.published_url||'',$json.error?.code||'',$json.error?.message||'',$json.claim_token,$json.provider]}}"
+        }
+      },
+      "id": "12a00000-0000-4000-8000-000000000017",
+      "name": "Persist Sanitized Publication State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [900, 80],
+      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row=$input.first().json||{};let t=row.task||{};if(typeof t==='string'){try{t=JSON.parse(t)}catch{t={}}}const r=t.response_payload&&typeof t.response_payload==='object'?t.response_payload:{},status=String(t.status||'failed'),ok=(row.persisted===true||row.persisted==='true')&&['published','processing','manual_required'].includes(status);return[{json:{success:ok,provider:t.provider||r.provider||null,mode:r.mode||(t.provider==='manual_package'?'manual':t.provider==='generic_sync_publish'?'sync':'async'),provider_task_id:t.provider_task_id||r.provider_task_id||null,status,platform_work_id:t.platform_work_id||r.platform_work_id||null,published_url:t.published_url||r.published_url||null,package_url:r.package_url||null,error:ok?null:(r.error||{code:t.error_code||'PUBLISH_UPLOAD_FAILED',message:String(t.error_message||'Publication state could not be persisted.').slice(0,1000),retryable:Number(t.retry_count||0)<Number(t.max_retries||0)}),project_id:t.project_id||null,episode_id:t.episode_id||null,master_id:t.master_id||null,publication_task_id:t.publication_task_id||null,idempotency_key:t.idempotency_key||null,trace_id:t.trace_id||null,reused:false}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000018",
+      "name": "Return Unified Publish Adapter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "let c={};for(const n of ['Hydrate Approved Publish Dispatch','Validate Sanitize and Apply Publish Safety']){try{c=$(n).item.json||{};if(c.publication_task_id)break}catch{}}const raw=String($json.error?.message||$json.message||c.pre_error||'Publication adapter failed');const message=raw.replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature|api_key)=)[^&\\s]+/gi,'$1[REDACTED]').replace(/(authorization|access_token|refresh_token|password|secret)\\s*[:=]\\s*[^,;\\s]+/gi,'$1=[REDACTED]').slice(0,1000);const code=/FINAL_REVIEW/i.test(message)?'FINAL_REVIEW_REQUIRED':/METADATA/i.test(message)?'PUBLICATION_METADATA_NOT_APPROVED':/401|403|auth/i.test(message)?'PUBLISH_AUTH_FAILED':/429|rate/i.test(message)?'PUBLISH_RATE_LIMITED':/timeout/i.test(message)?'PUBLISH_TIMEOUT':/path|storage|file|cover/i.test(message)?'STORAGE_WRITE_FAILED':/database|postgres|relation|column/i.test(message)?'DATABASE_WRITE_FAILED':'PUBLISH_UPLOAD_FAILED';const retryable=/429|timeout|network|socket|5\\d\\d|database/i.test(message);const fallback={publication_task_id:c.publication_task_id||null,idempotency_key:c.idempotency_key||null,trace_id:c.trace_id||null,project_id:c.project_id||null,episode_id:c.episode_id||null,master_id:c.master_id||null,provider:c.provider||null,status:'failed',response_payload:{provider:c.provider||null,mode:c.mode||null,status:'failed',error:{code,message,retryable}},error_code:code,error_message:message};return[{json:{...fallback,claim_token:c.claim_token||'',error:{code,message,retryable},fallback_task:fallback}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000019",
+      "name": "Normalize Redacted Adapter Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 500]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (UPDATE drama.publication_tasks SET status='failed',next_poll_at=NULL,error_code=$2,error_message=$3,response_payload=COALESCE(response_payload,'{}'::jsonb)-'_claim_token'||$4::jsonb WHERE publication_task_id=$1 AND status='uploading' AND ($5='' OR COALESCE(response_payload->>'_claim_token','')=$5) RETURNING *) SELECT EXISTS(SELECT 1 FROM updated) persisted,COALESCE((SELECT to_jsonb(u.*) FROM updated u LIMIT 1),$6::jsonb) task",
+        "options": { "queryReplacement": "={{[$json.publication_task_id,$json.error.code,$json.error.message,JSON.stringify($json.response_payload),$json.claim_token,JSON.stringify($json.fallback_task)]}}" }
+      },
+      "id": "12a00000-0000-4000-8000-000000000020",
+      "name": "Persist Redacted Adapter Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [900, 500],
+      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "let t=$json.task||$json.fallback_task||$json;if(typeof t==='string'){try{t=JSON.parse(t)}catch{t={}}}const r=t.response_payload&&typeof t.response_payload==='object'?t.response_payload:{},e=r.error||$json.error||{code:t.error_code||'PUBLISH_UPLOAD_FAILED',message:String(t.error_message||'Publication adapter failed.').slice(0,1000),retryable:false};return[{json:{success:false,provider:t.provider||r.provider||null,mode:r.mode||null,provider_task_id:t.provider_task_id||null,status:'failed',platform_work_id:null,published_url:null,package_url:null,error:e,project_id:t.project_id||null,episode_id:t.episode_id||null,master_id:t.master_id||null,publication_task_id:t.publication_task_id||null,idempotency_key:t.idempotency_key||null,trace_id:t.trace_id||null,reused:false}}]"
+      },
+      "id": "12a00000-0000-4000-8000-000000000021",
+      "name": "Return Redacted Publish Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 500]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": { "main": [[{ "node": "Validate Sanitize and Apply Publish Safety", "type": "main", "index": 0 }]] },
+    "Validate Sanitize and Apply Publish Safety": { "main": [[{ "node": "Authorize and Atomically Claim Publication", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Authorize and Atomically Claim Publication": { "main": [[{ "node": "Hydrate Approved Publish Dispatch", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Hydrate Approved Publish Dispatch": { "main": [[{ "node": "Route Publication Claim Action", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Route Publication Claim Action": { "main": [[{ "node": "Switch Publish Provider", "type": "main", "index": 0 }],[{ "node": "Return Existing Publication", "type": "main", "index": 0 }],[{ "node": "Return Publication Rejection", "type": "main", "index": 0 }]] },
+    "Switch Publish Provider": { "main": [[{ "node": "Generate Idempotent Manual Package", "type": "main", "index": 0 }],[{ "node": "Use Mock Sync Publish", "type": "main", "index": 0 }],[{ "node": "Use Mock Async Publish", "type": "main", "index": 0 }]] },
+    "Generate Idempotent Manual Package": { "main": [[{ "node": "Normalize and Redact Publish Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Use Mock Sync Publish": { "main": [[{ "node": "Submit Mock Sync Publication", "type": "main", "index": 0 }],[{ "node": "Call Generic Sync Publish", "type": "main", "index": 0 }]] },
+    "Submit Mock Sync Publication": { "main": [[{ "node": "Normalize and Redact Publish Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Call Generic Sync Publish": { "main": [[{ "node": "Normalize and Redact Publish Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Use Mock Async Publish": { "main": [[{ "node": "Submit Mock Async Publication", "type": "main", "index": 0 }],[{ "node": "Call Generic Async Publish", "type": "main", "index": 0 }]] },
+    "Submit Mock Async Publication": { "main": [[{ "node": "Normalize and Redact Publish Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Call Generic Async Publish": { "main": [[{ "node": "Normalize and Redact Publish Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Normalize and Redact Publish Response": { "main": [[{ "node": "Persist Sanitized Publication State", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Persist Sanitized Publication State": { "main": [[{ "node": "Return Unified Publish Adapter Result", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Normalize Redacted Adapter Failure": { "main": [[{ "node": "Persist Redacted Adapter Failure", "type": "main", "index": 0 }]] },
+    "Persist Redacted Adapter Failure": { "main": [[{ "node": "Return Redacted Publish Failure", "type": "main", "index": 0 }],[{ "node": "Return Redacted Publish Failure", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "versionId": "12a00000-0000-4000-8000-000000000099",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

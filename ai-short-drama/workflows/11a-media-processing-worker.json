@@ -1,0 +1,255 @@
+{
+  "name": "11a 媒体处理执行器",
+  "id": "wf_media_processing_worker",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "11a-schedule",
+      "name": "Schedule Media Worker Nudge",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1180, -260]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "render_job_id" },
+            { "name": "project_id" },
+            { "name": "episode_id" },
+            { "name": "action" },
+            { "name": "trace_id" },
+            { "name": "batch_size", "type": "number" },
+            { "name": "master_id" },
+            { "name": "local_path" },
+            { "name": "payload", "type": "object" }
+          ]
+        }
+      },
+      "id": "11a-subworkflow",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1180, -60]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/media-worker",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "11a-webhook",
+      "name": "Media Worker Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-1180, 140],
+      "webhookId": "ai-short-drama-media-worker"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.body&&typeof $json.body==='object'?$json.body:$json,p=b.payload&&typeof b.payload==='object'?b.payload:{};const raw=String(b.action||p.action||'run').toLowerCase(),route=['run','render','resume','retry'].includes(raw)?'claim':['status','poll'].includes(raw)?'status':raw==='cancel'?'cancel':raw==='health'?'health':['qc','technical_qc'].includes(raw)?'qc':null;if(!route)throw new Error('TIMELINE_VALIDATION_FAILED: unsupported media worker action');const id=b.render_job_id||p.render_job_id||null,master=b.master_id||p.master_id||null,local=b.local_path||p.local_path||null,safe=/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;if(['status','cancel'].includes(route)&&(!id||!safe.test(String(id))))throw new Error('TIMELINE_VALIDATION_FAILED: valid render_job_id required');if(id&&!safe.test(String(id)))throw new Error('TIMELINE_VALIDATION_FAILED: invalid render_job_id');if(master&&!safe.test(String(master)))throw new Error('TIMELINE_VALIDATION_FAILED: invalid master_id');if(local&&(!String(local).length||String(local).length>4096||/[\\0\\r\\n]/.test(String(local))))throw new Error('MEDIA_PATH_NOT_ALLOWED: invalid local_path');const batch=Math.max(1,Math.min(Number(b.batch_size||p.batch_size||$env.MEDIA_WORKER_BATCH_SIZE||1),32));return [{json:{route,action:raw,render_job_id:id?String(id):null,project_id:b.project_id||p.project_id||null,episode_id:b.episode_id||p.episode_id||null,master_id:master?String(master):null,local_path:local?String(local):null,batch_size:batch,trace_id:String(b.trace_id||p.trace_id||'trace_media_'+Date.now())}}];"
+      },
+      "id": "11a-normalize",
+      "name": "Normalize Media Worker Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-940, -60],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+                "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "claim", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "claim"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+                "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "status", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+                "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "cancel", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "cancel"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+                "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "health", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "health"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+                "conditions": [{ "leftValue": "={{$json.route}}", "rightValue": "qc", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "qc"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11a-route",
+      "name": "Route Media Worker Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-700, -60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090')+'/jobs/claim-or-run'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}" }, { "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {render_job_id:$json.render_job_id,batch_size:$json.batch_size,action:$json.action,trace_id:$json.trace_id} }}",
+        "options": { "timeout": "={{Number($env.MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS||10)*1000}}", "response": { "response": { "neverError": true, "responseFormat": "json" } } }
+      },
+      "id": "11a-claim",
+      "name": "Nonblocking Claim or Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, -300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090')+'/jobs/'+$json.render_job_id}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}" }] },
+        "options": { "timeout": "={{Number($env.MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS||10)*1000}}", "response": { "response": { "neverError": true, "responseFormat": "json" } } }
+      },
+      "id": "11a-status",
+      "name": "Query Render Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, -150],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090')+'/jobs/'+$json.render_job_id+'/cancel'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}" }, { "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {trace_id:$json.trace_id} }}",
+        "options": { "timeout": "={{Number($env.MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS||10)*1000}}", "response": { "response": { "neverError": true, "responseFormat": "json" } } }
+      },
+      "id": "11a-cancel",
+      "name": "Cancel Render Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, 0],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090')+'/health'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}" }] },
+        "options": { "timeout": "={{Number($env.MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS||10)*1000}}", "response": { "response": { "neverError": true, "responseFormat": "json" } } }
+      },
+      "id": "11a-health",
+      "name": "Check Media Worker Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, 150],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090')+'/qc/technical'}}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}" }, { "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {master_id:$json.master_id,local_path:$json.local_path,trace_id:$json.trace_id} }}",
+        "options": { "timeout": "={{(Number($env.MEDIA_QC_TIMEOUT_MINUTES||10)*60+10)*1000}}", "response": { "response": { "neverError": true, "responseFormat": "json" } } }
+      },
+      "id": "11a-qc",
+      "name": "Run Fixed Technical QC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "let req={};try{req=$('Normalize Media Worker Request').item.json||{};}catch{}const r=$json.body&&typeof $json.body==='object'?$json.body:$json,transport=Boolean($json.error||$json.message&&$json.name);const err=(r.error||transport)?{code:String(r.error?.code||'MEDIA_WORKER_UNAVAILABLE'),message:String(r.error?.message||$json.message||'media worker request failed').replace(/(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,;]+/ig,'$1[REDACTED]').slice(0,1000),retryable:Boolean(r.error?.retryable??true)}:null;return [{json:{success:Boolean(r.success)&&!err,stage:req.route==='qc'?'quality_control':'media_processing',action:req.action||null,render_job_id:req.render_job_id||null,master_id:req.master_id||null,trace_id:req.trace_id||null,status:r.status||r.job?.status||(err?'failed':'accepted'),accepted:Boolean(r.accepted),worker_id:r.worker_id||null,result:err?null:r,error:err}}];"
+      },
+      "id": "11a-response",
+      "name": "Normalize Sanitized Worker Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-80, -60]
+    }
+  ],
+  "connections": {
+    "Schedule Media Worker Nudge": { "main": [[{ "node": "Normalize Media Worker Request", "type": "main", "index": 0 }]] },
+    "Sub-workflow Trigger": { "main": [[{ "node": "Normalize Media Worker Request", "type": "main", "index": 0 }]] },
+    "Media Worker Webhook": { "main": [[{ "node": "Normalize Media Worker Request", "type": "main", "index": 0 }]] },
+    "Normalize Media Worker Request": { "main": [[{ "node": "Route Media Worker Action", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] },
+    "Route Media Worker Action": {
+      "main": [
+        [{ "node": "Nonblocking Claim or Run", "type": "main", "index": 0 }],
+        [{ "node": "Query Render Job Status", "type": "main", "index": 0 }],
+        [{ "node": "Cancel Render Job", "type": "main", "index": 0 }],
+        [{ "node": "Check Media Worker Health", "type": "main", "index": 0 }],
+        [{ "node": "Run Fixed Technical QC", "type": "main", "index": 0 }]
+      ]
+    },
+    "Nonblocking Claim or Run": { "main": [[{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] },
+    "Query Render Job Status": { "main": [[{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] },
+    "Cancel Render Job": { "main": [[{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] },
+    "Check Media Worker Health": { "main": [[{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] },
+    "Run Fixed Technical QC": { "main": [[{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }], [{ "node": "Normalize Sanitized Worker Response", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "versionId": "4e89ae54-cb8c-46ab-b272-11a000000001",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

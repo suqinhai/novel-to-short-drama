@@ -16,6 +16,7 @@ services:
       - ./database/02-script-storyboard.sql:/opt/drama/02-script-storyboard.sql:ro
       - ./database/03-visual-assets-images.sql:/opt/drama/03-visual-assets-images.sql:ro
       - ./database/04-video-audio.sql:/opt/drama/04-video-audio.sql:ro
+      - ./database/05-edit-qc-publish.sql:/opt/drama/05-edit-qc-publish.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -189,6 +190,67 @@ services:
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       MOCK_MODE: ${MOCK_MODE:-true}
+      MEDIA_WORKER_ENABLED: ${MEDIA_WORKER_ENABLED:-true}
+      MEDIA_WORKER_URL: ${MEDIA_WORKER_URL:-http://media-worker:8090}
+      MEDIA_WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:-}
+      MEDIA_WORKER_POLL_INTERVAL_SECONDS: ${MEDIA_WORKER_POLL_INTERVAL_SECONDS:-5}
+      MEDIA_WORKER_BATCH_SIZE: ${MEDIA_WORKER_BATCH_SIZE:-1}
+      MEDIA_WORKER_HEARTBEAT_SECONDS: ${MEDIA_WORKER_HEARTBEAT_SECONDS:-10}
+      MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS: ${MEDIA_WORKER_REQUEST_TIMEOUT_SECONDS:-10}
+      MEDIA_QC_TIMEOUT_MINUTES: ${MEDIA_QC_TIMEOUT_MINUTES:-10}
+      MEDIA_RENDER_TIMEOUT_MINUTES: ${MEDIA_RENDER_TIMEOUT_MINUTES:-30}
+      MEDIA_MAX_RETRIES: ${MEDIA_MAX_RETRIES:-2}
+      MEDIA_MAX_THREADS: ${MEDIA_MAX_THREADS:-2}
+      OUTPUT_WIDTH: ${OUTPUT_WIDTH:-1080}
+      OUTPUT_HEIGHT: ${OUTPUT_HEIGHT:-1920}
+      OUTPUT_ASPECT_RATIO: ${OUTPUT_ASPECT_RATIO:-9:16}
+      OUTPUT_FPS: ${OUTPUT_FPS:-24}
+      OUTPUT_VIDEO_CODEC: ${OUTPUT_VIDEO_CODEC:-libx264}
+      OUTPUT_AUDIO_CODEC: ${OUTPUT_AUDIO_CODEC:-aac}
+      OUTPUT_AUDIO_BITRATE: ${OUTPUT_AUDIO_BITRATE:-192k}
+      OUTPUT_SAMPLE_RATE: ${OUTPUT_SAMPLE_RATE:-48000}
+      OUTPUT_PIXEL_FORMAT: ${OUTPUT_PIXEL_FORMAT:-yuv420p}
+      OUTPUT_CRF: ${OUTPUT_CRF:-20}
+      OUTPUT_PRESET: ${OUTPUT_PRESET:-medium}
+      OUTPUT_FASTSTART: ${OUTPUT_FASTSTART:-true}
+      MIN_VIDEO_SPEED: ${MIN_VIDEO_SPEED:-0.90}
+      MAX_VIDEO_SPEED: ${MAX_VIDEO_SPEED:-1.10}
+      TARGET_LOUDNESS_LUFS: ${TARGET_LOUDNESS_LUFS:--16}
+      TARGET_TRUE_PEAK_DB: ${TARGET_TRUE_PEAK_DB:--1}
+      BGM_DUCKING_ENABLED: ${BGM_DUCKING_ENABLED:-true}
+      BGM_DUCKING_DB: ${BGM_DUCKING_DB:--12}
+      DEFAULT_TRANSITION: ${DEFAULT_TRANSITION:-cut}
+      DEFAULT_TRANSITION_DURATION_MS: ${DEFAULT_TRANSITION_DURATION_MS:-200}
+      ENABLE_INTRO: ${ENABLE_INTRO:-false}
+      ENABLE_OUTRO: ${ENABLE_OUTRO:-false}
+      BURN_SUBTITLES: ${BURN_SUBTITLES:-true}
+      GENERATE_CLEAN_MASTER: ${GENERATE_CLEAN_MASTER:-true}
+      GENERATE_PREVIEW_MASTER: ${GENERATE_PREVIEW_MASTER:-true}
+      QC_TECHNICAL_ENABLED: ${QC_TECHNICAL_ENABLED:-true}
+      QC_SUBTITLE_ENABLED: ${QC_SUBTITLE_ENABLED:-true}
+      QC_CONTENT_ENABLED: ${QC_CONTENT_ENABLED:-true}
+      QC_COMPLIANCE_ENABLED: ${QC_COMPLIANCE_ENABLED:-true}
+      QC_VISION_MODEL: ${QC_VISION_MODEL:-}
+      QC_TEXT_MODEL: ${QC_TEXT_MODEL:-glm-5.2}
+      QC_FRAME_SAMPLE_PER_SHOT: ${QC_FRAME_SAMPLE_PER_SHOT:-3}
+      QC_BLOCKING_SCORE: ${QC_BLOCKING_SCORE:-60}
+      QC_WARNING_SCORE: ${QC_WARNING_SCORE:-80}
+      QC_MAX_BLACK_SECONDS: ${QC_MAX_BLACK_SECONDS:-1}
+      QC_MAX_SILENCE_SECONDS: ${QC_MAX_SILENCE_SECONDS:-2}
+      QC_DURATION_TOLERANCE_PERCENT: ${QC_DURATION_TOLERANCE_PERCENT:-10}
+      QC_AUDIO_VIDEO_DRIFT_MS: ${QC_AUDIO_VIDEO_DRIFT_MS:-200}
+      PUBLISH_PROVIDER: ${PUBLISH_PROVIDER:-manual_package}
+      PUBLISH_PLATFORM: ${PUBLISH_PLATFORM:-douyin}
+      PUBLISH_API_BASE_URL: ${PUBLISH_API_BASE_URL:-}
+      PUBLISH_API_KEY: ${PUBLISH_API_KEY:-}
+      PUBLISH_ACCOUNT_REFERENCE: ${PUBLISH_ACCOUNT_REFERENCE:-}
+      PUBLISH_MAX_RETRIES: ${PUBLISH_MAX_RETRIES:-3}
+      PUBLISH_POLL_INTERVAL_SECONDS: ${PUBLISH_POLL_INTERVAL_SECONDS:-15}
+      PUBLISH_MAX_POLL_COUNT: ${PUBLISH_MAX_POLL_COUNT:-60}
+      PUBLISH_MAX_WAIT_MINUTES: ${PUBLISH_MAX_WAIT_MINUTES:-30}
+      PUBLISH_DEFAULT_VISIBILITY: ${PUBLISH_DEFAULT_VISIBILITY:-private}
+      ALLOW_REAL_PUBLISH: ${ALLOW_REAL_PUBLISH:-false}
+      TEST_PUBLISH_MODE: ${TEST_PUBLISH_MODE:-manual_package}
       CHUNK_MAX_CHARS: ${CHUNK_MAX_CHARS:-12000}
       CHUNK_OVERLAP_CHARS: ${CHUNK_OVERLAP_CHARS:-500}
       MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-4096}
@@ -200,6 +262,7 @@ services:
       - ./storage:/data/storage
       - ./test-data:/data/test-data:ro
       - ./workflows:/data/workflows:ro
+      - ./scripts:/data/scripts:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -207,11 +270,69 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      media-worker:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:5678/healthz >/dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 12
+
+  media-worker:
+    build:
+      context: .
+      dockerfile: scripts/media-worker/Dockerfile
+      args:
+        NODE_VERSION: 22.14.0-alpine3.21
+        FFMPEG_VERSION: 7.1.1
+    image: ai-short-drama-media-worker:node22-ffmpeg7.1.1
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${DRAMA_DB:-short_drama}
+      MEDIA_STORAGE_PATH: /data/storage
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-http://localhost:8088}
+      MEDIA_WORKER_PORT: 8090
+      MEDIA_WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:-}
+      MEDIA_WORKER_ENABLED: ${MEDIA_WORKER_ENABLED:-true}
+      MEDIA_WORKER_POLL_INTERVAL_SECONDS: ${MEDIA_WORKER_POLL_INTERVAL_SECONDS:-5}
+      MEDIA_WORKER_BATCH_SIZE: ${MEDIA_WORKER_BATCH_SIZE:-1}
+      MEDIA_WORKER_HEARTBEAT_SECONDS: ${MEDIA_WORKER_HEARTBEAT_SECONDS:-10}
+      MEDIA_WORKER_MAX_CONCURRENCY: ${MEDIA_WORKER_MAX_CONCURRENCY:-1}
+      MEDIA_QC_MAX_CONCURRENCY: ${MEDIA_QC_MAX_CONCURRENCY:-1}
+      MEDIA_QC_TIMEOUT_MINUTES: ${MEDIA_QC_TIMEOUT_MINUTES:-10}
+      MEDIA_RENDER_TIMEOUT_MINUTES: ${MEDIA_RENDER_TIMEOUT_MINUTES:-30}
+      MEDIA_MAX_RETRIES: ${MEDIA_MAX_RETRIES:-2}
+      MEDIA_MAX_THREADS: ${MEDIA_MAX_THREADS:-2}
+      MEDIA_MAX_MANIFEST_BYTES: ${MEDIA_MAX_MANIFEST_BYTES:-10485760}
+      MEDIA_MAX_SUBTITLE_BYTES: ${MEDIA_MAX_SUBTITLE_BYTES:-5242880}
+      MEDIA_MAX_INPUT_MB: ${MEDIA_MAX_INPUT_MB:-2048}
+      MEDIA_MAX_LOG_MB: ${MEDIA_MAX_LOG_MB:-20}
+      MEDIA_MIN_SPEED_RATIO: ${MEDIA_MIN_SPEED_RATIO:-0.8}
+      MEDIA_MAX_SPEED_RATIO: ${MEDIA_MAX_SPEED_RATIO:-1.25}
+      FFMPEG_PATH: /usr/local/bin/ffmpeg
+      FFPROBE_PATH: /usr/local/bin/ffprobe
+      TARGET_LOUDNESS_LUFS: ${TARGET_LOUDNESS_LUFS:--16}
+      TARGET_TRUE_PEAK_DB: ${TARGET_TRUE_PEAK_DB:--1}
+      QC_MAX_BLACK_SECONDS: ${QC_MAX_BLACK_SECONDS:-1}
+      QC_MAX_SILENCE_SECONDS: ${QC_MAX_SILENCE_SECONDS:-2}
+      QC_AUDIO_VIDEO_DRIFT_MS: ${QC_AUDIO_VIDEO_DRIFT_MS:-200}
+      MOCK_MODE: ${MOCK_MODE:-true}
+    volumes:
+      - ./storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: ${MEDIA_WORKER_CPUS:-2.0}
+    mem_limit: ${MEDIA_WORKER_MEMORY_LIMIT:-2g}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
 
 volumes:
   postgres_data:

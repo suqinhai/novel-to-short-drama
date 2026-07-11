@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-short-drama/schemas/render-manifest-v1.json",
+  "title": "AI short-drama render manifest",
+  "type": "object",
+  "required": ["project_id", "episode_id", "timeline_id", "timeline_version", "render_type", "output"],
+  "properties": {
+    "schema_version": { "enum": [1, "1.0"] },
+    "project_id": { "$ref": "#/$defs/id" },
+    "episode_id": { "$ref": "#/$defs/id" },
+    "timeline_id": { "$ref": "#/$defs/id" },
+    "timeline_version": { "type": "integer", "minimum": 1 },
+    "render_type": { "enum": ["preview", "master", "subtitle_preview"] },
+    "master_type": { "enum": ["preview", "clean", "subtitled", "final"] },
+    "mock": { "type": "boolean" },
+    "mode": { "enum": ["mock", "timeline"] },
+    "simulate": { "enum": ["ffmpeg_failure", "ffmpeg_timeout"] },
+    "total_duration_ms": { "type": "integer", "minimum": 250, "maximum": 3600000 },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "width": { "type": "integer", "minimum": 64, "maximum": 4096, "multipleOf": 2 },
+        "height": { "type": "integer", "minimum": 64, "maximum": 4096, "multipleOf": 2 },
+        "aspect_ratio": { "type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$" },
+        "fps": { "type": "number", "minimum": 1, "maximum": 120 },
+        "video_codec": { "enum": ["libx264", "libx265"] },
+        "audio_codec": { "const": "aac" },
+        "audio_bitrate": { "type": "string", "pattern": "^[0-9]{2,3}k$" },
+        "sample_rate": { "type": "integer", "minimum": 8000, "maximum": 192000 },
+        "pixel_format": { "enum": ["yuv420p", "yuv422p"] },
+        "crf": { "type": "integer", "minimum": 0, "maximum": 51 },
+        "preset": { "enum": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"] }
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "video": { "type": "array", "items": { "$ref": "#/$defs/videoItem" }, "maxItems": 500 },
+        "audio": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 }
+      },
+      "additionalProperties": false
+    },
+    "tracks": {
+      "type": "object",
+      "properties": {
+        "video": { "type": "array", "items": { "$ref": "#/$defs/videoItem" }, "maxItems": 500 },
+        "dialogue": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 },
+        "narration": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 },
+        "bgm": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 },
+        "sound_effect": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 },
+        "ambience": { "type": "array", "items": { "$ref": "#/$defs/audioItem" }, "maxItems": 1000 }
+      },
+      "additionalProperties": false
+    },
+    "subtitles": {
+      "type": "object",
+      "properties": {
+        "path": { "$ref": "#/$defs/storagePath" },
+        "burned": { "type": "boolean" },
+        "burn": { "type": "boolean" },
+        "srt_path": { "$ref": "#/$defs/storagePath" },
+        "ass_path": { "$ref": "#/$defs/storagePath" }
+      },
+      "additionalProperties": false
+    },
+    "audio": {
+      "type": "object",
+      "properties": { "ducking_enabled": { "type": "boolean" } },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/storagePath" },
+        "master_id": { "$ref": "#/$defs/id" },
+        "master_type": { "enum": ["preview", "clean", "subtitled", "final"] },
+        "aspect_ratio": { "type": "string", "pattern": "^[1-9][0-9]*:[1-9][0-9]*$" },
+        "generate_clean_master": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mock": { "const": false } } },
+      "then": { "anyOf": [{ "required": ["inputs"] }, { "required": ["tracks"] }] }
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "storagePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "videoItem": {
+      "type": "object",
+      "required": ["source_path", "sequence_number", "timeline_start_ms", "timeline_end_ms", "source_in_ms", "source_out_ms"],
+      "properties": {
+        "source_path": { "$ref": "#/$defs/storagePath" },
+        "sequence_number": { "type": "integer", "minimum": 1 },
+        "timeline_start_ms": { "type": "integer", "minimum": 0 },
+        "timeline_end_ms": { "type": "integer", "minimum": 1 },
+        "source_in_ms": { "type": "integer", "minimum": 0 },
+        "source_out_ms": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "audioItem": {
+      "type": "object",
+      "required": ["source_path", "timeline_start_ms", "duration_ms"],
+      "properties": {
+        "source_path": { "$ref": "#/$defs/storagePath" },
+        "kind": { "enum": ["dialogue", "narration", "bgm", "sound_effect", "ambience", "other"] },
+        "timeline_start_ms": { "type": "integer", "minimum": 0 },
+        "duration_ms": { "type": "integer", "minimum": 1 },
+        "source_in_ms": { "type": "integer", "minimum": 0 },
+        "volume": { "type": "number", "minimum": 0, "maximum": 4 },
+        "fade_in_ms": { "type": "integer", "minimum": 0 },
+        "fade_out_ms": { "type": "integer", "minimum": 0 },
+        "authorized": { "type": "boolean" },
+        "licensed": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

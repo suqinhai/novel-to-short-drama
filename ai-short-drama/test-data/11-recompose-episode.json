@@ -1,0 +1,21 @@
+{
+  "project_id": "p_001",
+  "episode_id": "ep_001",
+  "shot_id": null,
+  "stage": "edit_compose",
+  "action": "regenerate",
+  "generation_version": 2,
+  "test_mode": true,
+  "trace_id": "trace_11_recompose_001",
+  "payload": {
+    "timeline_id": "timeline_p_001_ep_001_v1",
+    "render_type": "master",
+    "preview_approved": true,
+    "timeline_adjustments": {
+      "subtitle_offset_ms": 0,
+      "dialogue_gain_db": 0,
+      "bgm_gain_db": -12
+    },
+    "reuse_existing_media": true
+  }
+}

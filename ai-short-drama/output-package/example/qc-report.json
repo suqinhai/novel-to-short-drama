@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "qc_report_id": "qc_report_p_001_ep_001_v1",
+  "master_id": "master_p_001_ep_001_final_v1",
+  "overall_score": 100,
+  "severity": "passed",
+  "blocking_issues": [],
+  "warnings": [],
+  "note": "Example only; the runtime package contains the persisted QC report."
+}

@@ -1,0 +1,16 @@
+{
+  "project_id": "p_001",
+  "episode_id": "ep_001",
+  "shot_id": null,
+  "stage": "edit_compose",
+  "action": "run",
+  "generation_version": 1,
+  "test_mode": true,
+  "trace_id": "trace_11_compose_001",
+  "payload": {
+    "render_type": "preview",
+    "preview_approved": false,
+    "burn_subtitles": true,
+    "generate_clean_master": true
+  }
+}

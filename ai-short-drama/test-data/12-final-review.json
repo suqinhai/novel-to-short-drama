@@ -1,0 +1,23 @@
+{
+  "project_id": "p_001",
+  "episode_id": "ep_001",
+  "shot_id": null,
+  "stage": "qc_review_publish",
+  "action": "review",
+  "generation_version": 1,
+  "test_mode": true,
+  "trace_id": "trace_12_review_001",
+  "payload": {
+    "entity_type": "final_review",
+    "master_id": "master_p_001_ep_001_final_v1",
+    "qc_report_id": "qc_report_p_001_ep_001_v1",
+    "review_status": "approved",
+    "reviewer_comment": "Mock final review approved",
+    "rejection_scope": null,
+    "rejection_entity_ids": [],
+    "rejection_reason": "",
+    "revision_instruction": "",
+    "override_blocking": false,
+    "override_reason": ""
+  }
+}

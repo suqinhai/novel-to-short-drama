@@ -1,0 +1,251 @@
+{
+  "name": "12b Publish Task Poller",
+  "id": "wf_publish_task_poller",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 1 }]
+        }
+      },
+      "id": "12b00000-0000-4000-8000-000000000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1320, -160]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "publication_task_id" },
+            { "name": "project_id" },
+            { "name": "trace_id" },
+            { "name": "payload", "type": "object" }
+          ]
+        }
+      },
+      "id": "12b00000-0000-4000-8000-000000000002",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1320, 0]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/publication-poller",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "12b00000-0000-4000-8000-000000000003",
+      "name": "Manual Publish Poll Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-1320, 160],
+      "webhookId": "ai-short-drama-publication-poller"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),src=$json.body||$json||{},p=src.payload&&typeof src.payload==='object'?src.payload:{};const clean=(v,n)=>{if(v==null||v==='')return null;const s=String(v).trim();if(s.length>128||!/^[A-Za-z0-9_-]+$/.test(s))throw new Error('INVALID_'+n.toUpperCase());return s};const n=Number.parseInt(p.batch_size||$env.PUBLISH_POLLER_BATCH_SIZE||5,10);return[{json:{publication_task_id:clean(src.publication_task_id||src.task_id||p.publication_task_id,'publication_task_id'),project_id:clean(src.project_id||p.project_id,'project_id'),trace_id:clean(src.trace_id||p.trace_id||('trace_publish_poll_'+crypto.randomUUID()),'trace_id'),claim_token:'publish-poll:'+crypto.randomUUID(),batch_size:Number.isFinite(n)?Math.min(25,Math.max(1,n)):5,lease_seconds:Math.min(3600,Math.max(10,Number($env.PUBLISH_POLL_LEASE_SECONDS||60)))}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000004",
+      "name": "Normalize Publication Poll Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1080, 0],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidates AS MATERIALIZED (SELECT t.id FROM drama.publication_tasks t WHERE t.status IN('uploading','processing') AND t.provider='generic_async_publish' AND (t.next_poll_at IS NULL OR t.next_poll_at<=clock_timestamp()) AND ($1::text IS NULL OR t.publication_task_id=$1) AND ($2::text IS NULL OR t.project_id=$2) ORDER BY t.next_poll_at NULLS FIRST,t.created_at LIMIT $3 FOR UPDATE OF t SKIP LOCKED), claimed AS (UPDATE drama.publication_tasks t SET next_poll_at=clock_timestamp()+($4::int*interval '1 second'),response_payload=jsonb_set(COALESCE(t.response_payload,'{}'::jsonb),'{_poll_claim_token}',to_jsonb($5::text),true) FROM candidates c WHERE t.id=c.id AND t.status IN('uploading','processing') RETURNING t.*) SELECT * FROM claimed",
+        "options": {
+          "queryReplacement": "={{[$json.publication_task_id,$json.project_id,$json.batch_size,$json.lease_seconds,$json.claim_token]}}"
+        }
+      },
+      "id": "12b00000-0000-4000-8000-000000000005",
+      "name": "Atomically Claim Due Publication Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-840, 0],
+      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": { "options": {} },
+      "id": "12b00000-0000-4000-8000-000000000006",
+      "name": "Loop Claimed Publication Tasks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-600, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$input.first().json||{},rp=t.response_payload&&typeof t.response_payload==='object'?t.response_payload:{},req=t.request_payload&&typeof t.request_payload==='object'?t.request_payload:{},a=req._adapter&&typeof req._adapter==='object'?req._adapter:{},count=Number(t.poll_count||0),max=Math.max(2,Number(t.max_poll_count||$env.PUBLISH_MAX_POLL_COUNT||60)),maxWait=Math.min(1440,Math.max(1,Number($env.PUBLISH_MAX_WAIT_MINUTES||30)))*60000,started=new Date(rp.submitted_at||t.created_at||0).getTime(),expired=!Number.isFinite(started)||Date.now()-started>=maxWait,claim_token=String(rp._poll_claim_token||'');if(count>=max||expired)return[{json:{...t,request_payload:req,response_payload:rp,claim_token,route:'timeout',new_status:'timeout',new_poll_count:count,result:{success:false,provider:t.provider,mode:'async',provider_task_id:t.provider_task_id||null,status:'timeout',progress:Number(t.progress||0),platform_work_id:null,published_url:null,mock_mode:rp.mock_mode===true,error:{code:'PUBLISH_TIMEOUT',message:'Publication polling count or wait-time limit was reached.',retryable:false}}}}];if(!t.provider_task_id)return[{json:{...t,request_payload:req,response_payload:rp,claim_token,route:'fail',pre_error:'Async publication task has no provider_task_id.'}}];if(rp.mock_mode===true||a.mock_mode===true)return[{json:{...t,request_payload:req,response_payload:rp,claim_token,route:'mock'}}];let poll_url=String(rp.poll_url||'');try{const u=new URL(poll_url),base=new URL(String(a.api_base_url||''));if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.origin!==base.origin)throw new Error();for(const k of u.searchParams.keys())if(/key|token|secret|signature|authorization/i.test(k))throw new Error();poll_url=u.toString()}catch{return[{json:{...t,request_payload:req,response_payload:rp,claim_token,route:'fail',pre_error:'Provider polling URL is missing or unsafe.'}}]}return[{json:{...t,request_payload:req,response_payload:rp,claim_token,poll_url,route:'generic'}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000007",
+      "name": "Classify Claimed Publication Task",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, 80],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12br0000-0000-4000-8000-000000000001", "leftValue": "={{$json.route}}", "rightValue": "timeout", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "timeout" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12br0000-0000-4000-8000-000000000002", "leftValue": "={{$json.route}}", "rightValue": "mock", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "mock" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12br0000-0000-4000-8000-000000000003", "leftValue": "={{$json.route}}", "rightValue": "generic", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "generic" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "12br0000-0000-4000-8000-000000000004", "leftValue": "={{$json.route}}", "rightValue": "fail", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "fail" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "12b00000-0000-4000-8000-000000000008",
+      "name": "Switch Publication Poll Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-120, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),t=$input.first().json||{},next=Number(t.poll_count||0)+1,after=Math.max(2,Number(t.response_payload?.mock_complete_after_polls||2)),sim=String(t.response_payload?.simulate||'');if(sim==='publish_timeout')return[{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,provider:t.provider,mode:'async',provider_task_id:t.provider_task_id,status:'processing',progress:Math.min(90,10+next*10),platform_work_id:null,published_url:null,mock_mode:true,error:{code:'PUBLISH_TIMEOUT',message:'Mock provider is still processing to exercise the timeout limit.',retryable:true}}}}];if(sim==='publish_429'&&next===1)return[{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,provider:t.provider,mode:'async',provider_task_id:t.provider_task_id,status:'processing',progress:10,platform_work_id:null,published_url:null,mock_mode:true,error:{code:'PUBLISH_RATE_LIMITED',message:'Mock provider returned a transient rate limit.',retryable:true}}}}];if(next<after)return[{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,provider:t.provider,mode:'async',provider_task_id:t.provider_task_id,status:'processing',progress:Math.min(95,Math.round(next*100/after)),platform_work_id:null,published_url:null,mock_mode:true,error:null}}}];const work='mockwork_'+crypto.createHash('sha1').update(t.idempotency_key).digest('hex').slice(0,20);return[{json:{...t,new_status:'published',new_poll_count:next,result:{success:true,provider:t.provider,mode:'async',provider_task_id:t.provider_task_id,status:'published',progress:100,platform_work_id:work,published_url:'https://mock.invalid/'+encodeURIComponent(t.platform)+'/'+work,mock_mode:true,error:null}}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000009",
+      "name": "Mock Async Completes After Two Polls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [140, 20],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$json.poll_url}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-Trace-Id", "value": "={{$json.trace_id}}" }] },
+        "options": { "response": { "response": { "fullResponse": true, "neverError": true, "responseFormat": "json" } }, "timeout": "={{Math.min(600000,Math.max(5000,Number($env.PUBLISH_REQUEST_TIMEOUT_SECONDS||120)*1000))}}" }
+      },
+      "id": "12b00000-0000-4000-8000-000000000010",
+      "name": "Poll Generic Async Publish Provider",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [140, 180],
+      "credentials": { "httpHeaderAuth": { "id": "__PUBLISH_PROVIDER_HTTP_HEADER_AUTH_ID__", "name": "Publish Provider HTTP Header Auth" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$('Classify Claimed Publication Task').item.json,raw=$input.first().json||{};let b=raw.body!==undefined?raw.body:raw;if(typeof b==='string'){try{b=JSON.parse(b)}catch{b={message:b.slice(0,4000)}}}const sensitive=/authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie|signature/i;const scrub=(v,d=0)=>{if(d>8)return'[depth-limited]';if(Array.isArray(v))return v.slice(0,100).map(x=>scrub(x,d+1));if(v&&typeof v==='object')return Object.fromEntries(Object.entries(v).filter(([k])=>!sensitive.test(k)).map(([k,x])=>[k,scrub(x,d+1)]));if(typeof v==='string'){if(/^data:/i.test(v))return'[omitted-data-uri]';return v.length>12000?v.slice(0,12000)+'[truncated]':v}return v};b=scrub(b&&typeof b==='object'?b:{});const sc=Number(raw.statusCode||raw.status||200),transport=raw.error?String(raw.error.message||raw.error):'',next=Number(t.poll_count||0)+1,st=String(b.status||'processing').toLowerCase(),done=['published','completed','success','succeeded'].includes(st),failed=['failed','error','cancelled','rejected'].includes(st);let new_status='processing',code=null,message=null,retryable=false,work=String(b.platform_work_id||b.work_id||b.video_id||'').slice(0,256)||null,url=String(b.published_url||b.share_url||b.url||'').slice(0,4096)||null,progress=Math.min(99,Math.max(Number(t.progress||0),Number(b.progress||0)));if(transport||sc<200||sc>=300){code=sc===401||sc===403?'PUBLISH_AUTH_FAILED':sc===429?'PUBLISH_RATE_LIMITED':sc===408||sc===504||/timeout/i.test(transport)?'PUBLISH_TIMEOUT':'PUBLISH_PROCESSING_FAILED';message=transport||String(b.error?.message||b.message||b.error||'Provider polling failed.');retryable=sc===429||sc===408||sc===504||sc>=500||/timeout|network|socket/i.test(transport);new_status=retryable?'processing':'failed'}else if(done){if(work&&url){new_status='published';progress=100}else{new_status='failed';code='PUBLISH_PROCESSING_FAILED';message='Provider reported completion without a work id and published URL.'}}else if(failed){new_status='failed';code='PUBLISH_PROCESSING_FAILED';message=String(b.error?.message||b.message||b.error||'Provider publication failed.');retryable=false}const error=code?{code,message:String(message||'Publication polling failed.').replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]').slice(0,1000),retryable}:null;return[{json:{...t,new_status,new_poll_count:next,result:{success:new_status!=='failed',provider:t.provider,mode:'async',provider_task_id:t.provider_task_id,status:new_status,progress,platform_work_id:new_status==='published'?work:null,published_url:new_status==='published'?url:null,mock_mode:false,provider_response:b,error}}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000011",
+      "name": "Normalize and Redact Poll Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 180],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$input.first().json||{},count=Number(x.new_poll_count??x.poll_count??0),max=Math.max(2,Number(x.max_poll_count||$env.PUBLISH_MAX_POLL_COUNT||60)),maxWait=Math.min(1440,Math.max(1,Number($env.PUBLISH_MAX_WAIT_MINUTES||30)))*60000,rp=x.response_payload||{},started=new Date(rp.submitted_at||x.created_at||0).getTime(),expired=!Number.isFinite(started)||Date.now()-started>=maxWait;if(x.new_status==='processing'&&(count>=max||expired)){x.new_status='timeout';x.result={...(x.result||{}),success:false,status:'timeout',error:{code:'PUBLISH_TIMEOUT',message:'Publication polling count or wait-time limit was reached.',retryable:false}}}return[{json:x}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000012",
+      "name": "Enforce Publication Poll Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 80]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (UPDATE drama.publication_tasks SET status=$1,poll_count=$2,progress=CASE WHEN $1='published' THEN 100 ELSE LEAST(99,GREATEST(progress,$3::numeric)) END,response_payload=(COALESCE(response_payload,'{}'::jsonb)-'_poll_claim_token')||$4::jsonb,next_poll_at=CASE WHEN $1='processing' THEN clock_timestamp()+($5::int*interval '1 second') ELSE NULL END,published_at=CASE WHEN $1='published' THEN clock_timestamp() ELSE published_at END,platform_work_id=CASE WHEN $1='published' THEN NULLIF($6::text,'') ELSE platform_work_id END,published_url=CASE WHEN $1='published' THEN NULLIF($7::text,'') ELSE published_url END,error_code=NULLIF($8::text,''),error_message=NULLIF($9::text,'') WHERE publication_task_id=$10 AND status IN('uploading','processing') AND COALESCE(response_payload->>'_poll_claim_token','')=$11 RETURNING *) SELECT EXISTS(SELECT 1 FROM updated) persisted,COALESCE((SELECT to_jsonb(u.*) FROM updated u LIMIT 1),jsonb_build_object('publication_task_id',$10,'status','failed','error_code','PUBLICATION_POLL_CLAIM_LOST','error_message','Publication poll ownership changed before state was saved.')) task",
+        "options": {
+          "queryReplacement": "={{[$json.new_status,$json.new_poll_count,Number($json.result?.progress||0),JSON.stringify($json.result||{}),Math.min(3600,Math.max(5,Number($env.PUBLISH_POLL_INTERVAL_SECONDS||15))),$json.result?.platform_work_id||'',$json.result?.published_url||'',$json.result?.error?.code||'',$json.result?.error?.message||'',$json.publication_task_id,$json.claim_token]}}"
+        }
+      },
+      "id": "12b00000-0000-4000-8000-000000000013",
+      "name": "Persist Atomic Publication Poll State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [860, 80],
+      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "let t={};try{t=$('Loop Claimed Publication Tasks').item.json||{}}catch{}const raw=String($json.pre_error||$json.error?.message||$json.message||'Publication polling failed');const message=raw.replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature|api_key)=)[^&\\s]+/gi,'$1[REDACTED]').replace(/(authorization|access_token|refresh_token|password|secret)\\s*[:=]\\s*[^,;\\s]+/gi,'$1=[REDACTED]').slice(0,1000),code=/401|403|auth/i.test(message)?'PUBLISH_AUTH_FAILED':/429|rate/i.test(message)?'PUBLISH_RATE_LIMITED':/timeout/i.test(message)?'PUBLISH_TIMEOUT':'PUBLISH_PROCESSING_FAILED',retryable=/429|timeout|network|socket|5\\d\\d/i.test(message),next=Number(t.poll_count||0)+1,max=Math.max(2,Number(t.max_poll_count||$env.PUBLISH_MAX_POLL_COUNT||60)),status=retryable&&next<max?'processing':code==='PUBLISH_TIMEOUT'?'timeout':'failed';return[{json:{...t,claim_token:String(t.response_payload?._poll_claim_token||t.claim_token||''),new_status:status,new_poll_count:next,result:{success:false,provider:t.provider||'generic_async_publish',mode:'async',provider_task_id:t.provider_task_id||null,status,progress:Number(t.progress||0),platform_work_id:null,published_url:null,mock_mode:Boolean(t.response_payload?.mock_mode),error:{code,message,retryable:status==='processing'}}}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000014",
+      "name": "Normalize Redacted Poll Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items=$input.all(),raw=String(items[0]?.json?.error?.message||items[0]?.json?.message||'Publication poller database operation failed'),message=raw.replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]').slice(0,1000);return[{json:{success:false,stage:'publication_poller',status:'failed',data_ref:{entity_type:'publication_tasks',entity_id:null},metrics:{processed:0},error:{code:'DATABASE_WRITE_FAILED',message,retryable:true}}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000015",
+      "name": "Return Poller Database Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items=$input.all(),raw=String(items[0]?.json?.error?.message||items[0]?.json?.message||'Publication poll state could not be persisted'),message=raw.replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]').slice(0,1000);return[{json:{success:false,stage:'publication_poller',status:'partial_failure',data_ref:{entity_type:'publication_tasks',entity_id:null},metrics:{processed:0},error:{code:'DATABASE_WRITE_FAILED',message,retryable:true}}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000016",
+      "name": "Return Poll Persistence Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 320]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items=$input.all();return[{json:{success:true,stage:'publication_poller',status:'completed',data_ref:{entity_type:'publication_tasks',entity_id:null},metrics:{processed:items.length},error:null}}]"
+      },
+      "id": "12b00000-0000-4000-8000-000000000017",
+      "name": "Publication Poll Batch Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, -160]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": { "main": [[{ "node": "Normalize Publication Poll Request", "type": "main", "index": 0 }]] },
+    "Sub-workflow Trigger": { "main": [[{ "node": "Normalize Publication Poll Request", "type": "main", "index": 0 }]] },
+    "Manual Publish Poll Webhook": { "main": [[{ "node": "Normalize Publication Poll Request", "type": "main", "index": 0 }]] },
+    "Normalize Publication Poll Request": { "main": [[{ "node": "Atomically Claim Due Publication Tasks", "type": "main", "index": 0 }],[{ "node": "Return Poller Database Failure", "type": "main", "index": 0 }]] },
+    "Atomically Claim Due Publication Tasks": { "main": [[{ "node": "Loop Claimed Publication Tasks", "type": "main", "index": 0 }],[{ "node": "Return Poller Database Failure", "type": "main", "index": 0 }]] },
+    "Loop Claimed Publication Tasks": { "main": [[{ "node": "Publication Poll Batch Summary", "type": "main", "index": 0 }],[{ "node": "Classify Claimed Publication Task", "type": "main", "index": 0 }]] },
+    "Classify Claimed Publication Task": { "main": [[{ "node": "Switch Publication Poll Route", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Poll Failure", "type": "main", "index": 0 }]] },
+    "Switch Publication Poll Route": { "main": [[{ "node": "Persist Atomic Publication Poll State", "type": "main", "index": 0 }],[{ "node": "Mock Async Completes After Two Polls", "type": "main", "index": 0 }],[{ "node": "Poll Generic Async Publish Provider", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Poll Failure", "type": "main", "index": 0 }]] },
+    "Mock Async Completes After Two Polls": { "main": [[{ "node": "Enforce Publication Poll Limits", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Poll Failure", "type": "main", "index": 0 }]] },
+    "Poll Generic Async Publish Provider": { "main": [[{ "node": "Normalize and Redact Poll Response", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Poll Failure", "type": "main", "index": 0 }]] },
+    "Normalize and Redact Poll Response": { "main": [[{ "node": "Enforce Publication Poll Limits", "type": "main", "index": 0 }],[{ "node": "Normalize Redacted Poll Failure", "type": "main", "index": 0 }]] },
+    "Normalize Redacted Poll Failure": { "main": [[{ "node": "Enforce Publication Poll Limits", "type": "main", "index": 0 }]] },
+    "Enforce Publication Poll Limits": { "main": [[{ "node": "Persist Atomic Publication Poll State", "type": "main", "index": 0 }]] },
+    "Persist Atomic Publication Poll State": { "main": [[{ "node": "Loop Claimed Publication Tasks", "type": "main", "index": 0 }],[{ "node": "Return Poll Persistence Failure", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "versionId": "12b00000-0000-4000-8000-000000000099",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}

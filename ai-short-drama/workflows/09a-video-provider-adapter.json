@@ -1,0 +1,616 @@
+{
+  "name": "09a Video Provider Adapter",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "09a00000-0000-4000-8000-000000000001",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1160,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $input.first().json || {};\nconst input = src.data && typeof src.data === 'object' && !Array.isArray(src.data) ? { ...src, ...src.data } : src;\nconst cleanId = (value, name, required = true) => { const text = value == null ? '' : String(value).trim(); if (!text && !required) return null; if (!text || text.length > 128 || !/^[A-Za-z0-9_-]+$/.test(text)) throw new Error('INVALID_' + name.toUpperCase()); return text; };\nconst clampInt = (value, fallback, min, max) => { const n = Number.parseInt(value, 10); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback; };\nconst sensitiveKey = /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie/i;\nconst scrub = (value, depth = 0) => { if (depth > 8) return '[depth-limited]'; if (Array.isArray(value)) return value.slice(0, 100).map((entry) => scrub(entry, depth + 1)); if (value && typeof value === 'object') { const out = {}; for (const [key, entry] of Object.entries(value)) { if (sensitiveKey.test(key)) continue; out[key] = scrub(entry, depth + 1); } return out; } if (typeof value === 'string') { if (/^data:[^,]*;base64,/i.test(value)) return '[omitted-data-uri]'; return value.length > 12000 ? value.slice(0, 12000) + '[truncated]' : value; } return value; };\nconst provider = String(input.provider || 'mock').trim().toLowerCase();\nif (!['mock', 'generic_sync_video', 'generic_async_video'].includes(provider)) throw new Error('UNSUPPORTED_VIDEO_PROVIDER');\nconst task_id = cleanId(input.task_id, 'task_id');\nconst idempotency_key = cleanId(input.idempotency_key || task_id, 'idempotency_key');\nconst trace_id = cleanId(input.trace_id || task_id, 'trace_id');\nconst project_id = cleanId(input.project_id, 'project_id');\nconst episode_id = cleanId(input.episode_id, 'episode_id');\nconst shot_id = cleanId(input.shot_id, 'shot_id');\nconst storyboard_image_id = cleanId(input.storyboard_image_id, 'storyboard_image_id', false);\nconst generation_version = clampInt(input.generation_version, 1, 1, 999);\nconst max_poll_count = clampInt(input.max_poll_count, 20, 1, 60);\nconst max_retries = clampInt(input.max_retries, 2, 0, 3);\nconst timeout_ms = clampInt(input.timeout_ms, provider === 'generic_sync_video' ? 120000 : 30000, 1000, 120000);\nconst poll_interval_seconds = clampInt(input.poll_interval_seconds, 15, 5, 3600);\nconst rawPayload = input.request_payload && typeof input.request_payload === 'object' && !Array.isArray(input.request_payload) ? input.request_payload : (input.request && typeof input.request === 'object' && !Array.isArray(input.request) ? input.request : {});\nconst payload = scrub(rawPayload);\nlet endpoint = input.endpoint || payload.endpoint || '';\nif (provider !== 'mock') { if (!endpoint) throw new Error('VIDEO_PROVIDER_ENDPOINT_REQUIRED'); let parsed; try { parsed = new URL(String(endpoint)); } catch { throw new Error('INVALID_VIDEO_PROVIDER_ENDPOINT'); } if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('UNSAFE_VIDEO_PROVIDER_ENDPOINT'); for (const key of parsed.searchParams.keys()) if (sensitiveKey.test(key)) throw new Error('SECRET_IN_VIDEO_PROVIDER_ENDPOINT'); endpoint = parsed.toString(); }\nif (payload.image_base64 || payload.video_base64) throw new Error('BASE64_MEDIA_NOT_ALLOWED');\ndelete payload.endpoint; delete payload.timeout_ms; delete payload.poll_interval_seconds;\npayload._adapter = { endpoint, timeout_ms, poll_interval_seconds };\nconst suppliedClaim = input.claim_token == null ? '' : String(input.claim_token).trim();\nconst claim_token = suppliedClaim || ('video-claim:' + trace_id + ':' + task_id);\nif (claim_token.length > 256 || !/^[A-Za-z0-9._:-]+$/.test(claim_token)) throw new Error('INVALID_CLAIM_TOKEN');\nconst model = String(input.model || (provider === 'mock' ? 'mock-video-v1' : 'default')).trim().slice(0, 128);\nconst mock_file_path = '/data/ai-short-drama/mock/video/' + project_id + '/' + shot_id + '-v' + generation_version + '.mp4';\nreturn [{ json: { task_id, idempotency_key, trace_id, project_id, episode_id, shot_id, storyboard_image_id, generation_version, provider, model, request_payload: payload, claim_token, max_poll_count, max_retries, regenerate: input.regenerate === true || input.force_regenerate === true, endpoint, timeout_ms, poll_interval_seconds, mock_file_path } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000002",
+      "name": "Validate and Sanitize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -940,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lock_guard AS MATERIALIZED (\n  SELECT pg_advisory_xact_lock(hashtextextended($2::text, 0))\n),\nexisting AS MATERIALIZED (\n  SELECT v.*\n  FROM video_generation_tasks v\n  CROSS JOIN lock_guard\n  WHERE v.idempotency_key = $2\n  FOR UPDATE OF v\n),\ninserted AS MATERIALIZED (\n  INSERT INTO video_generation_tasks (\n    task_id, idempotency_key, trace_id, project_id, episode_id, shot_id, storyboard_image_id,\n    generation_version, provider, model, provider_task_id, request_payload, response_payload,\n    status, progress, poll_count, max_poll_count, retry_count, max_retries, next_poll_at,\n    estimated_cost, started_at, completed_at, error_code, error_message\n  )\n  SELECT\n    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11::jsonb,\n    jsonb_build_object('_claim_token', $12::text, '_claim_trace_id', $3::text, '_claimed_at', clock_timestamp()),\n    'submitting', 0, 0, $13::int, 0, $14::int, NULL, 0, clock_timestamp(), NULL, NULL, NULL\n  WHERE NOT EXISTS (SELECT 1 FROM existing)\n  ON CONFLICT DO NOTHING\n  RETURNING *\n),\nclaimed_existing AS MATERIALIZED (\n  UPDATE video_generation_tasks v\n  SET trace_id = $3,\n      project_id = $4,\n      episode_id = $5,\n      shot_id = $6,\n      storyboard_image_id = $7,\n      generation_version = $8,\n      provider = $9,\n      model = $10,\n      provider_task_id = NULL,\n      request_payload = $11::jsonb,\n      response_payload = COALESCE(v.response_payload, '{}'::jsonb) || jsonb_build_object(\n        '_claim_token', $12::text,\n        '_claim_trace_id', $3::text,\n        '_claimed_at', clock_timestamp(),\n        '_previous_status', v.status\n      ),\n      status = 'submitting',\n      progress = 0,\n      poll_count = 0,\n      max_poll_count = LEAST(GREATEST($13::int, 1), 60),\n      retry_count = CASE WHEN e.status = 'queued' THEN e.retry_count ELSE e.retry_count + 1 END,\n      max_retries = LEAST(GREATEST($14::int, 0), 3),\n      next_poll_at = NULL,\n      started_at = clock_timestamp(),\n      completed_at = NULL,\n      error_code = NULL,\n      error_message = NULL\n  FROM existing e\n  WHERE v.task_id = e.task_id\n    AND (\n      (e.status = 'queued' AND COALESCE(e.response_payload ->> '_claim_token', '') = $12::text)\n      OR\n      ($15::boolean = TRUE AND e.status IN ('failed', 'cancelled', 'needs_review', 'rejected') AND e.retry_count < LEAST(e.max_retries, $14::int))\n    )\n  RETURNING v.*\n),\ndecision AS (\n  SELECT 'submit'::text AS action, to_jsonb(i.*) AS task FROM inserted i\n  UNION ALL\n  SELECT 'submit'::text AS action, to_jsonb(c.*) AS task FROM claimed_existing c\n  UNION ALL\n  SELECT\n    CASE\n      WHEN e.status IN ('succeeded', 'completed', 'processing', 'submitting') THEN 'reuse'\n      ELSE 'reject'\n    END AS action,\n    to_jsonb(e.*) AS task\n  FROM existing e\n  WHERE NOT EXISTS (SELECT 1 FROM inserted)\n    AND NOT EXISTS (SELECT 1 FROM claimed_existing)\n),\nfallback AS (\n  SELECT 'reject'::text AS action, jsonb_build_object(\n    'task_id', $1::text,\n    'idempotency_key', $2::text,\n    'trace_id', $3::text,\n    'project_id', $4::text,\n    'episode_id', $5::text,\n    'shot_id', $6::text,\n    'provider', $9::text,\n    'status', 'failed',\n    'retry_count', 0,\n    'max_retries', $14::int,\n    'error_code', 'TASK_ID_OR_IDEMPOTENCY_CONFLICT',\n    'error_message', 'The task id or idempotency key is already bound to another request.'\n  ) AS task\n  WHERE NOT EXISTS (SELECT 1 FROM decision)\n)\nSELECT action, task FROM decision\nUNION ALL\nSELECT action, task FROM fallback\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id, $json.idempotency_key, $json.trace_id, $json.project_id, $json.episode_id, $json.shot_id, $json.storyboard_image_id, $json.generation_version, $json.provider, $json.model, JSON.stringify($json.request_payload), $json.claim_token, $json.max_poll_count, $json.max_retries, $json.regenerate ] }}"
+        }
+      },
+      "id": "09a00000-0000-4000-8000-000000000003",
+      "name": "Atomically Claim Video Task",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -700,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "name": "AI Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json || {};\nlet task = row.task || {};\nif (typeof task === 'string') { try { task = JSON.parse(task); } catch { task = {}; } }\nconst response = task.response_payload && typeof task.response_payload === 'object' ? task.response_payload : {};\nconst request = task.request_payload && typeof task.request_payload === 'object' ? task.request_payload : {};\nconst adapter = request._adapter && typeof request._adapter === 'object' ? request._adapter : {};\nconst providerPayload = { ...request }; delete providerPayload._adapter;\nreturn [{ json: { ...task, action: String(row.action || 'reject'), claim_token: String(response._claim_token || ''), request_payload: providerPayload, endpoint: String(adapter.endpoint || ''), timeout_ms: Number(adapter.timeout_ms || 30000), poll_interval_seconds: Number(adapter.poll_interval_seconds || 15), mock_file_path: '/data/ai-short-drama/mock/video/' + String(task.project_id || 'unknown') + '/' + String(task.shot_id || task.task_id || 'unknown') + '-v' + Number(task.generation_version || 1) + '.mp4' } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000004",
+      "name": "Hydrate Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ac0000-0000-4000-8000-000000000001",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "submit",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "submit"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ac0000-0000-4000-8000-000000000002",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "reuse",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "reuse"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ac0000-0000-4000-8000-000000000003",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "reject",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "reject"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "09a00000-0000-4000-8000-000000000005",
+      "name": "Route Claim Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $input.first().json || {};\nconst rp = t.response_payload && typeof t.response_payload === 'object' ? t.response_payload : {};\nconst status = String(t.status || 'processing');\nconst success = ['succeeded', 'completed', 'processing', 'submitting'].includes(status);\nreturn [{ json: { success, status, project_id: t.project_id, episode_id: t.episode_id, shot_id: t.shot_id, task_id: t.task_id, trace_id: t.trace_id, data: { task_id: t.task_id, provider: t.provider, provider_task_id: t.provider_task_id || null, status, progress: Number(t.progress || 0), video_url: rp.video_url || null, reused: true }, error: success ? null : { code: t.error_code || 'VIDEO_TASK_NOT_REUSABLE', message: String(t.error_message || 'Video task cannot be reused.').slice(0, 1000), retryable: false }, meta: { workflow_id: 'wf_video_provider_adapter', schema_version: '1.0', idempotency_key: t.idempotency_key, trace_id: t.trace_id, reused: true } } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000006",
+      "name": "Return Existing Task",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $input.first().json || {};\nconst retries = Number(t.retry_count || 0);\nconst maxRetries = Number(t.max_retries || 0);\nconst exhausted = retries >= maxRetries;\nreturn [{ json: { success: false, status: String(t.status || 'failed'), project_id: t.project_id, episode_id: t.episode_id, shot_id: t.shot_id, task_id: t.task_id, trace_id: t.trace_id, data: null, error: { code: t.error_code || (exhausted ? 'VIDEO_RETRY_LIMIT_REACHED' : 'VIDEO_TASK_CLAIM_REJECTED'), message: String(t.error_message || (exhausted ? 'Video retry limit reached.' : 'Video task is owned by another claim or requires an explicit bounded regeneration.')).slice(0, 1000), retryable: !exhausted }, meta: { workflow_id: 'wf_video_provider_adapter', schema_version: '1.0', idempotency_key: t.idempotency_key, trace_id: t.trace_id, retry_count: retries, max_retries: maxRetries } } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000007",
+      "name": "Return Claim Rejection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ap0000-0000-4000-8000-000000000001",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "mock",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "mock"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ap0000-0000-4000-8000-000000000002",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "generic_sync_video",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generic_sync_video"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09ap0000-0000-4000-8000-000000000003",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "generic_async_video",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generic_async_video"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "09a00000-0000-4000-8000-000000000008",
+      "name": "Route Video Provider",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        40,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=set -eu; OUT='{{$json.mock_file_path}}'; mkdir -p \"$(dirname \"$OUT\")\"; if [ ! -s \"$OUT\" ]; then ffmpeg -hide_banner -loglevel error -y -f lavfi -i \"color=c=0x172033:s=1280x720:r=24:d=3\" -f lavfi -i \"anullsrc=channel_layout=stereo:sample_rate=48000\" -shortest -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -movflags +faststart \"$OUT\"; fi; printf '%s\\n' '{\"status\":\"succeeded\",\"provider_task_id\":\"mock:{{$json.task_id}}\",\"video_url\":\"file://{{$json.mock_file_path}}\",\"mime_type\":\"video/mp4\",\"duration_seconds\":3}'"
+      },
+      "id": "09a00000-0000-4000-8000-000000000009",
+      "name": "Generate Stable Mock MP4",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        300,
+        -120
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.idempotency_key }}"
+            },
+            {
+              "name": "X-Claim-Token",
+              "value": "={{ $json.claim_token }}"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{ $json.trace_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request_payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": "={{ $json.timeout_ms }}"
+        }
+      },
+      "id": "09a00000-0000-4000-8000-000000000010",
+      "name": "Call Generic Sync Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        300,
+        40
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__VIDEO_PROVIDER_HTTP_HEADER_AUTH_ID__",
+          "name": "Video Provider HTTP Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.endpoint }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.idempotency_key }}"
+            },
+            {
+              "name": "X-Claim-Token",
+              "value": "={{ $json.claim_token }}"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{ $json.trace_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request_payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": "={{ $json.timeout_ms }}"
+        }
+      },
+      "id": "09a00000-0000-4000-8000-000000000011",
+      "name": "Call Generic Async Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        300,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__VIDEO_PROVIDER_HTTP_HEADER_AUTH_ID__",
+          "name": "Video Provider HTTP Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Hydrate Dispatch').item.json;\nconst raw = $json || {};\nlet body = raw.body !== undefined ? raw.body : raw;\nif (ctx.provider === 'mock' && typeof raw.stdout === 'string') { try { body = JSON.parse(raw.stdout.trim()); } catch { body = { error: 'Mock renderer returned invalid JSON.', stderr: String(raw.stderr || '').slice(0, 1000) }; } }\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = { message: body.slice(0, 4000) }; } }\nconst sensitiveKey = /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|cookie/i;\nconst scrub = (value, depth = 0) => { if (depth > 8) return '[depth-limited]'; if (Array.isArray(value)) return value.slice(0, 100).map((entry) => scrub(entry, depth + 1)); if (value && typeof value === 'object') { const out = {}; for (const [key, entry] of Object.entries(value)) { if (sensitiveKey.test(key)) continue; out[key] = scrub(entry, depth + 1); } return out; } if (typeof value === 'string') { if (/^data:[^,]*;base64,/i.test(value)) return '[omitted-data-uri]'; return value.length > 12000 ? value.slice(0, 12000) + '[truncated]' : value; } return value; };\nconst safeBody = scrub(body && typeof body === 'object' ? body : {});\nconst statusCode = Number(raw.statusCode || raw.status || 200);\nconst transportError = raw.error ? String(raw.error.message || raw.error).slice(0, 1000) : '';\nlet providerTaskId = String(safeBody.provider_task_id || safeBody.task_id || safeBody.id || '').slice(0, 256);\nlet videoUrl = safeBody.video_url || safeBody.output_url || (safeBody.output && safeBody.output.url) || (safeBody.data && (safeBody.data.video_url || safeBody.data.url)) || '';\nif (typeof videoUrl !== 'string' || /^data:/i.test(videoUrl)) videoUrl = '';\nlet status = 'failed';\nlet errorCode = '';\nlet errorMessage = '';\nif (transportError || statusCode < 200 || statusCode >= 300) { errorCode = transportError ? 'VIDEO_PROVIDER_TRANSPORT_ERROR' : 'VIDEO_PROVIDER_HTTP_' + statusCode; errorMessage = transportError || String(safeBody.message || safeBody.error || 'Video provider request failed.').slice(0, 1000); } else if (ctx.provider === 'generic_async_video') { if (!providerTaskId) { errorCode = 'VIDEO_PROVIDER_TASK_ID_MISSING'; errorMessage = 'Async video provider did not return a task id.'; } else if (videoUrl && ['succeeded', 'completed', 'success'].includes(String(safeBody.status || '').toLowerCase())) { status = 'succeeded'; } else { status = 'processing'; } } else if (videoUrl) { status = 'succeeded'; } else { errorCode = 'VIDEO_PROVIDER_RESULT_MISSING'; errorMessage = 'Video provider did not return a playable video URL.'; }\nif (ctx.provider === 'mock' && !providerTaskId) providerTaskId = 'mock:' + ctx.task_id;\nconst progressRaw = Number(safeBody.progress);\nconst progress = status === 'succeeded' ? 100 : (status === 'processing' ? (Number.isFinite(progressRaw) ? Math.min(99, Math.max(0, progressRaw)) : 0) : 0);\nconst response_payload = { adapter: { workflow_id: 'wf_video_provider_adapter', provider: ctx.provider, model: ctx.model, normalized_at: new Date().toISOString() }, provider_task_id: providerTaskId || null, video_url: videoUrl || null, mime_type: String(safeBody.mime_type || (videoUrl ? 'video/mp4' : '')).slice(0, 128) || null, duration_seconds: Number(safeBody.duration_seconds || safeBody.duration || 0) || null, provider_response: safeBody };\nreturn [{ json: { task_id: ctx.task_id, idempotency_key: ctx.idempotency_key, trace_id: ctx.trace_id, project_id: ctx.project_id, episode_id: ctx.episode_id, shot_id: ctx.shot_id, provider: ctx.provider, model: ctx.model, claim_token: ctx.claim_token, provider_task_id: providerTaskId, status, progress, poll_interval_seconds: Math.min(3600, Math.max(5, Number(ctx.poll_interval_seconds || 15))), response_payload, error_code: errorCode || null, error_message: errorMessage ? errorMessage.slice(0, 1000) : null } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000012",
+      "name": "Normalize Provider Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE video_generation_tasks\n  SET provider_task_id = NULLIF($2::text, ''),\n      response_payload = COALESCE(response_payload, '{}'::jsonb) || $3::jsonb,\n      status = $4,\n      progress = $5::numeric,\n      next_poll_at = CASE WHEN $4::text = 'processing' THEN clock_timestamp() + ($6::int * interval '1 second') ELSE NULL END,\n      completed_at = CASE WHEN $4::text IN ('succeeded', 'failed') THEN clock_timestamp() ELSE NULL END,\n      error_code = NULLIF($7::text, ''),\n      error_message = NULLIF($8::text, '')\n  WHERE task_id = $1\n    AND COALESCE(response_payload ->> '_claim_token', '') = $9::text\n  RETURNING *\n)\nSELECT\n  EXISTS (SELECT 1 FROM updated) AS persisted,\n  COALESCE(\n    (SELECT to_jsonb(u.*) FROM updated u LIMIT 1),\n    jsonb_build_object(\n      'task_id', $1::text,\n      'status', 'failed',\n      'error_code', 'VIDEO_CLAIM_TOKEN_MISMATCH',\n      'error_message', 'The adapter lost ownership before persisting the provider response.',\n      'response_payload', $3::jsonb\n    )\n  ) AS task;",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id, $json.provider_task_id || '', JSON.stringify($json.response_payload), $json.status, $json.progress, $json.poll_interval_seconds, $json.error_code || '', $json.error_message || '', $json.claim_token ] }}"
+        }
+      },
+      "id": "09a00000-0000-4000-8000-000000000013",
+      "name": "Persist Sanitized Provider State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        800,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "name": "AI Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json || {};\nlet t = row.task || {}; if (typeof t === 'string') { try { t = JSON.parse(t); } catch { t = {}; } }\nconst rp = t.response_payload && typeof t.response_payload === 'object' ? t.response_payload : {};\nconst status = String(t.status || 'failed');\nconst persisted = row.persisted === true || row.persisted === 'true';\nconst success = persisted && ['succeeded', 'processing'].includes(status);\nreturn [{ json: { success, status, project_id: t.project_id || null, episode_id: t.episode_id || null, shot_id: t.shot_id || null, task_id: t.task_id || null, trace_id: t.trace_id || null, data: success ? { task_id: t.task_id, provider: t.provider, provider_task_id: t.provider_task_id || rp.provider_task_id || null, status, progress: Number(t.progress || 0), video_url: rp.video_url || null, mime_type: rp.mime_type || null, duration_seconds: rp.duration_seconds || null, reused: false } : null, error: success ? null : { code: t.error_code || 'VIDEO_PROVIDER_FAILED', message: String(t.error_message || 'Video provider operation failed.').slice(0, 1000), retryable: persisted && Number(t.retry_count || 0) < Number(t.max_retries || 0) }, meta: { workflow_id: 'wf_video_provider_adapter', schema_version: '1.0', idempotency_key: t.idempotency_key || null, trace_id: t.trace_id || null, persisted } } }];"
+      },
+      "id": "09a00000-0000-4000-8000-000000000014",
+      "name": "Return Unified Adapter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        40
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Validate and Sanitize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Sanitize Input": {
+      "main": [
+        [
+          {
+            "node": "Atomically Claim Video Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atomically Claim Video Task": {
+      "main": [
+        [
+          {
+            "node": "Hydrate Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hydrate Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Route Claim Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Claim Action": {
+      "main": [
+        [
+          {
+            "node": "Route Video Provider",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Existing Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Claim Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Video Provider": {
+      "main": [
+        [
+          {
+            "node": "Generate Stable Mock MP4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Generic Sync Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Generic Async Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Stable Mock MP4": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Generic Sync Video": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Generic Async Video": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Provider Response": {
+      "main": [
+        [
+          {
+            "node": "Persist Sanitized Provider State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Sanitized Provider State": {
+      "main": [
+        [
+          {
+            "node": "Return Unified Adapter Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "09a11111-1111-4111-8111-111111111111",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "wf_video_provider_adapter",
+  "tags": []
+}
