@@ -69,8 +69,8 @@ services:
       dockerfile: Dockerfile.n8n-ffmpeg
       args:
         N8N_VERSION: 2.4.4
-        FFMPEG_VERSION: 7.1.1
-    image: ai-short-drama-n8n:2.4.4-ffmpeg7.1.1
+        FFMPEG_VERSION: 6.1.2-r2
+    image: ai-short-drama-n8n:2.4.4-ffmpeg6.1.2
     restart: unless-stopped
     ports:
       - "${N8N_PORT:-5678}:5678"
@@ -283,9 +283,9 @@ services:
       context: .
       dockerfile: scripts/media-worker/Dockerfile
       args:
-        NODE_VERSION: 22.14.0-alpine3.21
-        FFMPEG_VERSION: 7.1.1
-    image: ai-short-drama-media-worker:node22-ffmpeg7.1.1
+        N8N_VERSION: 2.4.4
+        FFMPEG_VERSION: 6.1.2-r2
+    image: ai-short-drama-media-worker:n8n2.4.4-ffmpeg6.1.2
     restart: unless-stopped
     environment:
       PGHOST: postgres
@@ -313,8 +313,8 @@ services:
       MEDIA_MAX_LOG_MB: ${MEDIA_MAX_LOG_MB:-20}
       MEDIA_MIN_SPEED_RATIO: ${MEDIA_MIN_SPEED_RATIO:-0.8}
       MEDIA_MAX_SPEED_RATIO: ${MEDIA_MAX_SPEED_RATIO:-1.25}
-      FFMPEG_PATH: /usr/local/bin/ffmpeg
-      FFPROBE_PATH: /usr/local/bin/ffprobe
+      FFMPEG_PATH: /usr/bin/ffmpeg
+      FFPROBE_PATH: /usr/bin/ffprobe
       TARGET_LOUDNESS_LUFS: ${TARGET_LOUDNESS_LUFS:--16}
       TARGET_TRUE_PEAK_DB: ${TARGET_TRUE_PEAK_DB:--1}
       QC_MAX_BLACK_SECONDS: ${QC_MAX_BLACK_SECONDS:-1}

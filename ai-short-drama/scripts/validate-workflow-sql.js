@@ -4,20 +4,9 @@ const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 const workflowDir = path.join(root, 'workflows');
-const files = [
-  '00-project-orchestrator.json',
-  '09a-video-provider-adapter.json',
-  '09b-video-task-poller.json',
-  '09-image-to-video.json',
-  '10a-tts-provider-adapter.json',
-  '10b-audio-task-poller-process.json',
-  '10-voice-audio.json',
-  '11-edit-compose.json',
-  '11a-media-processing-worker.json',
-  '12-qc-review-publish.json',
-  '12a-publish-provider-adapter.json',
-  '12b-publish-task-poller.json',
-];
+const files = fs.readdirSync(workflowDir)
+  .filter((file) => file.endsWith('.json'))
+  .sort();
 
 function splitStatements(sql) {
   const statements = [];

@@ -1,15 +1,23 @@
-# syntax=docker/dockerfile:1.7
 ARG N8N_VERSION=2.4.4
-ARG FFMPEG_VERSION=7.1.1
-FROM mwader/static-ffmpeg:${FFMPEG_VERSION} AS ffmpeg
-
 FROM docker.n8n.io/n8nio/n8n:${N8N_VERSION}
 
-USER root
-COPY --from=ffmpeg --chmod=0755 /ffmpeg /usr/local/bin/ffmpeg
-COPY --from=ffmpeg --chmod=0755 /ffprobe /usr/local/bin/ffprobe
+ARG FFMPEG_VERSION=6.1.2-r2
+ARG APK_TOOLS_STATIC_VERSION=2.14.10-r0
+ARG APK_TOOLS_STATIC_SHA256=c86e3822764e5fe19f41ce2e13553e48cac1ea4e74f858338e8d44bf0b616b61
 
-ENV FFMPEG_PATH=ffmpeg \
-    FFPROBE_PATH=ffprobe
+USER root
+RUN set -eux; \
+    apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/apk-tools-static-${APK_TOOLS_STATIC_VERSION}.apk"; \
+    wget -q -T 60 -O /tmp/apk-tools-static.apk "$apk_url"; \
+    echo "${APK_TOOLS_STATIC_SHA256}  /tmp/apk-tools-static.apk" | sha256sum -c -; \
+    mkdir -p /tmp/apk-static; \
+    tar -xzf /tmp/apk-tools-static.apk -C /tmp/apk-static; \
+    /tmp/apk-static/sbin/apk.static add --no-cache "ffmpeg=${FFMPEG_VERSION}"; \
+    ffmpeg -version; \
+    ffprobe -version; \
+    rm -rf /tmp/apk-static /tmp/apk-tools-static.apk
+
+ENV FFMPEG_PATH=/usr/bin/ffmpeg \
+    FFPROBE_PATH=/usr/bin/ffprobe
 
 USER node
