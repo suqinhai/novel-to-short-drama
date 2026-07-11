@@ -1,0 +1,191 @@
+{
+  "name": "09b 视频任务轮询",
+  "id": "wf_video_task_poller",
+  "active": false,
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},
+  "nodes": [
+    {
+      "parameters": {"rule": {"interval": [{"field": "minutes", "minutesInterval": 1}]}},
+      "id": "09b-cron", "name": "Schedule Trigger", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [-1420, -180]
+    },
+    {
+      "parameters": {"workflowInputs": {"values": [{"name": "task_id"}, {"name": "project_id"}, {"name": "trace_id"}, {"name": "payload", "type": "object"}]}},
+      "id": "09b-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
+      "position": [-1420, 0]
+    },
+    {
+      "parameters": {"httpMethod": "POST", "path": "ai-short-drama/video-poller", "responseMode": "onReceived", "options": {}},
+      "id": "09b-webhook", "name": "Manual Video Poll Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2.1,
+      "position": [-1420, 180], "webhookId": "ai-short-drama-video-poller"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),b=$json.body||$json;return [{json:{task_id:b.task_id||null,project_id:b.project_id||null,trace_id:b.trace_id||'trace_video_poll_'+crypto.randomUUID(),claim_token:crypto.randomUUID(),batch_size:Math.max(1,Math.min(Number(b.payload?.batch_size||$env.VIDEO_POLLER_BATCH_SIZE||5),25))}}];"
+      },
+      "id": "09b-normalize", "name": "Normalize Video Poll Request", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1200, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidates AS(SELECT t.id FROM drama.video_generation_tasks t LEFT JOIN drama.shot_videos v ON v.shot_id=t.shot_id AND v.generation_version=t.generation_version AND v.is_current WHERE((t.status='processing'AND(t.next_poll_at IS NULL OR t.next_poll_at<=now()))OR(t.status='succeeded'AND v.auto_qc_status='pending'))AND($1::text IS NULL OR t.task_id=$1)AND($2::text IS NULL OR t.project_id=$2)ORDER BY t.next_poll_at NULLS FIRST,t.created_at LIMIT $3 FOR UPDATE OF t SKIP LOCKED),claimed AS(UPDATE drama.video_generation_tasks t SET next_poll_at=now()+make_interval(secs=>$4),response_payload=jsonb_set(coalesce(t.response_payload,'{}'::jsonb),'{_poll_claim_token}',to_jsonb($5::text),true)FROM candidates c WHERE t.id=c.id RETURNING t.*)SELECT c.*,si.storyboard_id,si.generation_version source_image_generation_version,coalesce(c.request_payload->>'image_url',si.storage_url,si.image_url)source_image_url,sh.duration_seconds shot_duration,sh.camera_motion,sh.action_description FROM claimed c LEFT JOIN drama.storyboard_images si ON si.storyboard_image_id=c.storyboard_image_id LEFT JOIN drama.storyboard_shots sh ON sh.shot_id=c.shot_id;",
+        "options": {"queryReplacement": "={{[$json.task_id,$json.project_id,$json.batch_size,Number($env.VIDEO_POLL_INTERVAL_SECONDS||15),$json.claim_token]}}"}
+      },
+      "id": "09b-claim", "name": "Claim Due Video Tasks SKIP LOCKED", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-980, 0],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"options": {}},
+      "id": "09b-loop", "name": "Loop Claimed Video Tasks", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [-760, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$json,wait=Number($env.VIDEO_MAX_WAIT_MINUTES||30)*60000,expired=!t.started_at||Date.now()-new Date(t.started_at).getTime()>wait,ready=t.status==='succeeded'&&Array.isArray(t.response_payload?.videos)&&t.response_payload.videos.length>0;if(ready)return [{json:{...t,route:'ready',new_status:'succeeded',new_poll_count:Number(t.poll_count),result:t.response_payload}}];if(Number(t.poll_count)>=Number(t.max_poll_count)||expired)return [{json:{...t,route:'timeout',new_status:'timeout',new_poll_count:Number(t.poll_count),result:{success:false,provider:t.provider,model:t.model,status:'timeout',videos:[],error:{code:'VIDEO_TASK_TIMEOUT',message:'poll count or wait limit exceeded',retryable:false},task_id:t.task_id}}}];return [{json:{...t,route:t.provider==='mock'?'mock':'generic'}}];"
+      },
+      "id": "09b-classify", "name": "Classify Claimed Video Task", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-540, 80]
+    },
+    {
+      "parameters": {
+        "rules": {"values": [
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "ready", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "ready"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "timeout", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "timeout"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "mock", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "mock"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "generic", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "generic"}
+        ]},
+        "options": {}
+      },
+      "id": "09b-switch", "name": "Switch Video Poll Route", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [-320, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$json,next=Number(t.poll_count)+1;if(next<2)return [{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,provider:'mock',model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:'processing',videos:[],usage:{video_count:0,duration_seconds:0,estimated_cost:0},error:null,task_id:t.task_id}}}];const r=t.request_payload||{},duration=Number(r.duration_seconds||t.shot_duration||$env.VIDEO_DEFAULT_DURATION_SECONDS||5),aspect=r.aspect_ratio||$env.VIDEO_DEFAULT_ASPECT_RATIO||'9:16',resolution=r.resolution||$env.VIDEO_DEFAULT_RESOLUTION||'1080x1920',fps=Number(r.fps||$env.VIDEO_DEFAULT_FPS||24);return [{json:{...t,new_status:'succeeded',new_poll_count:next,result:{success:true,provider:'mock',model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:'succeeded',videos:[{url:null,source_image_url:t.source_image_url,duration_seconds:duration,aspect_ratio:aspect,resolution,fps,mock_video:true}],usage:{video_count:1,duration_seconds:duration,estimated_cost:0},error:null,task_id:t.task_id}}}];"
+      },
+      "id": "09b-mock", "name": "Mock Video Completes On Second Poll", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-80, 160], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET", "url": "={{$env.VIDEO_API_BASE_URL+'/tasks/'+$json.provider_task_id}}", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "={{'Bearer '+$env.VIDEO_API_KEY}}"}]},
+        "options": {"timeout": "={{Number($env.VIDEO_REQUEST_TIMEOUT_SECONDS||180)*1000}}"}
+      },
+      "id": "09b-http", "name": "Poll Generic Video Provider", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-80, 320], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$('Switch Video Poll Route').item.json,s=String($json.status||'processing').toLowerCase(),done=['succeeded','completed','success'].includes(s),failed=['failed','error','cancelled'].includes(s),raw=$json.videos||($json.video?[$json.video]:$json.url?[{url:$json.url}]:[]),videos=raw.map(v=>typeof v==='string'?{url:v}:v);if(done&&(!videos.length||videos.some(v=>!v.url||/^data:/i.test(v.url)||v.base64||v.video_base64)))throw new Error('VIDEO_PROVIDER_INVALID_RESPONSE: completed task must return video URL, never base64');return [{json:{...t,new_status:done?'succeeded':failed?'failed':'processing',new_poll_count:Number(t.poll_count)+1,result:{success:!failed,provider:t.provider,model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:done?'succeeded':failed?'failed':'processing',videos:done?videos:[],usage:{video_count:done?videos.length:0,duration_seconds:Number($json.usage?.duration_seconds||0),estimated_cost:Number($json.usage?.estimated_cost||t.estimated_cost||0)},error:failed?{code:'VIDEO_PROVIDER_INVALID_RESPONSE',message:String($json.error?.message||$json.error||'provider failed'),retryable:false}:null,task_id:t.task_id}}}];"
+      },
+      "id": "09b-http-normalize", "name": "Normalize Video Poll Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [160, 320], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json,wait=Number($env.VIDEO_MAX_WAIT_MINUTES||30)*60000,expired=!x.started_at||Date.now()-new Date(x.started_at).getTime()>wait;if(x.new_status==='processing'&&(x.new_poll_count>=Number(x.max_poll_count)||expired)){x.new_status='timeout';x.result={...x.result,success:false,status:'timeout',error:{code:'VIDEO_TASK_TIMEOUT',message:'poll count or wait limit exceeded',retryable:false}}}return [{json:x}];"
+      },
+      "id": "09b-limit", "name": "Enforce Video Poll Limits", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [400, 160]
+    },
+    {
+      "parameters": {"conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.new_status}}", "rightValue": "succeeded", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}},
+      "id": "09b-ready-if", "name": "Video Ready For Media Processing?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [620, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const path=require('path'),crypto=require('crypto'),x=$json,r=x.request_payload||{},v=x.result.videos?.[0]||{},idOk=z=>/^[A-Za-z0-9_-]+$/.test(String(z||''));if(!idOk(x.project_id)||!idOk(x.episode_id)||!idOk(x.shot_id))throw new Error('VIDEO_FILE_INVALID: unsafe project, episode or shot id');const base=$env.MEDIA_STORAGE_PATH||'/data/storage',dir=path.join(base,'shot-videos',x.project_id,x.episode_id,x.shot_id),file='shot_'+x.shot_id+'_v'+x.generation_version+'.mp4',target=path.join(dir,file),thumbDir=path.join(base,'thumbnails',x.project_id,x.episode_id),thumb=path.join(thumbDir,'shot_'+x.shot_id+'_v'+x.generation_version+'.jpg'),source=v.mock_video?(v.source_image_url||x.source_image_url):v.url;if(!source||(!String(source).startsWith(base)&&!/^https?:\\/\\//i.test(String(source))))throw new Error(v.mock_video?'REFERENCE_IMAGE_NOT_ACCESSIBLE':'VIDEO_DOWNLOAD_FAILED');const parseRes=String(v.resolution||r.resolution||$env.VIDEO_DEFAULT_RESOLUTION||'1080x1920').match(/^(\\d+)x(\\d+)$/),width=Number(r.width||parseRes?.[1]||1080),height=Number(r.height||parseRes?.[2]||1920),fps=Number(v.fps||r.fps||$env.VIDEO_DEFAULT_FPS||24),duration=Number(v.duration_seconds||r.duration_seconds||x.shot_duration||$env.VIDEO_DEFAULT_DURATION_SECONDS||5),ffmpeg=String($env.FFMPEG_PATH||'ffmpeg'),ffprobe=String($env.FFPROBE_PATH||'ffprobe');if(!Number.isFinite(width)||width<16||!Number.isFinite(height)||height<16||!Number.isFinite(fps)||fps<=0||!Number.isFinite(duration)||duration<=0)throw new Error('VIDEO_PROVIDER_INVALID_RESPONSE: invalid media dimensions, fps or duration');if(!/^[A-Za-z0-9_./-]+$/.test(ffmpeg)||!/^[A-Za-z0-9_./-]+$/.test(ffprobe))throw new Error('VIDEO_FILE_INVALID: unsafe media tool path');const q=z=>\"'\"+String(z).replace(/'/g,\"'\\\\''\")+\"'\",vf='scale='+width+':'+height+':force_original_aspect_ratio=increase,crop='+width+':'+height+',format=yuv420p',parts=['set -eu','mkdir -p '+q(dir)+' '+q(thumbDir)];if(v.mock_video){const frames=Math.max(1,Math.round(duration*fps)),mockVf=vf+',zoompan=z='+q('min(zoom+0.0008,1.05)')+':d='+frames+':s='+width+'x'+height+':fps='+fps;parts.push(q(ffmpeg)+' -y -v error -loop 1 -i '+q(source)+' -t '+duration+' -vf '+q(mockVf)+' -an -c:v libx264 -preset veryfast -pix_fmt yuv420p -movflags +faststart '+q(target));}else{parts.push(q(ffmpeg)+' -y -v error -i '+q(source)+' -map 0:v:0 -map 0:a? -vf '+q(vf)+' -r '+fps+' -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -movflags +faststart '+q(target));}parts.push(q(ffmpeg)+' -y -v error -ss 0.1 -i '+q(target)+' -frames:v 1 '+q(thumb));parts.push(q(ffprobe)+' -v error -show_entries format=duration,size,format_name:stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate -of json '+q(target));parts.push(q(ffmpeg)+' -hide_banner -nostats -i '+q(target)+' -vf '+q('blackdetect=d=0.2:pix_th=0.10,freezedetect=n=-50dB:d=1')+' -an -f null -');const key=[x.project_id,x.shot_id,x.generation_version,'transcode_video',target].join(':'),mediaId='mediajob_'+crypto.createHash('sha1').update(key).digest('hex').slice(0,20),videoId='video_'+crypto.createHash('sha1').update(x.shot_id+':'+x.generation_version).digest('hex').slice(0,20),rel=['shot-videos',x.project_id,x.episode_id,x.shot_id,file].join('/'),thumbRel=['thumbnails',x.project_id,x.episode_id,path.basename(thumb)].join('/'),publicBase=($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/[/]$/,'');return [{json:{...x,shot_video_id:videoId,media_job_id:mediaId,media_job_key:key,media_command:parts.join('; '),video_target_path:target,video_storage_url:target,video_public_url:publicBase+'/'+rel,thumbnail_path:thumb,thumbnail_url:publicBase+'/'+thumbRel,provider_original_url:v.url||null,requested_width:width,requested_height:height,requested_fps:fps,requested_duration:duration,requested_aspect:r.aspect_ratio||v.aspect_ratio||width+':'+height,reference_image_url:x.source_image_url||v.source_image_url,storyboard_id:x.storyboard_id,source_image_generation_version:Number(x.source_image_generation_version||1)}}];"
+      },
+      "id": "09b-prepare-media", "name": "Prepare Safe Persistent Video Job", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [840, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.media_processing_jobs(job_id,idempotency_key,project_id,episode_id,entity_type,entity_id,operation,input_url,output_url,parameters,status,started_at)VALUES($1,$2,$3,$4,'shot_video',$5,'transcode_video',$6,$7,jsonb_build_object('task_id',$8::text,'generation_version',$9::int,'requested_width',$10::int,'requested_height',$11::int,'requested_fps',$12::numeric,'requested_duration',$13::numeric),'processing',now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout')THEN'processing'ELSE drama.media_processing_jobs.status END,error_code=NULL,error_message=NULL,started_at=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout')THEN now()ELSE drama.media_processing_jobs.started_at END RETURNING $14::jsonb request;",
+        "options": {"queryReplacement": "={{[$json.media_job_id,$json.media_job_key,$json.project_id,$json.episode_id,$json.shot_id,$json.provider_original_url||$json.reference_image_url,$json.video_target_path,$json.task_id,$json.generation_version,$json.requested_width,$json.requested_height,$json.requested_fps,$json.requested_duration,JSON.stringify($json)]}}"}
+      },
+      "id": "09b-start-media", "name": "Start Persistent Video Media Job", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [1060, 60],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"command": "={{$json.request.media_command}}"},
+      "id": "09b-exec-media", "name": "Create Download and FFprobe MP4", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1,
+      "position": [1280, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),crypto=require('crypto'),x=$('Prepare Safe Persistent Video Job').item.json,stdout=String($json.stdout||'').trim(),stderr=String($json.stderr||''),probe=JSON.parse(stdout),streams=probe.streams||[],video=streams.find(s=>s.codec_type==='video')||{},audio=streams.find(s=>s.codec_type==='audio')||null,duration=Number(probe.format?.duration||0),size=Number(probe.format?.size||0),fpsRaw=String(video.avg_frame_rate||video.r_frame_rate||'0/1').split('/'),fps=Number(fpsRaw[1])?Number(fpsRaw[0])/Number(fpsRaw[1]):Number(fpsRaw[0]||0),width=Number(video.width||0),height=Number(video.height||0),format=String(probe.format?.format_name||''),black=[...stderr.matchAll(/black_duration:([0-9.]+)/g)].reduce((s,m)=>s+Number(m[1]),0),freezeStart=[...stderr.matchAll(/freeze_start:\\s*([0-9.]+)/g)].map(m=>Number(m[1])),freezeEnd=[...stderr.matchAll(/freeze_end:\\s*([0-9.]+)/g)].map(m=>Number(m[1])),freeze=freezeStart.reduce((s,z,i)=>s+Math.max(0,(freezeEnd[i]??duration)-z),0),tolerance=Number($env.VIDEO_DURATION_TOLERANCE_PERCENT||20)/100,requested=x.requested_duration,durationValid=duration>=requested*(1-tolerance)&&duration<=requested*(1+tolerance),expectedRatio=x.requested_width/x.requested_height,actualRatio=height?width/height:0,aspectValid=actualRatio>0&&Math.abs(actualRatio-expectedRatio)/expectedRatio<=.03,fpsValid=fps>0&&Math.abs(fps-x.requested_fps)<=1.5,fileValid=fs.existsSync(x.video_target_path)&&size>1024,mimeValid=/mp4|mov/.test(format),probeValid=Boolean(probe.format),videoTrack=Boolean(video.codec_name),notBlack=duration>0&&black/duration<.9,notFrozen=duration>0&&freeze/duration<.9,expectedAudio=Boolean(x.request_payload?.expected_audio),audioValid=!expectedAudio||Boolean(audio),fatal=!fileValid||!mimeValid||!probeValid||!durationValid||!aspectValid||!fpsValid||!videoTrack||!notBlack||!audioValid,status=fatal?'failed':notFrozen?'passed':'warning',hash=fileValid?crypto.createHash('sha256').update(fs.readFileSync(x.video_target_path)).digest('hex'):null,report={status,checks:{file_valid:fileValid,mime_valid:mimeValid,ffprobe_valid:probeValid,duration_valid:durationValid,aspect_ratio_valid:aspectValid,fps_valid:fpsValid,video_track_valid:videoTrack,not_black:notBlack,not_frozen:notFrozen,audio_track_valid:audioValid,content_hash_duplicate:false},metrics:{size_bytes:size,duration_seconds:duration,width,height,fps,codec:video.codec_name||null,format_name:format,black_ratio:duration?black/duration:null,freeze_ratio:duration?freeze/duration:null,has_audio:Boolean(audio)},warnings:[...(!notFrozen?['possible_frozen_video']:[]),...(!audio&&!expectedAudio?['no_audio_track_expected']:[])]},error=fatal?{code:!fileValid||!mimeValid||!probeValid?'VIDEO_FILE_INVALID':!durationValid?'VIDEO_DURATION_INVALID':!aspectValid?'VIDEO_ASPECT_RATIO_INVALID':'VIDEO_AUTO_QC_FAILED',message:'video failed automatic QC',retryable:true}:null,result={...x.result,status:fatal?'failed':'succeeded',videos:[{url:x.video_public_url,original_url:x.provider_original_url,storage_url:x.video_storage_url,thumbnail_url:x.thumbnail_url,duration_seconds:duration,width,height,fps,codec:video.codec_name||null,has_audio:Boolean(audio),content_hash:hash}],error};return [{json:{...x,new_status:fatal?'failed':'succeeded',result,actual_duration:duration,actual_width:width,actual_height:height,actual_fps:fps,codec:video.codec_name||null,has_audio:Boolean(audio),content_hash:hash,auto_qc_status:status,auto_qc_report:report}}];"
+      },
+      "id": "09b-qc", "name": "Parse Video Probe and Comprehensive QC", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [1500, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH t AS(UPDATE drama.video_generation_tasks SET status=$1,poll_count=$2,response_payload=$3::jsonb,progress=CASE WHEN $1='succeeded'THEN 100 ELSE progress END,next_poll_at=NULL,completed_at=now(),error_code=$4::text,error_message=$5::text WHERE task_id=$6 RETURNING *),dup AS(SELECT EXISTS(SELECT 1 FROM drama.shot_videos o WHERE o.project_id=(SELECT project_id FROM t)AND o.shot_id<>(SELECT shot_id FROM t)AND o.is_current AND o.content_hash=$26::text AND $26::text IS NOT NULL)duplicate),v AS(INSERT INTO drama.shot_videos(shot_video_id,project_id,episode_id,storyboard_id,shot_id,storyboard_image_id,source_image_generation_version,generation_version,provider,model,provider_task_id,video_prompt,negative_prompt,reference_image_url,reference_asset_ids,request_parameters,seed,requested_duration_seconds,actual_duration_seconds,aspect_ratio,width,height,fps,codec,has_audio,original_url,storage_url,thumbnail_url,content_hash,status,auto_qc_status,auto_qc_report,review_status,is_current)SELECT $7,(SELECT project_id FROM t),(SELECT episode_id FROM t),$8,(SELECT shot_id FROM t),(SELECT storyboard_image_id FROM t),$9,(SELECT generation_version FROM t),(SELECT provider FROM t),(SELECT model FROM t),(SELECT provider_task_id FROM t),$10,$11,$12,$13::jsonb,$14::jsonb,$15::bigint,$16::numeric,$17::numeric,$18,$19::int,$20::int,$21::numeric,$22,$23::boolean,$24,$25,$27,$26,$1,CASE WHEN $28='passed'AND(SELECT duplicate FROM dup)THEN'warning'ELSE $28 END,jsonb_set(jsonb_set($29::jsonb,'{checks,content_hash_duplicate}',to_jsonb((SELECT duplicate FROM dup)),true),'{warnings}',coalesce($29::jsonb->'warnings','[]'::jsonb)||CASE WHEN(SELECT duplicate FROM dup)THEN'[\"content_hash_duplicate\"]'::jsonb ELSE'[]'::jsonb END,true),'pending',true ON CONFLICT(shot_id,generation_version)DO UPDATE SET provider_task_id=excluded.provider_task_id,actual_duration_seconds=excluded.actual_duration_seconds,width=excluded.width,height=excluded.height,fps=excluded.fps,codec=excluded.codec,has_audio=excluded.has_audio,original_url=excluded.original_url,storage_url=excluded.storage_url,thumbnail_url=excluded.thumbnail_url,content_hash=excluded.content_hash,status=excluded.status,auto_qc_status=excluded.auto_qc_status,auto_qc_report=excluded.auto_qc_report,is_current=true RETURNING *),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT 'review_'||substr(md5(v.shot_video_id),1,20),v.project_id,'shot_video','shot_video',v.shot_video_id,'pending',jsonb_build_object('shot_id',v.shot_id,'generation_version',v.generation_version,'auto_qc_status',v.auto_qc_status)FROM v WHERE $1='succeeded'ON CONFLICT(review_id)DO NOTHING),mj AS(UPDATE drama.media_processing_jobs SET status=CASE WHEN $1='succeeded'THEN'succeeded'ELSE'failed'END,output_url=$25,error_code=$4::text,error_message=$5::text,completed_at=now()WHERE job_id=$30),flags AS(SELECT NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=(SELECT project_id FROM t)AND i.is_current AND i.review_status='approved'AND NOT EXISTS(SELECT 1 FROM drama.shot_videos sv WHERE sv.shot_id=i.shot_id AND sv.is_current AND sv.status='succeeded'AND sv.auto_qc_status IN('passed','warning')))video_generated,EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=(SELECT project_id FROM t)AND i.is_current AND i.review_status='approved')AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=(SELECT project_id FROM t)AND i.is_current AND i.review_status='approved'AND NOT EXISTS(SELECT 1 FROM drama.shot_videos sv WHERE sv.shot_id=i.shot_id AND sv.is_current AND sv.review_status='approved'))AND EXISTS(SELECT 1 FROM drama.episode_scripts es WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved')AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts es JOIN drama.dialogues d ON d.episode_id=es.episode_id WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.dialogue_audio da WHERE da.dialogue_id=d.dialogue_id AND da.is_current AND da.status='succeeded'AND da.auto_qc_status IN('passed','warning')))AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts es WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.episode_audio_plans ap WHERE ap.episode_id=es.episode_id AND ap.status='ready'))full_done),next_state AS(SELECT p.project_id,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage IN('audio_processing','audio_review','audio_ready','voice_profile_review','voice_profiles_locked','dialogue_audio_generated','audio_plan_completed')THEN p.current_stage WHEN f.video_generated THEN'shot_video_review'ELSE'video_processing'END next_stage,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage IN('audio_processing','audio_review','audio_ready','voice_profile_review','voice_profiles_locked','dialogue_audio_generated','audio_plan_completed')THEN p.status WHEN f.video_generated THEN'waiting_shot_video_review'ELSE'video_processing'END next_status FROM drama.projects p CROSS JOIN flags f WHERE p.project_id=(SELECT project_id FROM t)),pr AS(UPDATE drama.projects p SET current_stage=n.next_stage,status=n.next_status FROM next_state n WHERE p.project_id=n.project_id)SELECT(SELECT task_id FROM t)task_id,(SELECT shot_video_id FROM v)shot_video_id;",
+        "options": {"queryReplacement": "={{[$json.new_status,$json.new_poll_count,JSON.stringify($json.result),$json.result.error?.code||null,$json.result.error?.message||null,$json.task_id,$json.shot_video_id,$json.storyboard_id,$json.source_image_generation_version,$json.request_payload.video_prompt||$json.request_payload.prompt||'',$json.request_payload.negative_prompt||'',$json.reference_image_url,JSON.stringify($json.request_payload.reference_asset_ids||[]),JSON.stringify($json.request_payload),$json.request_payload.seed??null,$json.requested_duration,$json.actual_duration,$json.requested_aspect,$json.actual_width,$json.actual_height,$json.actual_fps,$json.codec,$json.has_audio,$json.provider_original_url,$json.video_storage_url,$json.content_hash,$json.thumbnail_url,$json.auto_qc_status,JSON.stringify($json.auto_qc_report),$json.media_job_id]}}"}
+      },
+      "id": "09b-save-complete", "name": "Save Video Version QC Review and Project", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [1720, 60],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH t AS(UPDATE drama.video_generation_tasks SET status=$1,poll_count=$2,response_payload=$3::jsonb,progress=CASE WHEN $1='processing'THEN greatest(progress,least(99,$4::numeric))ELSE progress END,next_poll_at=CASE WHEN $1='processing'THEN now()+make_interval(secs=>$5)ELSE NULL END,completed_at=CASE WHEN $1 IN('failed','timeout')THEN now()ELSE completed_at END,error_code=$6::text,error_message=$7::text WHERE task_id=$8 RETURNING *),v AS(UPDATE drama.shot_videos SET status=CASE WHEN $1='processing'THEN'processing'WHEN $1='timeout'THEN'timeout'ELSE'failed'END,auto_qc_status=CASE WHEN $1 IN('failed','timeout')THEN'failed'ELSE auto_qc_status END,auto_qc_report=CASE WHEN $1 IN('failed','timeout')THEN jsonb_build_object('status','failed','error_code',$6::text,'error_message',$7::text)ELSE auto_qc_report END WHERE shot_id=(SELECT shot_id FROM t)AND generation_version=(SELECT generation_version FROM t))SELECT task_id,status FROM t;",
+        "options": {"queryReplacement": "={{[$json.new_status,$json.new_poll_count,JSON.stringify($json.result),Number($json.result.progress||0),Number($env.VIDEO_POLL_INTERVAL_SECONDS||15),$json.result.error?.code||null,$json.result.error?.message||null,$json.task_id]}}"}
+      },
+      "id": "09b-save-state", "name": "Save Isolated Video Poll State", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [840, 320],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "let t={};try{t=$('Loop Claimed Video Tasks').item.json||{};}catch(e){}let m=String($json.error?.message||$json.message||'video polling or processing failed').replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]');const code=/download/i.test(m)?'VIDEO_DOWNLOAD_FAILED':/ffprobe|file|media|command/i.test(m)?'VIDEO_FILE_INVALID':/timeout/i.test(m)?'VIDEO_PROVIDER_TIMEOUT':'VIDEO_PROVIDER_INVALID_RESPONSE';return [{json:{...t,new_status:'failed',new_poll_count:Number(t.poll_count||0)+1,result:{success:false,provider:t.provider||null,model:t.model||null,status:'failed',videos:[],error:{code,message:m,retryable:/timeout|network|429|5\\d\\d/i.test(m)},task_id:t.task_id||null}}}];"
+      },
+      "id": "09b-failure", "name": "Normalize Sanitized Video Failure", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [620, 520]
+    },
+    {
+      "parameters": {"mode": "runOnceForAllItems", "jsCode": "const a=$input.all();return [{json:{success:true,stage:'video_poller',status:'completed',data_ref:{entity_type:'video_tasks',entity_id:null},metrics:{processed:a.length},error:null}}];"},
+      "id": "09b-summary", "name": "Video Poll Batch Summary", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-540, -160]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {"main": [[{"node": "Normalize Video Poll Request", "type": "main", "index": 0}]]},
+    "Sub-workflow Trigger": {"main": [[{"node": "Normalize Video Poll Request", "type": "main", "index": 0}]]},
+    "Manual Video Poll Webhook": {"main": [[{"node": "Normalize Video Poll Request", "type": "main", "index": 0}]]},
+    "Normalize Video Poll Request": {"main": [[{"node": "Claim Due Video Tasks SKIP LOCKED", "type": "main", "index": 0}]]},
+    "Claim Due Video Tasks SKIP LOCKED": {"main": [[{"node": "Loop Claimed Video Tasks", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Loop Claimed Video Tasks": {"main": [[{"node": "Video Poll Batch Summary", "type": "main", "index": 0}], [{"node": "Classify Claimed Video Task", "type": "main", "index": 0}]]},
+    "Classify Claimed Video Task": {"main": [[{"node": "Switch Video Poll Route", "type": "main", "index": 0}]]},
+    "Switch Video Poll Route": {"main": [[{"node": "Prepare Safe Persistent Video Job", "type": "main", "index": 0}], [{"node": "Save Isolated Video Poll State", "type": "main", "index": 0}], [{"node": "Mock Video Completes On Second Poll", "type": "main", "index": 0}], [{"node": "Poll Generic Video Provider", "type": "main", "index": 0}]]},
+    "Mock Video Completes On Second Poll": {"main": [[{"node": "Enforce Video Poll Limits", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Poll Generic Video Provider": {"main": [[{"node": "Normalize Video Poll Response", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Normalize Video Poll Response": {"main": [[{"node": "Enforce Video Poll Limits", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Enforce Video Poll Limits": {"main": [[{"node": "Video Ready For Media Processing?", "type": "main", "index": 0}]]},
+    "Video Ready For Media Processing?": {"main": [[{"node": "Prepare Safe Persistent Video Job", "type": "main", "index": 0}], [{"node": "Save Isolated Video Poll State", "type": "main", "index": 0}]]},
+    "Prepare Safe Persistent Video Job": {"main": [[{"node": "Start Persistent Video Media Job", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Start Persistent Video Media Job": {"main": [[{"node": "Create Download and FFprobe MP4", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Create Download and FFprobe MP4": {"main": [[{"node": "Parse Video Probe and Comprehensive QC", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Parse Video Probe and Comprehensive QC": {"main": [[{"node": "Save Video Version QC Review and Project", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Save Video Version QC Review and Project": {"main": [[{"node": "Loop Claimed Video Tasks", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Save Isolated Video Poll State": {"main": [[{"node": "Loop Claimed Video Tasks", "type": "main", "index": 0}], [{"node": "Normalize Sanitized Video Failure", "type": "main", "index": 0}]]},
+    "Normalize Sanitized Video Failure": {"main": [[{"node": "Save Isolated Video Poll State", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-09000000009b",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}
