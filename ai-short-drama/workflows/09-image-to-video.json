@@ -1,0 +1,974 @@
+{
+  "name": "09 图生视频",
+  "id": "wf_image_to_video",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "episode_id"
+            },
+            {
+              "name": "shot_id"
+            },
+            {
+              "name": "stage"
+            },
+            {
+              "name": "action"
+            },
+            {
+              "name": "generation_version",
+              "type": "number"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "09-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1580,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto');\nconst input=$json.body&&typeof $json.body==='object'?{...$json.body}:$json;\nconst payload=input.payload&&typeof input.payload==='object'&&!Array.isArray(input.payload)?input.payload:{};\nconst clean=(value)=>value==null?null:String(value).trim();\nconst project_id=clean(input.project_id||payload.project_id);\nconst action=String(input.action||payload.action||'run').toLowerCase();\nconst reviewAction=action==='review';\nconst episode_id=clean(input.episode_id||payload.episode_id);\nconst shot_id=clean(input.shot_id||payload.shot_id);\nconst generation_version=Math.max(1,Number(input.generation_version||payload.generation_version||1));\nconst allowed=['run','retry','regenerate','review','resume','cancel'];\nif(!project_id)throw new Error('PROJECT_NOT_FOUND: project_id is required');\nif(!allowed.includes(action))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported image-to-video action');\nif(!reviewAction&&!episode_id)throw new Error('EPISODE_NOT_FOUND: episode_id is required');\nif(action==='regenerate'&&(!shot_id||generation_version<2))throw new Error('SOURCE_VERSION_MISMATCH: regenerate requires shot_id and a new generation_version');\nconst review_id=clean(input.review_id||payload.review_id);\nconst entity_id=clean(input.entity_id||payload.entity_id||payload.shot_video_id);\nconst review_status=clean(input.review_status||payload.review_status);\nif(reviewAction&&(!review_id||!entity_id||!['approved','rejected'].includes(review_status)))throw new Error('BUSINESS_VALIDATION_FAILED: review_id, shot_video entity_id and approved/rejected status are required');\nif(reviewAction&&review_status==='rejected'&&!String(input.rejection_reason||payload.rejection_reason||'').trim())throw new Error('BUSINESS_VALIDATION_FAILED: rejected review requires rejection_reason');\nconst trace_id=clean(input.trace_id||payload.trace_id)||('trace_video_'+crypto.randomUUID());\nconst entityScope=shot_id||entity_id||episode_id||project_id;\nconst idempotency_key=[project_id,'image_to_video',entityScope,generation_version].join(':');\nconst route=reviewAction?'review':action==='cancel'?'cancel':'run';\nreturn [{json:{...input,payload,project_id,episode_id,shot_id,stage:'image_to_video',action,generation_version,test_mode:Boolean(input.test_mode||payload.test_mode),trace_id,task_id:'task_video_'+crypto.randomUUID(),idempotency_key,route,review_id,entity_id,review_status,review_comment:String(input.review_comment||payload.review_comment||''),rejection_reason:String(input.rejection_reason||payload.rejection_reason||''),prompt_adjustment:String(input.prompt_adjustment||payload.prompt_adjustment||''),batch_limit:500,started_ms:Date.now()}}];"
+      },
+      "id": "09-normalize",
+      "name": "Validate Image to Video Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09-route-review",
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "review"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09-route-cancel",
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "cancel",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "cancel"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09-route-run",
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "run",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "run"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "09-route",
+      "name": "Switch Image to Video Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH target AS MATERIALIZED (\n  SELECT v.*,r.review_id\n  FROM drama.shot_videos v\n  JOIN drama.review_tasks r ON r.project_id=v.project_id AND r.entity_type='shot_video' AND r.entity_id=v.shot_video_id\n  WHERE v.project_id=$1::text\n    AND ($2::text IS NULL OR r.review_id=$2::text)\n    AND ($3::text IS NULL OR v.shot_video_id=$3::text)\n    AND ($4::text IS NULL OR v.shot_id=$4::text)\n  ORDER BY v.generation_version DESC LIMIT 1\n),\neligible AS MATERIALIZED (\n  SELECT * FROM target\n  WHERE $5::text IN ('approved','rejected')\n    AND ($5::text<>'approved' OR (status='succeeded' AND auto_qc_status IN ('passed','warning')))\n    AND ($5::text<>'rejected' OR NULLIF(btrim($7::text),'') IS NOT NULL)\n),\nreviewed AS (\n  UPDATE drama.review_tasks r\n  SET review_status=$5::text,review_comment=NULLIF($6::text,''),rejection_reason=NULLIF($7::text,''),\n      prompt_adjustment=NULLIF($8::text,''),reviewed_at=now()\n  FROM eligible e WHERE r.review_id=e.review_id RETURNING r.*\n),\nvideo AS (\n  UPDATE drama.shot_videos v\n  SET review_status=$5::text,review_comment=NULLIF($6::text,''),rejection_reason=NULLIF($7::text,''),\n      prompt_adjustment=NULLIF($8::text,'')\n  FROM eligible e,reviewed r WHERE v.shot_video_id=e.shot_video_id RETURNING v.*\n),\nrequired AS (\n  SELECT sh.shot_id FROM drama.storyboards b\n  JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id\n  WHERE b.storyboard_id=(SELECT storyboard_id FROM target) AND b.status='approved'\n    AND sh.status IN ('approved','ready')\n),\nflags AS (\n  SELECT EXISTS(SELECT 1 FROM video) changed,\n    EXISTS(SELECT 1 FROM required) AND NOT EXISTS(\n      SELECT 1 FROM required q WHERE NOT EXISTS(\n        SELECT 1 FROM drama.shot_videos sv\n        WHERE sv.shot_id=q.shot_id AND sv.is_current AND sv.status='succeeded'\n          AND sv.auto_qc_status IN ('passed','warning') AND sv.review_status='approved'\n      )\n    ) all_video_approved\n),\naudio AS (\n  SELECT EXISTS(\n      SELECT 1 FROM drama.episode_scripts es\n      WHERE es.project_id=$1::text AND es.episode_id=(SELECT episode_id FROM target) AND es.status='approved'\n    )\n    AND NOT EXISTS(\n      SELECT 1 FROM drama.episode_scripts es JOIN drama.dialogues d ON d.episode_id=es.episode_id\n      WHERE es.project_id=$1::text AND es.episode_id=(SELECT episode_id FROM target) AND es.status='approved'\n        AND NOT EXISTS(\n          SELECT 1 FROM drama.dialogue_audio da\n          WHERE da.dialogue_id=d.dialogue_id AND da.is_current AND da.status='succeeded'\n            AND da.auto_qc_status IN ('passed','warning')\n        )\n    )\n    AND EXISTS(\n      SELECT 1 FROM drama.episode_audio_plans ap\n      WHERE ap.project_id=$1::text AND ap.episode_id=(SELECT episode_id FROM target)\n        AND ap.status IN ('ready','completed')\n    ) audio_done\n),\nstate AS (\n  SELECT f.*,a.audio_done,(f.all_video_approved AND a.audio_done) full_done\n  FROM flags f CROSS JOIN audio a\n),\nproject_update AS (\n  UPDATE drama.projects p\n  SET current_stage=CASE\n        WHEN s.full_done THEN 'stage_4_completed'\n        WHEN NOT s.changed THEN p.current_stage\n        WHEN $5::text='rejected' THEN 'shot_video_review'\n        WHEN s.all_video_approved AND p.current_stage IN ('voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed') THEN p.current_stage\n        WHEN s.all_video_approved THEN 'shot_videos_approved'\n        ELSE 'shot_video_review'\n      END,\n      status=CASE\n        WHEN s.full_done THEN 'stage_4_completed'\n        WHEN NOT s.changed THEN p.status\n        WHEN $5::text='rejected' THEN 'waiting_shot_video_review'\n        WHEN s.all_video_approved AND p.current_stage IN ('voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed') THEN p.status\n        WHEN s.all_video_approved THEN 'running'\n        ELSE 'waiting_shot_video_review'\n      END\n  FROM state s WHERE p.project_id=$1::text RETURNING p.current_stage,p.status\n)\nSELECT (SELECT changed FROM state) success,$1::text project_id,\n  (SELECT episode_id FROM target) episode_id,(SELECT shot_id FROM target) shot_id,\n  (SELECT shot_video_id FROM target) shot_video_id,$2::text review_id,$5::text review_status,\n  (SELECT all_video_approved FROM state) all_video_approved,\n  (SELECT full_done FROM state) stage4_complete,\n  (SELECT current_stage FROM project_update) project_stage,\n  CASE\n    WHEN NOT EXISTS(SELECT 1 FROM target) THEN 'REVIEW_NOT_FOUND'\n    WHEN NOT EXISTS(SELECT 1 FROM eligible) AND $5::text='approved' THEN 'SHOT_VIDEO_NOT_APPROVED'\n    WHEN NOT EXISTS(SELECT 1 FROM eligible) THEN 'BUSINESS_VALIDATION_FAILED'\n    ELSE NULL\n  END error_code,\n  CASE\n    WHEN NOT EXISTS(SELECT 1 FROM target) THEN 'shot video review task was not found'\n    WHEN NOT EXISTS(SELECT 1 FROM eligible) AND $5::text='approved' THEN 'shot video must succeed automatic QC before approval'\n    WHEN NOT EXISTS(SELECT 1 FROM eligible) THEN 'review request failed validation'\n    ELSE NULL\n  END error_message,$9::text trace_id;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.review_id,$json.entity_id,$json.shot_id,$json.review_status,$json.review_comment,$json.rejection_reason,$json.prompt_adjustment,$json.trace_id]}}"
+        }
+      },
+      "id": "09-review-sql",
+      "name": "Review Shot Video Atomically",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -900,
+        -260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json,ok=x.success===true||x.success==='true';\nreturn [{json:{success:ok,project_id:x.project_id||null,episode_id:x.episode_id||null,shot_id:x.shot_id||null,trace_id:x.trace_id||null,stage:'image_to_video',status:ok?x.review_status:'failed',data_ref:ok?{entity_type:'shot_video',entity_id:x.shot_video_id,review_id:x.review_id,stage4_complete:x.stage4_complete===true||x.stage4_complete==='true'}:null,metrics:{all_video_approved:x.all_video_approved===true||x.all_video_approved==='true'},error:ok?null:{code:x.error_code||'REVIEW_NOT_FOUND',message:x.error_message||'shot video review failed',retryable:false}}}];"
+      },
+      "id": "09-review-result",
+      "name": "Shot Video Review Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -660,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH cancelled_tasks AS (\n  UPDATE drama.video_generation_tasks\n  SET status='cancelled',completed_at=now(),next_poll_at=NULL,\n      error_code='CANCELLED_BY_USER',error_message='cancelled by explicit workflow request'\n  WHERE project_id=$1::text AND ($2::text IS NULL OR episode_id=$2::text)\n    AND ($3::text IS NULL OR shot_id=$3::text) AND status IN ('pending','submitting','processing')\n  RETURNING task_id\n),\nfailed_versions AS (\n  UPDATE drama.shot_videos\n  SET status='failed',auto_qc_status='failed',\n      auto_qc_report=jsonb_build_object('status','failed','error_code','CANCELLED_BY_USER','message','cancelled by explicit workflow request')\n  WHERE project_id=$1::text AND ($2::text IS NULL OR episode_id=$2::text)\n    AND ($3::text IS NULL OR shot_id=$3::text) AND status IN ('pending','generating','processing')\n  RETURNING shot_video_id\n),\nworkflow_cancel AS (\n  UPDATE drama.workflow_tasks\n  SET status='cancelled',completed_at=now(),error_code='CANCELLED_BY_USER',\n      error_message='cancelled by explicit workflow request'\n  WHERE project_id=$1::text AND workflow_stage='image_to_video' AND status='running'\n  RETURNING task_id\n),\nproject_update AS (\n  UPDATE drama.projects SET current_stage='stage_4_failed',status='cancelled'\n  WHERE project_id=$1::text RETURNING project_id\n)\nSELECT jsonb_build_object(\n  'success',true,'project_id',$1::text,'episode_id',$2::text,'shot_id',$3::text,\n  'trace_id',$4::text,'stage','image_to_video','status','cancelled',\n  'data_ref',jsonb_build_object('entity_type','video_tasks','entity_id',$3::text),\n  'metrics',jsonb_build_object('cancelled_tasks',(SELECT count(*) FROM cancelled_tasks),'cancelled_versions',(SELECT count(*) FROM failed_versions)),\n  'error',NULL\n) response;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id,$json.trace_id]}}"
+        }
+      },
+      "id": "09-cancel-sql",
+      "name": "Cancel Video Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -900,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response||$json}];"
+      },
+      "id": "09-cancel-result",
+      "name": "Video Cancellation Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.workflow_tasks(\n  task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,\n  idempotency_key,status,max_retries,input_data,started_at\n) VALUES(\n  $1::text,$2::text,$3::text,'image_to_video',$4::text,\n  CASE WHEN $5::text IS NULL THEN 'episode' ELSE 'shot' END,COALESCE($5::text,$6::text),\n  $7::int,$8::text,'running',$9::int,$10::jsonb,now()\n)\nON CONFLICT(idempotency_key) DO UPDATE SET\n  trace_id=EXCLUDED.trace_id,\n  status=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN 'running'\n    ELSE drama.workflow_tasks.status END,\n  retry_count=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN drama.workflow_tasks.retry_count+1\n    ELSE drama.workflow_tasks.retry_count END,\n  error_code=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    THEN NULL ELSE drama.workflow_tasks.error_code END,\n  error_message=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    THEN NULL ELSE drama.workflow_tasks.error_message END,\n  started_at=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    THEN now() ELSE drama.workflow_tasks.started_at END,\n  completed_at=CASE WHEN drama.workflow_tasks.status='failed' AND $4::text IN ('retry','regenerate','resume')\n    THEN NULL ELSE drama.workflow_tasks.completed_at END\nRETURNING status,output_data,$11::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.shot_id,$json.episode_id,$json.generation_version,$json.idempotency_key,Number($env.VIDEO_MAX_RETRIES||3),JSON.stringify($json),JSON.stringify($json)]}}"
+        }
+      },
+      "id": "09-gate",
+      "name": "Video Workflow Task Gate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -900,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.status}}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "09-cached-if",
+      "name": "Video Workflow Already Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -660,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.output_data}];"
+      },
+      "id": "09-cached",
+      "name": "Return Cached Video Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status!=='running')throw new Error('DUPLICATE_VIDEO_TASK_RUNNING: an equivalent image-to-video workflow is already running');\nreturn [{json:$json.request}];"
+      },
+      "id": "09-restore",
+      "name": "Restore Video Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        340
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH project_row AS (\n  SELECT * FROM drama.projects WHERE project_id=$1::text\n),\nepisode_row AS (\n  SELECT e.* FROM drama.episode_outlines e JOIN project_row p ON p.project_id=e.project_id\n  WHERE e.episode_id=$2::text\n),\nscript_row AS (\n  SELECT s.* FROM drama.episode_scripts s JOIN episode_row e ON e.episode_id=s.episode_id\n  WHERE s.status='approved' ORDER BY s.version DESC LIMIT 1\n),\nboard_row AS (\n  SELECT b.* FROM drama.storyboards b JOIN script_row s ON s.script_id=b.script_id\n  WHERE b.status='approved' ORDER BY b.version DESC LIMIT 1\n),\nshot_rows AS (\n  SELECT sh.*,b.storyboard_id,b.version storyboard_version,\n    i.storyboard_image_id,i.generation_version image_generation_version,\n    i.source_storyboard_version,i.visual_style_id,i.character_profile_ids,i.costume_ids,\n    i.location_profile_id,i.prop_ids,i.reference_asset_ids,i.image_asset_id,\n    i.final_prompt image_prompt,i.negative_prompt image_negative_prompt,\n    i.image_url,i.storage_url image_storage_url,i.status image_status,\n    i.auto_qc_status image_qc_status,i.review_status image_review_status,\n    v.shot_video_id current_video_id,v.generation_version current_video_version,\n    v.status current_video_status,v.auto_qc_status current_video_qc_status,\n    v.review_status current_video_review_status,\n    t.task_id current_task_id,t.status current_task_status,\n    CASE WHEN i.storyboard_image_id IS NULL THEN false ELSE\n      NOT EXISTS(\n        SELECT 1 FROM jsonb_array_elements_text(COALESCE(i.character_profile_ids,'[]'::jsonb)) pid\n        WHERE NOT EXISTS(\n          SELECT 1 FROM drama.character_visual_profiles cp\n          WHERE cp.profile_id=pid AND cp.project_id=$1::text\n            AND cp.lock_status='locked' AND cp.review_status='approved'\n        )\n      )\n      AND NOT EXISTS(\n        SELECT 1 FROM jsonb_array_elements_text(COALESCE(i.costume_ids,'[]'::jsonb)) cid\n        WHERE NOT EXISTS(\n          SELECT 1 FROM drama.character_costumes cc\n          WHERE cc.costume_id=cid AND cc.project_id=$1::text\n            AND cc.lock_status='locked' AND cc.review_status='approved'\n        )\n      )\n      AND (i.location_profile_id IS NULL OR EXISTS(\n        SELECT 1 FROM drama.location_visual_profiles lp\n        WHERE lp.profile_id=i.location_profile_id AND lp.project_id=$1::text\n          AND lp.lock_status='locked' AND lp.review_status='approved'\n      ))\n      AND NOT EXISTS(\n        SELECT 1 FROM jsonb_array_elements_text(COALESCE(i.prop_ids,'[]'::jsonb)) pid\n        WHERE NOT EXISTS(\n          SELECT 1 FROM drama.prop_visual_profiles pp\n          WHERE pp.prop_id=pid AND pp.project_id=$1::text\n            AND pp.lock_status='locked' AND pp.review_status='approved'\n        )\n      )\n    END assets_locked\n  FROM board_row b\n  JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id\n    AND sh.status IN ('approved','ready')\n  LEFT JOIN LATERAL(\n    SELECT si.* FROM drama.storyboard_images si\n    WHERE si.shot_id=sh.shot_id AND si.storyboard_id=b.storyboard_id AND si.is_current\n      AND si.status='succeeded' AND si.review_status='approved'\n      AND si.auto_qc_status IN ('passed','warning')\n    ORDER BY si.generation_version DESC LIMIT 1\n  ) i ON true\n  LEFT JOIN LATERAL(\n    SELECT sv.* FROM drama.shot_videos sv\n    WHERE sv.shot_id=sh.shot_id AND sv.is_current\n    ORDER BY sv.generation_version DESC LIMIT 1\n  ) v ON true\n  LEFT JOIN LATERAL(\n    SELECT vt.* FROM drama.video_generation_tasks vt\n    WHERE vt.shot_id=sh.shot_id AND vt.generation_version=$3::int\n    ORDER BY vt.created_at DESC LIMIT 1\n  ) t ON true\n  WHERE ($4::text IS NULL OR sh.shot_id=$4::text)\n  ORDER BY sh.shot_order LIMIT $5::int\n)\nSELECT $6::jsonb request,\n  (SELECT to_jsonb(p.*) FROM project_row p) project,\n  (SELECT to_jsonb(e.*) FROM episode_row e) episode,\n  (SELECT to_jsonb(s.*) FROM script_row s) script,\n  (SELECT to_jsonb(b.*) FROM board_row b) storyboard,\n  COALESCE((SELECT jsonb_agg(to_jsonb(sr.*) ORDER BY sr.shot_order) FROM shot_rows sr),'[]'::jsonb) shots;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.generation_version,$json.shot_id,$json.batch_limit,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "09-load",
+      "name": "Load Approved Images and Video State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -180,
+        340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),x=$json,r=x.request||{},p=r.payload||{};\nif(!x.project)throw new Error('PROJECT_NOT_FOUND: project not found');\nif(!x.episode)throw new Error('EPISODE_NOT_FOUND: episode does not belong to project');\nif(!x.script)throw new Error('EPISODE_SCRIPT_NOT_APPROVED: no approved episode script');\nif(!x.storyboard)throw new Error('STORYBOARD_NOT_APPROVED: no approved storyboard for the approved script');\nlet shots=Array.isArray(x.shots)?x.shots:[];\nif(!shots.length)throw new Error(r.shot_id?'SHOT_NOT_FOUND: requested shot is not in the approved storyboard':'STORYBOARD_NOT_APPROVED: approved storyboard has no eligible shots');\nconst missingImages=shots.filter(s=>!s.storyboard_image_id).map(s=>s.shot_id);\nif(missingImages.length)throw new Error('APPROVED_STORYBOARD_IMAGE_NOT_FOUND: '+JSON.stringify({missing_shot_ids:missingImages}));\nconst versionMismatch=shots.filter(s=>Number(s.source_storyboard_version)!==Number(x.storyboard.version)).map(s=>s.shot_id);\nif(versionMismatch.length)throw new Error('SOURCE_VERSION_MISMATCH: '+JSON.stringify({shot_ids:versionMismatch}));\nconst unlocked=shots.filter(s=>s.assets_locked!==true&&s.assets_locked!=='true').map(s=>s.shot_id);\nif(String($env.REQUIRE_LOCKED_ASSETS||'true')==='true'&&unlocked.length)throw new Error('REQUIRED_ASSETS_NOT_LOCKED: '+JSON.stringify({shot_ids:unlocked}));\nconst effectiveTest=Boolean(r.test_mode||x.project.test_mode);\nconst limit=effectiveTest?Math.max(1,Math.min(Number($env.TEST_MAX_VIDEO_SHOTS||10),100)):Math.max(1,Math.min(Number(r.batch_limit||500),500));\nshots=shots.slice(0,limit);\nconst provider=effectiveTest?'mock':String(p.provider||$env.VIDEO_PROVIDER||'mock').toLowerCase();\nif(!['mock','generic_sync_video','generic_async_video'].includes(provider))throw new Error('UNSUPPORTED_VIDEO_PROVIDER');\nconst model=String(p.model||$env.VIDEO_MODEL||'mock-image-to-video');\nconst base=String($env.MEDIA_STORAGE_PATH||'/data/storage').replace(/[\\\\/]+$/,'');\nconst publicBase=String($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/\\/$/,'');\nconst apiBase=String(p.endpoint||$env.VIDEO_API_BASE_URL||'').replace(/\\/$/,'');\nconst resolution=String(p.resolution||$env.VIDEO_DEFAULT_RESOLUTION||'1080x1920');\nconst match=resolution.match(/^(\\d+)x(\\d+)$/);\nif(!match)throw new Error('VIDEO_PROVIDER_INVALID_RESPONSE: invalid VIDEO_DEFAULT_RESOLUTION');\nconst width=Number(match[1]),height=Number(match[2]),fps=Number(p.fps||$env.VIDEO_DEFAULT_FPS||24);\nconst toPublic=(value)=>{const v=String(value||'');if(v.startsWith(base+'/'))return publicBase+'/'+v.slice(base.length+1).replace(/^\\/+/, '');return v;};\nreturn shots.map(s=>{\n  const currentVersion=Number(s.current_video_version||0);\n  if(r.action==='regenerate'&&s.current_video_id&&s.current_video_review_status==='approved')throw new Error('SHOT_VIDEO_ALREADY_APPROVED: approved current video cannot be overwritten');\n  if(r.action==='regenerate'&&Number(r.generation_version)<=currentVersion)throw new Error('SOURCE_VERSION_MISMATCH: regeneration version must exceed current video version');\n  const existingBusy=s.current_task_id&&['submitting','processing','succeeded'].includes(String(s.current_task_status));\n  const alreadyApproved=s.current_video_id&&s.current_video_status==='succeeded'&&s.current_video_review_status==='approved';\n  if((alreadyApproved&&['run','resume'].includes(r.action))||existingBusy){\n    return {json:{...r,effective_test_mode:effectiveTest,batch_limit:limit,route:'skip',shot:s,task_id_existing:s.current_task_id||null,skip_reason:alreadyApproved?'already_approved':'task_already_active'}};\n  }\n  const rawImageRef=String(s.image_storage_url||s.image_url||'');\n  const imageRef=provider==='mock'&&rawImageRef.startsWith(base+'/')?rawImageRef:toPublic(rawImageRef);\n  if(!imageRef||/^data:/i.test(imageRef))throw new Error('REFERENCE_IMAGE_NOT_ACCESSIBLE: approved frame has no safe URL or storage path');\n  const adjustment=String(p.prompt_adjustment||r.prompt_adjustment||'').trim();\n  const videoPrompt=[\n    s.video_prompt_base,s.image_prompt,'动作：'+String(s.action_description||''),\n    '镜头运动：'+String(s.camera_motion||''),'构图：'+String(s.composition||''),\n    adjustment?'调整：'+adjustment:'',\n    '保持人物、服装、场景与参考帧一致；无字幕、无文字、无水印、无Logo'\n  ].filter(Boolean).join('。');\n  const negativePrompt=[\n    s.negative_prompt_base,s.image_negative_prompt,\n    '人物变形，换脸，额外人物，闪烁，抖动，文字，字幕，水印，Logo'\n  ].filter(Boolean).join('，');\n  const promptHash=crypto.createHash('sha256').update(videoPrompt+'\\n'+negativePrompt).digest('hex');\n  const keyHash=crypto.createHash('sha256').update([\n    r.project_id,r.episode_id,s.shot_id,s.storyboard_image_id,s.image_generation_version,\n    r.generation_version,provider,model,promptHash\n  ].join(':')).digest('hex');\n  const task_id='vtask_'+keyHash.slice(0,24);\n  const idempotency_key='video_'+keyHash;\n  const claim_token='claim_'+keyHash.slice(0,40);\n  const duration=Math.max(1,Math.min(Number(s.duration_seconds||$env.VIDEO_DEFAULT_DURATION_SECONDS||5),30));\n  const aspect=String(p.aspect_ratio||$env.VIDEO_DEFAULT_ASPECT_RATIO||'9:16');\n  const endpoint=provider==='mock'?'':(apiBase?(apiBase.endsWith('/generate')?apiBase:apiBase+'/generate'):'');\n  const request_payload={\n    prompt:videoPrompt,negative_prompt:negativePrompt,image_url:imageRef,\n    reference_asset_ids:Array.isArray(s.reference_asset_ids)?s.reference_asset_ids:[],\n    duration_seconds:duration,aspect_ratio:aspect,resolution,width,height,fps,expected_audio:false,\n    storyboard_id:s.storyboard_id,storyboard_version:s.storyboard_version,\n    storyboard_image_id:s.storyboard_image_id,\n    source_image_generation_version:Number(s.image_generation_version),\n    shot_id:s.shot_id,camera_motion:s.camera_motion||'',action_description:s.action_description||'',\n    mock_async:Boolean(p.mock_async),simulate:p.simulate||null\n  };\n  const seed=Number.parseInt(keyHash.slice(0,8),16);\n  const shot_video_id='video_'+crypto.createHash('sha1').update(s.shot_id+':'+r.generation_version).digest('hex').slice(0,20);\n  return {json:{...r,effective_test_mode:effectiveTest,batch_limit:limit,route:'submit',shot:s,\n    provider,model,endpoint,task_id,idempotency_key,claim_token,\n    storyboard_image_id:s.storyboard_image_id,shot_video_id,\n    video_prompt:videoPrompt,negative_prompt:negativePrompt,reference_image_url:imageRef,\n    reference_asset_ids:request_payload.reference_asset_ids,request_payload,seed,\n    duration_seconds:duration,aspect_ratio:aspect,width,height,fps,\n    max_poll_count:Number($env.VIDEO_MAX_POLL_COUNT||60),\n    max_retries:Number($env.VIDEO_MAX_RETRIES||3),\n    timeout_ms:Number($env.VIDEO_REQUEST_TIMEOUT_SECONDS||180)*1000,\n    poll_interval_seconds:Number($env.VIDEO_POLL_INTERVAL_SECONDS||15),\n    regenerate:['retry','regenerate'].includes(r.action)}};\n});"
+      },
+      "id": "09-build",
+      "name": "Validate Media and Build Video Dispatch Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        340
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "09-loop",
+      "name": "Loop Video Shots",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        300,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09-dispatch-submit",
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "submit",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "submit"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "09-dispatch-skip",
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "09-dispatch-switch",
+      "name": "Switch Video Dispatch Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        540,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_video_provider_adapter",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "09-call-adapter",
+      "name": "Execute 09a Video Provider",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        360
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx=$('Loop Video Shots').item.json,out=$json||{},data=out.data&&typeof out.data==='object'?out.data:{};\nconst success=out.success===true&&['processing','succeeded'].includes(String(out.status));\nconst error=out.error||($json.error?{code:'VIDEO_PROVIDER_FAILED',message:String($json.error.message||$json.error),retryable:true}:null);\nreturn [{json:{...ctx,adapter_success:success,adapter_status:String(out.status||'failed'),\n  provider_task_id:data.provider_task_id||null,provider_video_url:data.video_url||null,\n  provider_mime_type:data.mime_type||null,provider_duration:Number(data.duration_seconds||0)||null,\n  placeholder_status:success?'processing':'failed',placeholder_qc_status:success?'pending':'failed',\n  adapter_error:error,adapter_response:{success,status:String(out.status||'failed'),\n    task_id:data.task_id||out.task_id||ctx.task_id,provider:ctx.provider,\n    provider_task_id:data.provider_task_id||null,video_url:data.video_url||null,error}}}];"
+      },
+      "id": "09-normalize-adapter",
+      "name": "Normalize One Video Adapter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        360
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH old_version AS (\n  UPDATE drama.shot_videos\n  SET review_status=CASE WHEN $27::text='regenerate' THEN 'regenerating' ELSE review_status END\n  WHERE project_id=$2::text AND shot_id=$5::text AND is_current\n    AND generation_version<$8::int AND $27::text='regenerate'\n  RETURNING shot_video_id\n),\ntask_patch AS (\n  UPDATE drama.video_generation_tasks\n  SET response_payload=COALESCE(response_payload,'{}'::jsonb) ||\n    CASE\n      WHEN $9::text<>'mock' AND $22::text='succeeded' AND NULLIF($23::text,'') IS NOT NULL\n      THEN jsonb_build_object('videos',jsonb_build_array(jsonb_build_object(\n        'url',$23::text,'duration_seconds',$18::numeric,'aspect_ratio',$19::text,\n        'resolution',($20::int)::text||'x'||($21::int)::text,'fps',$24::numeric\n      )))\n      ELSE '{}'::jsonb\n    END\n  WHERE task_id=$26::text\n  RETURNING task_id,status\n),\nvideo AS (\n  INSERT INTO drama.shot_videos(\n    shot_video_id,project_id,episode_id,storyboard_id,shot_id,storyboard_image_id,\n    source_image_generation_version,generation_version,provider,model,provider_task_id,\n    video_prompt,negative_prompt,reference_image_url,reference_asset_ids,\n    request_parameters,seed,requested_duration_seconds,aspect_ratio,width,height,fps,\n    original_url,storage_url,status,auto_qc_status,auto_qc_report,review_status,is_current\n  ) VALUES(\n    $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::int,$8::int,$9::text,$10::text,\n    NULLIF($11::text,''),$12::text,$13::text,$14::text,$15::jsonb,$16::jsonb,$17::bigint,\n    $18::numeric,$19::text,$20::int,$21::int,$24::numeric,\n    NULLIF($23::text,''),NULL,$25::text,$28::text,\n    CASE WHEN $28::text='failed'\n      THEN jsonb_build_object('status','failed','error',$29::jsonb)\n      ELSE '{}'::jsonb END,\n    'pending',true\n  )\n  ON CONFLICT(shot_id,generation_version) DO UPDATE SET\n    provider=EXCLUDED.provider,model=EXCLUDED.model,provider_task_id=EXCLUDED.provider_task_id,\n    video_prompt=EXCLUDED.video_prompt,negative_prompt=EXCLUDED.negative_prompt,\n    reference_image_url=EXCLUDED.reference_image_url,\n    reference_asset_ids=EXCLUDED.reference_asset_ids,\n    request_parameters=EXCLUDED.request_parameters,seed=EXCLUDED.seed,\n    requested_duration_seconds=EXCLUDED.requested_duration_seconds,\n    aspect_ratio=EXCLUDED.aspect_ratio,width=EXCLUDED.width,height=EXCLUDED.height,fps=EXCLUDED.fps,\n    original_url=COALESCE(EXCLUDED.original_url,drama.shot_videos.original_url),\n    status=EXCLUDED.status,auto_qc_status=EXCLUDED.auto_qc_status,\n    auto_qc_report=EXCLUDED.auto_qc_report,is_current=true\n  RETURNING *\n),\nproject_update AS (\n  UPDATE drama.projects p\n  SET current_stage=CASE\n      WHEN p.current_stage IN ('voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed') THEN p.current_stage\n      ELSE 'video_processing' END,\n    status=CASE\n      WHEN p.current_stage IN ('voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed') THEN p.status\n      ELSE 'video_processing' END\n  WHERE p.project_id=$2::text RETURNING p.project_id\n)\nSELECT (SELECT task_id FROM task_patch) task_id,\n  (SELECT shot_video_id FROM video) shot_video_id,(SELECT status FROM video) status;",
+        "options": {
+          "queryReplacement": "={{[$json.shot_video_id,$json.project_id,$json.episode_id,$json.shot.storyboard_id,$json.shot.shot_id,$json.storyboard_image_id,$json.shot.image_generation_version,$json.generation_version,$json.provider,$json.model,$json.provider_task_id||'',$json.video_prompt,$json.negative_prompt,$json.reference_image_url,JSON.stringify($json.reference_asset_ids),JSON.stringify($json.request_payload),$json.seed,$json.duration_seconds,$json.aspect_ratio,$json.width,$json.height,$json.adapter_status,$json.provider_video_url||'',$json.fps,$json.placeholder_status,$json.task_id,$json.action,$json.placeholder_qc_status,JSON.stringify($json.adapter_error||{})]}}"
+        }
+      },
+      "id": "09-save-placeholder",
+      "name": "Save Video Task Placeholder",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1260,
+        360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH board_row AS (\n  SELECT b.storyboard_id\n  FROM drama.storyboards b JOIN drama.episode_scripts s ON s.script_id=b.script_id\n  WHERE b.project_id=$1::text AND b.episode_id=$2::text\n    AND b.status='approved' AND s.status='approved'\n  ORDER BY b.version DESC LIMIT 1\n),\nrequired AS (\n  SELECT sh.shot_id FROM board_row b\n  JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id\n  WHERE sh.status IN ('approved','ready') AND ($3::text IS NULL OR sh.shot_id=$3::text)\n  ORDER BY sh.shot_order LIMIT $5::int\n),\nstate AS (\n  SELECT q.shot_id,\n    EXISTS(\n      SELECT 1 FROM drama.shot_videos sv\n      WHERE sv.shot_id=q.shot_id AND sv.is_current AND sv.status='succeeded'\n        AND sv.auto_qc_status IN ('passed','warning') AND sv.review_status='approved'\n    ) approved,\n    (SELECT vt.status FROM drama.video_generation_tasks vt\n      WHERE vt.shot_id=q.shot_id AND vt.generation_version=$4::int\n      ORDER BY vt.created_at DESC LIMIT 1) task_status\n  FROM required q\n),\naudio AS (\n  SELECT EXISTS(\n      SELECT 1 FROM drama.episode_scripts es\n      WHERE es.project_id=$1::text AND es.episode_id=$2::text AND es.status='approved'\n    )\n    AND NOT EXISTS(\n      SELECT 1 FROM drama.episode_scripts es JOIN drama.dialogues d ON d.episode_id=es.episode_id\n      WHERE es.project_id=$1::text AND es.episode_id=$2::text AND es.status='approved'\n        AND NOT EXISTS(\n          SELECT 1 FROM drama.dialogue_audio da\n          WHERE da.dialogue_id=d.dialogue_id AND da.is_current\n            AND da.status='succeeded' AND da.auto_qc_status IN ('passed','warning')\n        )\n    )\n    AND EXISTS(\n      SELECT 1 FROM drama.episode_audio_plans ap\n      WHERE ap.project_id=$1::text AND ap.episode_id=$2::text\n        AND ap.status IN ('ready','completed')\n    ) audio_done\n)\nSELECT\n  (SELECT count(*)::int FROM state) required_count,\n  (SELECT count(*)FILTER(WHERE approved)::int FROM state) approved_count,\n  (SELECT count(*)FILTER(\n    WHERE NOT approved AND task_status IN ('pending','submitting','processing','succeeded')\n  )::int FROM state) active_count,\n  (SELECT count(*)FILTER(\n    WHERE NOT approved AND task_status IN ('failed','timeout','cancelled')\n  )::int FROM state) failed_count,\n  (SELECT count(*)FILTER(WHERE NOT approved AND task_status IS NULL)::int FROM state) missing_count,\n  (SELECT audio_done FROM audio) audio_done,\n  p.current_stage project_current_stage,p.status project_status\nFROM drama.projects p WHERE p.project_id=$1::text;",
+        "options": {
+          "queryReplacement": "={{[ $('Validate Image to Video Request').first().json.project_id, $('Validate Image to Video Request').first().json.episode_id, $('Validate Image to Video Request').first().json.shot_id, $('Validate Image to Video Request').first().json.generation_version, $('Validate Media and Build Video Dispatch Items').first().json.batch_limit ]}}"
+        }
+      },
+      "id": "09-stats",
+      "name": "Aggregate Video Dispatch State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        540,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Validate Image to Video Request').first().json,s=$json;\nconst required=Number(s.required_count||0),approved=Number(s.approved_count||0);\nconst active=Number(s.active_count||0),failed=Number(s.failed_count||0),missing=Number(s.missing_count||0);\nconst allReady=required>0&&approved===required;\nconst ok=required>0&&failed===0&&missing===0;\nconst audioDone=s.audio_done===true||s.audio_done==='true';\nconst fullDone=allReady&&audioDone;\nconst audioStages=['voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed'];\nlet nextStage,nextStatus;\nif(fullDone){nextStage='stage_4_completed';nextStatus='stage_4_completed';}\nelse if(!ok){nextStage='stage_4_failed';nextStatus='stage_4_failed';}\nelse if(allReady&&audioStages.includes(s.project_current_stage)){nextStage=s.project_current_stage;nextStatus=s.project_status;}\nelse if(allReady){nextStage='shot_videos_approved';nextStatus='running';}\nelse if(audioStages.includes(s.project_current_stage)){nextStage=s.project_current_stage;nextStatus=s.project_status;}\nelse{nextStage='video_processing';nextStatus='video_processing';}\nconst status=fullDone?'stage_4_completed':allReady?'shot_videos_approved':ok?'video_tasks_submitted':'stage_4_failed';\nconst response={success:ok,project_id:r.project_id,episode_id:r.episode_id,shot_id:r.shot_id,trace_id:r.trace_id,stage:'image_to_video',status,\n  data_ref:{entity_type:r.shot_id?'shot_video_task':'video_task_batch',entity_id:r.shot_id||('videos_'+r.episode_id+'_v'+r.generation_version)},\n  metrics:{duration_ms:Date.now()-r.started_ms,required_count:required,approved_count:approved,active_count:active,failed_count:failed,missing_count:missing,generation_version:r.generation_version,estimated_cost:0},\n  error:ok?null:{code:'PARTIAL_SAVE_REQUIRES_RECOVERY',message:'one or more video tasks failed or were not persisted',retryable:true}};\nreturn [{json:{response,key:r.idempotency_key,workflow_status:ok?'completed':'failed',\n  error_code:ok?null:'PARTIAL_SAVE_REQUIRES_RECOVERY',\n  error_message:ok?null:response.error.message,next_stage:nextStage,next_status:nextStatus,\n  project_id:r.project_id}}];"
+      },
+      "id": "09-build-result",
+      "name": "Build Video Dispatch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        180
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH project_update AS (\n  UPDATE drama.projects SET current_stage=$1::text,status=$2::text\n  WHERE project_id=$3::text RETURNING project_id\n),\nworkflow_update AS (\n  UPDATE drama.workflow_tasks\n  SET status=$4::text,output_data=$5::jsonb,error_code=$6::text,\n      error_message=$7::text,completed_at=now()\n  WHERE idempotency_key=$8::text RETURNING output_data\n)\nSELECT COALESCE((SELECT output_data FROM workflow_update),$5::jsonb) response;",
+        "options": {
+          "queryReplacement": "={{[$json.next_stage,$json.next_status,$json.project_id,$json.workflow_status,JSON.stringify($json.response),$json.error_code||null,$json.error_message||null,$json.key]}}"
+        }
+      },
+      "id": "09-finalize",
+      "name": "Finalize Video Workflow",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1020,
+        180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response||$json}];"
+      },
+      "id": "09-final",
+      "name": "Video Workflow Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let r={};try{r=$('Validate Image to Video Request').first().json||{};}catch{}\nconst raw=String($json.error?.message||$json.message||'image-to-video workflow failed');\nconst message=raw.replace(/Bearer\\s+\\S+/gi,'Bearer [REDACTED]').replace(/([?&](?:key|token|signature)=)[^&\\s]+/gi,'$1[REDACTED]').slice(0,2000);\nconst known=['PROJECT_NOT_FOUND','EPISODE_NOT_FOUND','EPISODE_SCRIPT_NOT_APPROVED','STORYBOARD_NOT_APPROVED','SHOT_NOT_FOUND','APPROVED_STORYBOARD_IMAGE_NOT_FOUND','REQUIRED_ASSETS_NOT_LOCKED','SOURCE_VERSION_MISMATCH','SHOT_VIDEO_ALREADY_APPROVED','REFERENCE_IMAGE_NOT_ACCESSIBLE','UNSUPPORTED_VIDEO_PROVIDER','DUPLICATE_VIDEO_TASK_RUNNING','VIDEO_PROVIDER_INVALID_RESPONSE','VIDEO_PROVIDER_FAILED','DATABASE_WRITE_FAILED'];\nconst code=known.find(k=>message.includes(k))||(/postgres|database|relation|column/i.test(message)?'DATABASE_WRITE_FAILED':'VIDEO_PROVIDER_FAILED');\nlet details={};const start=message.indexOf('{');if(start>=0){try{details=JSON.parse(message.slice(start));}catch{}}\nreturn [{json:{project_id:r.project_id||$json.project_id||null,episode_id:r.episode_id||$json.episode_id||null,\n  shot_id:r.shot_id||$json.shot_id||null,trace_id:r.trace_id||$json.trace_id||null,\n  task_id:r.task_id||null,idempotency_key:r.idempotency_key||null,action:r.action||'run',\n  generation_version:Number(r.generation_version||1),stage:'image_to_video',\n  error:{code,message,retryable:/429|timeout|network|5\\d\\d|DATABASE_WRITE_FAILED/i.test(message),details}}}];"
+      },
+      "id": "09-failure-normalize",
+      "name": "Normalize Video Workflow Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -180,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH existing AS (\n  UPDATE drama.workflow_tasks\n  SET status='failed',error_code=$1::text,error_message=$2::text,\n      output_data=$3::jsonb,completed_at=now()\n  WHERE idempotency_key=$4::text RETURNING task_id\n),\ninserted AS (\n  INSERT INTO drama.workflow_tasks(\n    task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,\n    generation_version,idempotency_key,status,max_retries,input_data,output_data,\n    error_code,error_message,completed_at\n  )\n  SELECT COALESCE(NULLIF($5::text,''),'task_video_failure_'||substr(md5($4::text),1,20)),\n    COALESCE(NULLIF($6::text,''),'trace_video_failure'),p.project_id,'image_to_video',$7::text,\n    CASE WHEN $8::text IS NULL THEN 'episode' ELSE 'shot' END,\n    COALESCE($8::text,$9::text,''),GREATEST($10::int,1),$4::text,'failed',$11::int,\n    '{}'::jsonb,$3::jsonb,$1::text,$2::text,now()\n  FROM drama.projects p\n  WHERE p.project_id=$12::text AND NOT EXISTS(SELECT 1 FROM existing)\n  ON CONFLICT(idempotency_key) DO UPDATE SET status='failed',\n    output_data=EXCLUDED.output_data,error_code=EXCLUDED.error_code,\n    error_message=EXCLUDED.error_message,completed_at=now()\n  RETURNING task_id\n),\nproject_update AS (\n  UPDATE drama.projects SET current_stage='stage_4_failed',status='stage_4_failed',\n    error_message=$2::text WHERE project_id=$12::text RETURNING project_id\n)\nSELECT jsonb_build_object(\n  'success',false,'project_id',$12::text,'episode_id',$9::text,'shot_id',$8::text,\n  'trace_id',$6::text,'stage','image_to_video','status','stage_4_failed',\n  'data_ref',NULL,'metrics','{}'::jsonb,'error',$3::jsonb\n) response;",
+        "options": {
+          "queryReplacement": "={{[$json.error.code,$json.error.message,JSON.stringify($json.error),$json.idempotency_key||['video_failure',$json.project_id||'unknown',$json.episode_id||'unknown',$json.shot_id||'all',$json.generation_version].join(':'),$json.task_id||'',$json.trace_id||'',$json.action,$json.shot_id,$json.episode_id,$json.generation_version,Number($env.VIDEO_MAX_RETRIES||3),$json.project_id]}}"
+        }
+      },
+      "id": "09-failure-save",
+      "name": "Save Video Workflow Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        60,
+        660
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response||$json}];"
+      },
+      "id": "09-failure-final",
+      "name": "Video Workflow Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        660
+      ]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Image to Video Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Image to Video Request": {
+      "main": [
+        [
+          {
+            "node": "Switch Image to Video Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Image to Video Action": {
+      "main": [
+        [
+          {
+            "node": "Review Shot Video Atomically",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel Video Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Video Workflow Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Shot Video Atomically": {
+      "main": [
+        [
+          {
+            "node": "Shot Video Review Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Video Tasks": {
+      "main": [
+        [
+          {
+            "node": "Video Cancellation Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Workflow Task Gate": {
+      "main": [
+        [
+          {
+            "node": "Video Workflow Already Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Workflow Already Completed?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached Video Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Video Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Video Request": {
+      "main": [
+        [
+          {
+            "node": "Load Approved Images and Video State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Approved Images and Video State": {
+      "main": [
+        [
+          {
+            "node": "Validate Media and Build Video Dispatch Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Media and Build Video Dispatch Items": {
+      "main": [
+        [
+          {
+            "node": "Loop Video Shots",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Video Shots": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Video Dispatch State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch Video Dispatch Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Video Dispatch Route": {
+      "main": [
+        [
+          {
+            "node": "Execute 09a Video Provider",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Video Shots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 09a Video Provider": {
+      "main": [
+        [
+          {
+            "node": "Normalize One Video Adapter Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize One Video Adapter Result": {
+      "main": [
+        [
+          {
+            "node": "Save Video Task Placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Video Task Placeholder": {
+      "main": [
+        [
+          {
+            "node": "Loop Video Shots",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Video Dispatch State": {
+      "main": [
+        [
+          {
+            "node": "Build Video Dispatch Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Video Dispatch Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize Video Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Video Workflow": {
+      "main": [
+        [
+          {
+            "node": "Video Workflow Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Video Workflow Failure": {
+      "main": [
+        [
+          {
+            "node": "Save Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Video Workflow Failure": {
+      "main": [
+        [
+          {
+            "node": "Video Workflow Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "09000000-0000-4000-8000-000000000009",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
