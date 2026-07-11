@@ -1,5 +1,5 @@
 {
-  "name": "10a TTS 平台适配器",
+  "name": "10a 语音合成平台适配器",
   "id": "wf_tts_provider_adapter",
   "active": false,
   "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},

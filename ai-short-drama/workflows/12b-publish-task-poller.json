@@ -1,5 +1,5 @@
 {
-  "name": "12b Publish Task Poller",
+  "name": "12b 发布任务轮询",
   "id": "wf_publish_task_poller",
   "active": false,
   "settings": {
