@@ -43,7 +43,7 @@ services:
     volumes:
       - ./storage:/usr/share/nginx/html:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost/ >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "wget -q -O - http://localhost/healthz >/dev/null 2>&1"]
       interval: 10s
       timeout: 3s
       retries: 10
