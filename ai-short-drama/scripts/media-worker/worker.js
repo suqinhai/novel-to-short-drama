@@ -61,6 +61,8 @@ const config = Object.freeze({
   maxSubtitleBytes: envInteger('MEDIA_MAX_SUBTITLE_BYTES', 5242880, 1024, 52428800),
   maxInputBytes: envInteger('MEDIA_MAX_INPUT_MB', 2048, 1, 1048576) * 1024 * 1024,
   maxLogBytes: envInteger('MEDIA_MAX_LOG_MB', 20, 1, 1024) * 1024 * 1024,
+  frameSamplesPerShot: envInteger('QC_FRAME_SAMPLE_PER_SHOT', 3, 1, 3),
+  maxFrameSamples: envInteger('QC_MAX_FRAME_SAMPLES', 90, 1, 300),
   ffmpeg: validateToolPath(process.env.FFMPEG_PATH, 'ffmpeg', 'FFMPEG_PATH'),
   ffprobe: validateToolPath(process.env.FFPROBE_PATH, 'ffprobe', 'FFPROBE_PATH'),
   mockMode: envBoolean('MOCK_MODE', true),
@@ -1102,7 +1104,7 @@ async function resolveQcTarget(request) {
   const masterId = request.master_id ? assertId(request.master_id, 'master_id') : null;
   if (masterId) {
     const result = await pool.query(`
-      SELECT master_id, project_id, episode_id, local_path, storage_url, content_hash, status
+      SELECT master_id, project_id, episode_id, timeline_id, local_path, storage_url, content_hash, status
         FROM drama.episode_masters WHERE master_id=$1`, [masterId]);
     if (!result.rows[0]) throw new WorkerError('MEDIA_FILE_NOT_FOUND', 'master_id was not found', false);
     if (result.rows[0].status !== 'ready') {
@@ -1113,7 +1115,102 @@ async function resolveQcTarget(request) {
   }
   if (!request.local_path) throw new WorkerError('MEDIA_FILE_NOT_FOUND', 'master_id or local_path is required', false);
   const resolved = await resolveExistingFile(request.local_path, 'local_path');
-  return { master_id: null, project_id: null, episode_id: null, local_path: resolved.path, content_hash: null, status: 'ready' };
+  return { master_id: null, project_id: null, episode_id: null, timeline_id: null, local_path: resolved.path, content_hash: null, status: 'ready' };
+}
+
+function qcSampleTimes(startMs, endMs, count) {
+  const first = Math.max(startMs, Math.min(endMs - 1, startMs + Math.min(100, Math.floor((endMs - startMs) / 4))));
+  const last = Math.max(first, endMs - Math.min(100, Math.floor((endMs - startMs) / 4)));
+  const middle = Math.round((startMs + endMs) / 2);
+  const requested = count === 1 ? [middle] : count === 2 ? [first, last] : [first, middle, last];
+  return [...new Set(requested.map((value) => Math.max(startMs, Math.min(endMs - 1, value))))];
+}
+
+async function extractQcFrames(target, qcStartedAt) {
+  const sampledFrames = [];
+  const warnings = [];
+  if (!target.timeline_id || !target.master_id || !target.project_id || !target.episode_id) {
+    warnings.push({ code: 'QC_FRAME_TIMELINE_MISSING', message: 'master timeline metadata is unavailable; no frames were sampled' });
+    return { sampledFrames, warnings };
+  }
+  const timeline = await pool.query(`
+    SELECT item.sequence_number,
+           COALESCE(video.shot_id, item.entity_id) AS shot_id,
+           item.timeline_start_ms, item.timeline_end_ms
+      FROM drama.edit_timeline_items AS item
+      LEFT JOIN drama.shot_videos AS video ON video.shot_video_id = item.entity_id
+     WHERE item.timeline_id=$1 AND item.track_type='video' AND item.status='ready'
+     ORDER BY item.sequence_number`, [target.timeline_id]);
+  if (!timeline.rowCount) {
+    warnings.push({ code: 'QC_FRAME_TIMELINE_MISSING', message: 'timeline has no ready video items; no frames were sampled' });
+    return { sampledFrames, warnings };
+  }
+  const candidates = [];
+  for (const item of timeline.rows) {
+    const startMs = Number(item.timeline_start_ms);
+    const endMs = Number(item.timeline_end_ms);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      warnings.push({ code: 'QC_FRAME_TIMELINE_INVALID', shot_id: String(item.shot_id || ''), message: 'invalid shot time range' });
+      continue;
+    }
+    for (const timestampMs of qcSampleTimes(startMs, endMs, config.frameSamplesPerShot)) {
+      if (candidates.length >= config.maxFrameSamples) break;
+      candidates.push({ shotId: String(item.shot_id || `sequence_${item.sequence_number}`), timestampMs });
+    }
+    if (candidates.length >= config.maxFrameSamples) break;
+  }
+  if (candidates.length >= config.maxFrameSamples && timeline.rowCount * config.frameSamplesPerShot > config.maxFrameSamples) {
+    warnings.push({ code: 'QC_FRAME_SAMPLE_LIMIT', message: `frame sampling capped at ${config.maxFrameSamples}` });
+  }
+  const project = assertId(target.project_id, 'project_id').replace(/[^A-Za-z0-9_-]/g, '_');
+  const episode = assertId(target.episode_id, 'episode_id').replace(/[^A-Za-z0-9_-]/g, '_');
+  const master = assertId(target.master_id, 'master_id').replace(/[^A-Za-z0-9_-]/g, '_');
+  for (const candidate of candidates) {
+    const remainingMs = config.qcTimeoutMs - (Date.now() - qcStartedAt);
+    if (remainingMs < 1000) {
+      warnings.push({ code: 'QC_FRAME_EXTRACTION_TIMEOUT', message: 'frame sampling stopped at the technical QC time limit' });
+      break;
+    }
+    const shotToken = ID_PATTERN.test(candidate.shotId)
+      ? candidate.shotId.replace(/[^A-Za-z0-9_-]/g, '_')
+      : crypto.createHash('sha256').update(candidate.shotId).digest('hex').slice(0, 16);
+    const framePath = await resolveOutputFile(
+      path.join('qc-frames', project, episode, master, `${shotToken}_${candidate.timestampMs}.jpg`),
+      'QC frame output',
+    );
+    try {
+      await runProcess(config.ffmpeg, [
+        '-hide_banner', '-nostdin', '-y', '-v', 'error',
+        '-ss', (candidate.timestampMs / 1000).toFixed(3),
+        '-i', target.local_path,
+        '-frames:v', '1',
+        '-vf', 'scale=720:-2:force_original_aspect_ratio=decrease',
+        '-q:v', '2',
+        framePath,
+      ], { timeoutMs: Math.min(remainingMs, 30000), maxCapture: 65536 });
+      const stat = await fsp.stat(framePath);
+      const header = Buffer.alloc(2);
+      const handle = await fsp.open(framePath, 'r');
+      try { await handle.read(header, 0, 2, 0); } finally { await handle.close(); }
+      if (!stat.isFile() || stat.size < 128 || header[0] !== 0xff || header[1] !== 0xd8) {
+        throw new WorkerError('QC_TECHNICAL_FAILED', 'FFmpeg did not produce a valid JPEG frame', false);
+      }
+      sampledFrames.push({
+        shot_id: candidate.shotId,
+        timestamp_ms: candidate.timestampMs,
+        local_path: framePath,
+        url: publicUrl(framePath),
+      });
+    } catch (error) {
+      warnings.push({
+        code: error?.code === 'RENDER_TIMEOUT' ? 'QC_FRAME_EXTRACTION_TIMEOUT' : 'QC_FRAME_EXTRACTION_FAILED',
+        shot_id: candidate.shotId,
+        timestamp_ms: candidate.timestampMs,
+        message: safeMessage(error),
+      });
+    }
+  }
+  return { sampledFrames, warnings };
 }
 
 async function runTechnicalQc(request) {
@@ -1122,6 +1219,7 @@ async function runTechnicalQc(request) {
   if (!tools.ffprobe.available) throw new WorkerError('FFPROBE_NOT_AVAILABLE', 'ffprobe is not available', false);
   qcRunning += 1;
   try {
+    const qcStartedAt = Date.now();
     const target = await resolveQcTarget(request);
     const probe = await parseProbe(target.local_path, { timeoutMs: config.qcTimeoutMs });
     const summary = probeSummary(probe);
@@ -1171,7 +1269,10 @@ async function runTechnicalQc(request) {
     if (summary.durationMs <= 0 || summary.fileSizeBytes < 1024) blockingIssues.push({ code: 'MEDIA_FILE_INVALID', severity: 'failed' });
     if (maxBlack > config.blackSeconds) blockingIssues.push({ code: 'BLACK_FRAME_TOO_LONG', severity: 'failed', duration_seconds: maxBlack });
     if (maxSilence > config.silenceSeconds) blockingIssues.push({ code: 'SILENCE_TOO_LONG', severity: 'failed', duration_seconds: maxSilence });
-    const warnings = [];
+    const frameResult = summary.hasVideo
+      ? await extractQcFrames(target, qcStartedAt)
+      : { sampledFrames: [], warnings: [{ code: 'QC_FRAME_EXTRACTION_SKIPPED', message: 'video stream is missing' }] };
+    const warnings = [...frameResult.warnings];
     if (avDriftMs !== null && avDriftMs > Number(process.env.QC_AUDIO_VIDEO_DRIFT_MS || 200)) {
       warnings.push({ code: 'AUDIO_VIDEO_DRIFT', drift_ms: Math.round(avDriftMs) });
     }
@@ -1195,6 +1296,7 @@ async function runTechnicalQc(request) {
           consecutive_duplicate_count: duplicateFrames,
           framemd5_sha256: frameHash.digest('hex'),
         },
+        sampled_frames: frameResult.sampledFrames,
         av_drift_ms: avDriftMs === null ? null : Math.round(avDriftMs),
         blocking_issues: blockingIssues,
         warnings,
