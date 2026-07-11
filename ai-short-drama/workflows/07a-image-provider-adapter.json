@@ -1,0 +1,679 @@
+{
+  "name": "07a 图片平台适配器",
+  "id": "wf_image_provider_adapter",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "provider"
+            },
+            {
+              "name": "model"
+            },
+            {
+              "name": "task_type"
+            },
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "entity_type"
+            },
+            {
+              "name": "entity_id"
+            },
+            {
+              "name": "asset_type"
+            },
+            {
+              "name": "prompt"
+            },
+            {
+              "name": "negative_prompt"
+            },
+            {
+              "name": "reference_image_urls",
+              "type": "array"
+            },
+            {
+              "name": "width",
+              "type": "number"
+            },
+            {
+              "name": "height",
+              "type": "number"
+            },
+            {
+              "name": "aspect_ratio"
+            },
+            {
+              "name": "seed",
+              "type": "number"
+            },
+            {
+              "name": "count",
+              "type": "number"
+            },
+            {
+              "name": "generation_version",
+              "type": "number"
+            },
+            {
+              "name": "idempotency_key"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "07a-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},provider=i.provider||$env.IMAGE_PROVIDER||'mock',model=i.model||$env.IMAGE_MODEL||'mock-image-model';if(!i.project_id||!i.entity_type||!i.entity_id||!i.asset_type||!i.prompt)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE: required request fields missing');if(!['mock','generic_openai_images','generic_async_image'].includes(provider))throw new Error('UNSUPPORTED_IMAGE_PROVIDER: '+provider);const version=Number(i.generation_version||1),key=i.idempotency_key||[i.project_id,i.entity_type,i.entity_id,i.asset_type,version,provider,model].join(':');return [{json:{...i,payload:p,provider,model,generation_version:version,width:Number(i.width||$env.IMAGE_DEFAULT_WIDTH||1024),height:Number(i.height||$env.IMAGE_DEFAULT_HEIGHT||1792),count:Math.max(1,Math.min(Number(i.count||1),4)),trace_id:i.trace_id||`trace_image_${crypto.randomUUID()}`,idempotency_key:key,task_id:`imgtask_${crypto.createHash('sha1').update(key).digest('hex').slice(0,20)}`,started_ms:Date.now()}}];"
+      },
+      "id": "07a-normalize",
+      "name": "Normalize Provider Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.image_generation_tasks(task_id,idempotency_key,trace_id,project_id,episode_id,shot_id,provider,model,generation_version,request_payload,status,max_poll_count,max_retries,started_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'submitting',$11,$12,now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.image_generation_tasks.status='failed' AND $13 IN('retry','regenerate') AND drama.image_generation_tasks.retry_count<drama.image_generation_tasks.max_retries THEN 'submitting' ELSE drama.image_generation_tasks.status END,retry_count=CASE WHEN drama.image_generation_tasks.status='failed' AND $13 IN('retry','regenerate') THEN drama.image_generation_tasks.retry_count+1 ELSE drama.image_generation_tasks.retry_count END RETURNING task_id,status,response_payload,provider_task_id,$14::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.idempotency_key,$json.trace_id,$json.project_id,$json.payload.episode_id||null,$json.payload.shot_id||null,$json.provider,$json.model,$json.generation_version,JSON.stringify($json),Number($env.IMAGE_MAX_POLL_COUNT||30),Number($env.IMAGE_MAX_RETRIES||3),$json.payload.action||'run',JSON.stringify($json)]}}"
+        }
+      },
+      "id": "07a-gate",
+      "name": "Atomic Image Task Gate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -660,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status==='succeeded')return [{json:{route:'cached',result:$json.response_payload}}];if(['submitting','processing'].includes($json.status)&&$json.request)return [{json:{route:$json.request.provider,request:$json.request}}];throw new Error($json.status==='timeout'?'IMAGE_TASK_TIMEOUT':'DUPLICATE_IMAGE_TASK_RUNNING');"
+      },
+      "id": "07a-route",
+      "name": "Route or Cached",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.route}}",
+              "rightValue": "cached",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "07a-cached-if",
+      "name": "Cached Result?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.result}];"
+      },
+      "id": "07a-cached",
+      "name": "Return Cached Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.route}}",
+              "rightValue": "mock",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "07a-mock-if",
+      "name": "Mock Provider?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),path=require('path'),crypto=require('crypto'),r=$json.request,sim=r.payload?.simulate||'';if(sim==='429')throw new Error('IMAGE_PROVIDER_RATE_LIMITED: simulated 429');if(sim==='timeout')throw new Error('IMAGE_PROVIDER_TIMEOUT: simulated timeout');if(sim==='invalid')throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE: simulated invalid response');const asyncMode=r.payload?.mock_async===true||$env.IMAGE_PROVIDER_MODE==='async';if(asyncMode)return [{json:{request:r,result:{success:true,provider:'mock',model:r.model,mode:'async',provider_task_id:'mock_'+r.task_id,status:'processing',images:[],usage:{image_count:0,estimated_cost:0},raw_response_ref:null,error:null,task_id:r.task_id}}}];const hash=crypto.createHash('sha256').update(r.idempotency_key).digest('hex'),dir=path.join($env.MEDIA_STORAGE_PATH||'/data/storage','provider-responses'),file=`mock_${hash.slice(0,24)}.svg`,safe=String(r.asset_type).replace(/[^a-z0-9_-]/gi,'');fs.mkdirSync(dir,{recursive:true});const color='#'+hash.slice(0,6),svg=`<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${r.width}\" height=\"${r.height}\"><rect width=\"100%\" height=\"100%\" fill=\"${color}\"/><text x=\"50%\" y=\"48%\" text-anchor=\"middle\" fill=\"white\" font-size=\"48\">MOCK ${safe}</text><text x=\"50%\" y=\"53%\" text-anchor=\"middle\" fill=\"white\" font-size=\"24\">${hash.slice(0,12)}</text></svg>`;fs.writeFileSync(path.join(dir,file),svg);if(sim==='corrupt')fs.writeFileSync(path.join(dir,file),'broken');const url=($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/[/]$/,'')+'/provider-responses/'+file;return [{json:{request:r,result:{success:true,provider:'mock',model:r.model,mode:'sync',provider_task_id:null,status:'succeeded',images:[{url,storage_url:'/data/storage/provider-responses/'+file,width:r.width,height:r.height,seed:Number.parseInt(hash.slice(0,8),16),content_hash:hash,mime_type:'image/svg+xml',size_bytes:Buffer.byteLength(svg)}],usage:{image_count:1,estimated_cost:0},raw_response_ref:null,error:null,task_id:r.task_id}}}];"
+      },
+      "id": "07a-mock",
+      "name": "Stable Mock Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        -40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.route}}",
+              "rightValue": "generic_openai_images",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "07a-openai-if",
+      "name": "OpenAI Images Provider?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.IMAGE_API_BASE_URL+'/v1/images/generations'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer '+$env.IMAGE_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {model:$json.request.model,prompt:$json.request.prompt+( $json.request.negative_prompt?'\\nNegative: '+$json.request.negative_prompt:''),n:$json.request.count,size:$json.request.width+'x'+$json.request.height,response_format:'url'} }}",
+        "options": {
+          "timeout": "={{Number($env.IMAGE_REQUEST_TIMEOUT_SECONDS||180)*1000}}"
+        }
+      },
+      "id": "07a-openai",
+      "name": "Generic OpenAI Images Submit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Route or Cached').item.json.request;if(!Array.isArray($json.data)||!$json.data.length)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE');return [{json:{request:r,result:{success:true,provider:r.provider,model:r.model,mode:'sync',provider_task_id:null,status:'succeeded',images:$json.data.map((v,i)=>({url:v.url,width:r.width,height:r.height,seed:r.seed??null})),usage:{image_count:$json.data.length,estimated_cost:0},raw_response_ref:$json.id||null,error:null,task_id:r.task_id}}}];"
+      },
+      "id": "07a-openai-normalize",
+      "name": "Normalize OpenAI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        100
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.IMAGE_API_BASE_URL+'/generate'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer '+$env.IMAGE_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.request}}",
+        "options": {
+          "timeout": "={{Number($env.IMAGE_REQUEST_TIMEOUT_SECONDS||180)*1000}}"
+        }
+      },
+      "id": "07a-async",
+      "name": "Generic Async Submit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        280
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Route or Cached').item.json.request,id=$json.task_id||$json.id;if(!id)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE: missing task id');return [{json:{request:r,result:{success:true,provider:r.provider,model:r.model,mode:'async',provider_task_id:String(id),status:'processing',images:[],usage:{image_count:0,estimated_cost:0},raw_response_ref:null,error:null,task_id:r.task_id}}}];"
+      },
+      "id": "07a-async-normalize",
+      "name": "Normalize Async Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        280
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.image_generation_tasks SET provider_task_id=$1,status=$2,response_payload=$3::jsonb,next_poll_at=CASE WHEN $2='processing'THEN now()+make_interval(secs=>$4)ELSE NULL END,completed_at=CASE WHEN $2='succeeded'THEN now()ELSE NULL END WHERE task_id=$5;SELECT $3::jsonb result;",
+        "options": {
+          "queryReplacement": "={{[$json.result.provider_task_id,$json.result.status,JSON.stringify($json.result),Number($env.IMAGE_POLL_INTERVAL_SECONDS||10),$json.result.task_id]}}"
+        }
+      },
+      "id": "07a-save",
+      "name": "Persist Standard Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        880,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.result}];"
+      },
+      "id": "07a-result",
+      "name": "Standard Provider Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Normalize Provider Request').item.json,m=$json.error?.message||$json.message||'image provider failed',code=(m.split(':')[0]||'IMAGE_PROVIDER_INVALID_RESPONSE').replace(/\\W/g,'_');return [{json:{task_id:r.task_id,result:{success:false,provider:r.provider,model:r.model,mode:null,provider_task_id:null,status:'failed',images:[],usage:{image_count:0,estimated_cost:0},raw_response_ref:null,error:{code,message:m,retryable:/429|timeout|5\\d\\d|network/i.test(m)}}}}];"
+      },
+      "id": "07a-failure",
+      "name": "Provider Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.image_generation_tasks SET status='failed',error_code=$1,error_message=$2,response_payload=$3::jsonb,completed_at=now()WHERE task_id=$4;SELECT $3::jsonb result;",
+        "options": {
+          "queryReplacement": "={{[$json.result.error.code,$json.result.error.message,JSON.stringify($json.result),$json.task_id]}}"
+        }
+      },
+      "id": "07a-save-failure",
+      "name": "Persist Provider Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        880,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Provider Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Provider Request": {
+      "main": [
+        [
+          {
+            "node": "Atomic Image Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atomic Image Task Gate": {
+      "main": [
+        [
+          {
+            "node": "Route or Cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route or Cached": {
+      "main": [
+        [
+          {
+            "node": "Cached Result?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cached Result?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mock Provider?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Provider?": {
+      "main": [
+        [
+          {
+            "node": "Stable Mock Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OpenAI Images Provider?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stable Mock Image": {
+      "main": [
+        [
+          {
+            "node": "Persist Standard Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Images Provider?": {
+      "main": [
+        [
+          {
+            "node": "Generic OpenAI Images Submit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generic Async Submit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generic OpenAI Images Submit": {
+      "main": [
+        [
+          {
+            "node": "Normalize OpenAI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize OpenAI Response": {
+      "main": [
+        [
+          {
+            "node": "Persist Standard Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generic Async Submit": {
+      "main": [
+        [
+          {
+            "node": "Normalize Async Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Async Response": {
+      "main": [
+        [
+          {
+            "node": "Persist Standard Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Standard Result": {
+      "main": [
+        [
+          {
+            "node": "Standard Provider Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Provider Failure": {
+      "main": [
+        [
+          {
+            "node": "Persist Provider Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Provider Failure": {
+      "main": [
+        [
+          {
+            "node": "Standard Provider Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-070000000071",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

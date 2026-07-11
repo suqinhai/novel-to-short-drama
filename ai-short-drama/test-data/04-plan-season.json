@@ -1,0 +1,12 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "episode_id": null,
+  "shot_id": null,
+  "stage": "episode_planning",
+  "action": "run",
+  "generation_version": 1,
+  "test_mode": true,
+  "trace_id": "trace_plan_001",
+  "payload": {}
+}
+

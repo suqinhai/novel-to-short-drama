@@ -1,0 +1,2351 @@
+{
+  "name": "00 项目总控",
+  "id": "wf_project_orchestrator",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/projects",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "00-webhook",
+      "name": "Create Project Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1520,
+        0
+      ],
+      "webhookId": "ai-short-drama-projects"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto');const b=$json.body||$json,p=b.payload||b;const resume=Boolean(b.project_id||p.project_id);const required=['novel_name','target_episode_count','episode_duration_seconds','visual_style','aspect_ratio','target_platform','test_mode'];const miss=required.filter(k=>p[k]===undefined||p[k]===null||p[k]==='');if(miss.length)throw new Error('INVALID_INPUT: missing '+miss.join(','));if(!p.novel_text&&!p.novel_source&&!resume)throw new Error('INVALID_INPUT: novel_text or novel_source is required');if(!Number.isInteger(Number(p.target_episode_count))||Number(p.target_episode_count)<=0)throw new Error('INVALID_INPUT: target_episode_count');if(!Number.isInteger(Number(p.episode_duration_seconds))||Number(p.episode_duration_seconds)<=0)throw new Error('INVALID_INPUT: episode_duration_seconds');const idem=b.idempotency_key||p.idempotency_key||crypto.createHash('sha256').update(JSON.stringify([p.novel_name,p.novel_source||'',p.novel_text||'',p.target_episode_count,p.target_platform])).digest('hex');const project_id=b.project_id||p.project_id||`p_${new Date().toISOString().slice(0,10).replace(/-/g,'')}_${idem.slice(0,12)}`;const trace_id=b.trace_id||`trace_${crypto.randomUUID()}`,task_id=`task_${crypto.randomUUID()}`;const config={chunk_max_chars:Number($env.CHUNK_MAX_CHARS||12000),chunk_overlap_chars:Number($env.CHUNK_OVERLAP_CHARS||500),source_type:p.novel_text?'text':'local_file'};return [{json:{project_id,trace_id,task_id,idempotency_key:`${project_id}:orchestrator:${project_id}:1:${resume?'resume':'run'}`,action:resume?'resume':'run',generation_version:Number(b.generation_version||1),test_mode:Boolean(p.test_mode),stage:'orchestrator',payload:p,config,started_ms:Date.now()}}];"
+      },
+      "id": "00-validate",
+      "name": "Validate Project Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (INSERT INTO drama.projects(project_id,novel_name,target_episode_count,episode_duration_seconds,visual_style,aspect_ratio,target_platform,current_stage,status,test_mode,config) VALUES($1,$2,$3,$4,$5,$6,$7,'created','running',$8,$9::jsonb) ON CONFLICT(project_id) DO UPDATE SET status=CASE WHEN drama.projects.status IN ('failed','pending') OR $10='resume' THEN 'running' ELSE drama.projects.status END,error_message=NULL RETURNING project_id), t AS (INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at) VALUES($11,$12,$1,'orchestrator',$10,'project',$1,$13,$14,'running',$15,$16::jsonb,now()) ON CONFLICT(idempotency_key) DO UPDATE SET status=CASE WHEN drama.workflow_tasks.status='failed' AND $10='resume' AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN 'running' ELSE drama.workflow_tasks.status END,retry_count=CASE WHEN drama.workflow_tasks.status='failed' AND $10='resume' THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END RETURNING status,output_data) SELECT t.status,t.output_data,$16::jsonb AS request FROM t;",
+        "options": {
+          "queryReplacement": "={{ [$json.project_id,$json.payload.novel_name,Number($json.payload.target_episode_count),Number($json.payload.episode_duration_seconds),$json.payload.visual_style,$json.payload.aspect_ratio,$json.payload.target_platform,$json.test_mode,JSON.stringify($json.config),$json.action,$json.task_id,$json.trace_id,$json.generation_version,$json.idempotency_key,Number($env.MODEL_MAX_RETRIES||3),JSON.stringify($json)] }}"
+        }
+      },
+      "id": "00-create",
+      "name": "Create Project and Task",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1080,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-cached-if",
+      "name": "Already Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.output_data }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-cached-response",
+      "name": "Cached Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -640,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status!=='running')throw new Error(`TASK_ALREADY_RUNNING_OR_LOCKED: ${$json.status}`);return [{json:$json.request}];"
+      },
+      "id": "00-restore",
+      "name": "Restore Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.projects SET current_stage='novel_import',status='running' WHERE project_id=$1 RETURNING $1::text AS project_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.project_id] }}"
+        }
+      },
+      "id": "00-stage1",
+      "name": "Set Stage Novel Import",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -420,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_novel_import_clean",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $('Restore Request').item.json.project_id }}",
+            "episode_id": null,
+            "shot_id": null,
+            "stage": "novel_import",
+            "action": "={{ $('Restore Request').item.json.action }}",
+            "generation_version": "={{ $('Restore Request').item.json.generation_version }}",
+            "test_mode": "={{ $('Restore Request').item.json.test_mode }}",
+            "trace_id": "={{ $('Restore Request').item.json.trace_id }}",
+            "payload": "={{ {novel_name:$('Restore Request').item.json.payload.novel_name,novel_text:$('Restore Request').item.json.payload.novel_text,novel_source:$('Restore Request').item.json.payload.novel_source} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run1",
+      "name": "Execute 01 Novel Import",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-ok1",
+      "name": "Import Successful?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        20,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.projects SET current_stage='chunk_analysis',status='running' WHERE project_id=$1 RETURNING $1::text AS project_id,$2::text AS novel_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.project_id,$json.data_ref.entity_id] }}"
+        }
+      },
+      "id": "00-stage2",
+      "name": "Set Stage Chunk Analysis",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_novel_chunk_analysis",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $json.project_id }}",
+            "episode_id": null,
+            "shot_id": null,
+            "stage": "chunk_analysis",
+            "action": "={{ $('Restore Request').item.json.action }}",
+            "generation_version": "={{ $('Restore Request').item.json.generation_version }}",
+            "test_mode": "={{ $('Restore Request').item.json.test_mode }}",
+            "trace_id": "={{ $('Restore Request').item.json.trace_id }}",
+            "payload": "={{ {novel_id:$json.novel_id} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run2",
+      "name": "Execute 02 Chunk Analysis",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        -40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-ok2",
+      "name": "Analysis Successful?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        680,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.projects SET current_stage='story_bible',status='running' WHERE project_id=$1 RETURNING $1::text AS project_id,$2::text AS novel_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.project_id,$json.data_ref.entity_id] }}"
+        }
+      },
+      "id": "00-stage3",
+      "name": "Set Stage Story Bible",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        900,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_story_bible",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $json.project_id }}",
+            "episode_id": null,
+            "shot_id": null,
+            "stage": "story_bible",
+            "action": "={{ $('Restore Request').item.json.action }}",
+            "generation_version": "={{ $('Restore Request').item.json.generation_version }}",
+            "test_mode": "={{ $('Restore Request').item.json.test_mode }}",
+            "trace_id": "={{ $('Restore Request').item.json.trace_id }}",
+            "payload": "={{ {novel_id:$json.novel_id} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run3",
+      "name": "Execute 03 Story Bible",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        -120
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-ok3",
+      "name": "Bible Successful?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (UPDATE drama.projects SET current_stage='review',status='waiting_review' WHERE project_id=$1), t AS (UPDATE drama.workflow_tasks SET status='completed',completed_at=now(),output_data=jsonb_build_object('success',true,'project_id',$1,'trace_id',$2::text,'stage','orchestrator','status','waiting_review','data_ref',$3::jsonb,'metrics',jsonb_build_object('duration_ms',$4::bigint),'error',NULL) WHERE idempotency_key=$5 RETURNING output_data) SELECT output_data FROM t;",
+        "options": {
+          "queryReplacement": "={{ [$json.project_id,$json.trace_id,JSON.stringify($json.data_ref),Date.now()-$('Restore Request').item.json.started_ms,$('Restore Request').item.json.idempotency_key] }}"
+        }
+      },
+      "id": "00-finish",
+      "name": "Set Waiting Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1560,
+        -200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.output_data }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-success-response",
+      "name": "Success Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1780,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const req=$('Validate Project Request').item.json;const src=$json;const err=src.error&&typeof src.error==='object'?src.error:{code:'ORCHESTRATOR_ERROR',message:src.error?.message||src.message||'stage failed',retryable:/429|timeout|5\\d\\d|network/i.test(src.message||'')};return [{json:{response:{success:false,project_id:req.project_id,trace_id:req.trace_id,stage:src.stage||'orchestrator',status:'failed',data_ref:null,metrics:{},error:err},project_id:req.project_id,key:req.idempotency_key}}];"
+      },
+      "id": "00-failure",
+      "name": "Normalize Stage Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (UPDATE drama.projects SET status='failed',error_message=$1 WHERE project_id=$2),t AS (UPDATE drama.workflow_tasks SET status='failed',error_code=$3,error_message=$1,output_data=$4::jsonb,completed_at=now() WHERE idempotency_key=$5) SELECT $4::jsonb AS response;",
+        "options": {
+          "queryReplacement": "={{ [$json.response.error.message,$json.project_id,$json.response.error.code,JSON.stringify($json.response),$json.key] }}"
+        }
+      },
+      "id": "00-save-failure",
+      "name": "Save Project Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1120,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "00-error-response",
+      "name": "Failure Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/stage2",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "00-stage2-webhook",
+      "name": "Stage 2 Review Resume Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1520,
+        700
+      ],
+      "webhookId": "ai-short-drama-stage2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.body||$json,a=b.action||'resume';if(!b.project_id)throw new Error('PROJECT_NOT_FOUND: project_id required');if(!['review','resume','retry','regenerate'].includes(a))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported action');if(a==='review'&&(!b.review_id||!['approved','rejected','pending'].includes(b.review_status)))throw new Error('BUSINESS_VALIDATION_FAILED: review_id/review_status');return [{json:{...b,action:a,trace_id:b.trace_id||`trace_review_${Date.now()}`,generation_version:Number(b.generation_version||1),test_mode:Boolean(b.test_mode)}}];"
+      },
+      "id": "00-stage2-normalize",
+      "name": "Normalize Review Resume",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.action}}",
+              "rightValue": "review",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-is-review",
+      "name": "Is Review Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1080,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH r0 AS(SELECT * FROM drama.review_tasks WHERE review_id=$1 AND project_id=$2),r AS(UPDATE drama.review_tasks SET review_status=$3,review_comment=$4,rejection_reason=$5,revision_instruction=$6,reviewed_at=CASE WHEN $3 IN('approved','rejected')THEN now() ELSE NULL END WHERE review_id=$1 AND project_id=$2 RETURNING *),b0 AS(UPDATE drama.story_bibles SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE story_bible_id=(SELECT entity_id FROM r0 WHERE entity_type='story_bible')),s0 AS(UPDATE drama.seasons SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE season_id=(SELECT entity_id FROM r0 WHERE entity_type='season')),eo AS(UPDATE drama.episode_outlines SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE season_id=(SELECT entity_id FROM r0 WHERE entity_type='season')),es AS(UPDATE drama.episode_scripts SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE script_id=(SELECT entity_id FROM r0 WHERE entity_type='episode_script')),bd AS(UPDATE drama.storyboards SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE storyboard_id=(SELECT entity_id FROM r0 WHERE entity_type='storyboard')),sh AS(UPDATE drama.storyboard_shots SET status=CASE WHEN $3='approved'THEN'approved'WHEN $3='rejected'THEN'rejected'ELSE status END WHERE storyboard_id=(SELECT entity_id FROM r0 WHERE entity_type='storyboard')),p AS(UPDATE drama.projects SET current_stage=CASE WHEN $3='approved' AND(SELECT entity_type FROM r0)='story_bible'THEN'story_bible_approved' WHEN $3='approved' AND(SELECT entity_type FROM r0)='season'THEN'season_outline_approved' WHEN $3='approved' AND(SELECT entity_type FROM r0)='episode_script'THEN'episode_script_approved' WHEN $3='approved' AND(SELECT entity_type FROM r0)='storyboard'THEN'storyboard_approved' WHEN $3='rejected' AND(SELECT entity_type FROM r0)='season'THEN'story_bible_approved' WHEN $3='rejected' AND(SELECT entity_type FROM r0)='episode_script'THEN'season_outline_approved' WHEN $3='rejected' AND(SELECT entity_type FROM r0)='storyboard'THEN'episode_script_approved' ELSE current_stage END,status=CASE WHEN $3='approved' AND(SELECT entity_type FROM r0)='storyboard'THEN'stage_2_completed' ELSE 'waiting_review' END WHERE project_id=$2)SELECT CASE WHEN EXISTS(SELECT 1 FROM r)THEN true ELSE false END success,$2::text project_id,$7::text trace_id,'review'::text stage,$3::text status,jsonb_build_object('entity_type',(SELECT entity_type FROM r0),'entity_id',(SELECT entity_id FROM r0),'review_id',$1) data_ref,CASE WHEN EXISTS(SELECT 1 FROM r)THEN NULL ELSE jsonb_build_object('code','REVIEW_NOT_FOUND','message','review task not found','retryable',false)END error;",
+        "options": {
+          "queryReplacement": "={{[$json.review_id,$json.project_id,$json.review_status,$json.review_comment||null,$json.rejection_reason||null,$json.revision_instruction||null,$json.trace_id]}}"
+        }
+      },
+      "id": "00-apply-review",
+      "name": "Apply Unified Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        580
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {success:$json.success,project_id:$json.project_id,trace_id:$json.trace_id,stage:$json.stage,status:$json.status,data_ref:$json.data_ref,metrics:{},error:$json.error} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-review-response",
+      "name": "Review Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -640,
+        580
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.project_id,p.current_stage,p.test_mode,coalesce($2,(SELECT episode_id FROM drama.episode_outlines WHERE project_id=p.project_id AND status='approved' ORDER BY episode_number,version DESC LIMIT 1))episode_id,$3::int generation_version,$4::text trace_id,$5::text action,$6::text scene_id,$7::text shot_id FROM drama.projects p WHERE p.project_id=$1;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id||$json.payload?.episode_id||null,$json.generation_version,$json.trace_id,$json.action,$json.scene_id||$json.payload?.scene_id||null,$json.shot_id||$json.payload?.shot_id||null]}}"
+        }
+      },
+      "id": "00-resolve-resume",
+      "name": "Resolve Resume Breakpoint",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        820
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.current_stage}}",
+              "rightValue": "story_bible_approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-route-plan",
+      "name": "Resume Episode Planning?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -640,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_episode_planning",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": null,
+            "shot_id": null,
+            "stage": "episode_planning",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{ {season_id:null} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run4",
+      "name": "Execute 04 Episode Planning",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -420,
+        700
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.current_stage}}",
+              "rightValue": "season_outline_approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-route-script",
+      "name": "Resume Episode Script?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -420,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_episode_script",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": null,
+            "stage": "episode_script",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{ {episode_id:$json.episode_id,scene_id:$json.scene_id} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run5",
+      "name": "Execute 05 Episode Script",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        820
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.current_stage}}",
+              "rightValue": "episode_script_approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-route-board",
+      "name": "Resume Storyboard?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -200,
+        1020
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_storyboard_design",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "storyboard_design",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{ {episode_id:$json.episode_id,shot_id:$json.shot_id} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run6",
+      "name": "Execute 06 Storyboard",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        20,
+        940
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{success:false,project_id:$json.project_id,trace_id:$json.trace_id,stage:'orchestrator',status:'failed',data_ref:null,metrics:{},error:{code:'BUSINESS_VALIDATION_FAILED',message:'current project stage is not resumable',retryable:false}}}];"
+      },
+      "id": "00-not-resumable",
+      "name": "Not Resumable Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-resume-response",
+      "name": "Resume Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        260,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/stage3",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "00-stage3-webhook",
+      "name": "Stage 3 Review Resume Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1520,
+        1300
+      ],
+      "webhookId": "ai-short-drama-stage3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.body||$json,a=b.action||'resume';if(!b.project_id)throw new Error('PROJECT_NOT_FOUND');if(!['review','resume','retry','regenerate','lock','unlock','select_primary','cancel'].includes(a))throw new Error('BUSINESS_VALIDATION_FAILED');if(a==='review'&&(!b.review_id||!['approved','rejected'].includes(b.review_status)))throw new Error('BUSINESS_VALIDATION_FAILED: review input');return [{json:{...b,action:a,generation_version:Number(b.generation_version||1),test_mode:Boolean(b.test_mode),trace_id:b.trace_id||`trace_stage3_${Date.now()}`}}];"
+      },
+      "id": "00-stage3-normalize",
+      "name": "Normalize Stage 3 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        1300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.action}}",
+              "rightValue": "review",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage3-review-if",
+      "name": "Stage 3 Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1080,
+        1300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH r0 AS(SELECT * FROM drama.review_tasks WHERE review_id=$1 AND project_id=$2),r AS(UPDATE drama.review_tasks SET review_status=$3,review_comment=$4,rejection_reason=$5,prompt_adjustment=$6,reviewed_at=now()WHERE review_id=$1 AND project_id=$2 RETURNING *),ga AS(UPDATE drama.generated_assets SET review_status=$3,review_comment=$4,rejection_reason=$5,selected_as_primary=CASE WHEN $3='approved'AND $7 THEN true ELSE selected_as_primary END WHERE asset_id=(SELECT entity_id FROM r0 WHERE entity_type='generated_asset')RETURNING *),cp AS(UPDATE drama.character_visual_profiles SET review_status='approved',lock_status=CASE WHEN $8 THEN'locked'ELSE lock_status END WHERE profile_id=(SELECT profile_id FROM ga WHERE entity_type='character'AND $3='approved'AND $7)),co AS(UPDATE drama.character_costumes SET review_status='approved',lock_status=CASE WHEN $8 THEN'locked'ELSE lock_status END WHERE profile_id=(SELECT profile_id FROM ga WHERE entity_type='character'AND $3='approved'AND $7)),lp AS(UPDATE drama.location_visual_profiles SET review_status='approved',lock_status=CASE WHEN $8 THEN'locked'ELSE lock_status END WHERE profile_id=(SELECT profile_id FROM ga WHERE entity_type='location'AND $3='approved'AND $7)),si AS(UPDATE drama.storyboard_images SET review_status=$3,review_comment=$4,rejection_reason=$5,prompt_adjustment=$6 WHERE storyboard_image_id=(SELECT entity_id FROM r0 WHERE entity_type='storyboard_image')RETURNING *),p AS(UPDATE drama.projects SET current_stage=CASE WHEN EXISTS(SELECT 1 FROM si)AND $3='rejected'THEN'visual_assets_locked' WHEN EXISTS(SELECT 1 FROM ga)AND NOT EXISTS(SELECT 1 FROM drama.character_visual_profiles WHERE project_id=$2 AND lock_status<>'locked')AND NOT EXISTS(SELECT 1 FROM drama.location_visual_profiles WHERE project_id=$2 AND lock_status<>'locked')THEN'visual_assets_locked' WHEN EXISTS(SELECT 1 FROM si)AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images WHERE project_id=$2 AND is_current AND review_status<>'approved'AND storyboard_image_id<>(SELECT storyboard_image_id FROM si))THEN'storyboard_images_approved' ELSE current_stage END,status=CASE WHEN EXISTS(SELECT 1 FROM si)AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images WHERE project_id=$2 AND is_current AND review_status<>'approved'AND storyboard_image_id<>(SELECT storyboard_image_id FROM si))THEN'stage_3_completed' WHEN EXISTS(SELECT 1 FROM ga)THEN'waiting_asset_lock' ELSE'waiting_storyboard_image_review'END WHERE project_id=$2)SELECT EXISTS(SELECT 1 FROM r)success,$2::text project_id,$9::text trace_id,'review'::text stage,$3::text status,jsonb_build_object('entity_type',(SELECT entity_type FROM r0),'entity_id',(SELECT entity_id FROM r0),'review_id',$1)data_ref,CASE WHEN EXISTS(SELECT 1 FROM r)THEN NULL ELSE jsonb_build_object('code','REVIEW_NOT_FOUND','message','review not found','retryable',false)END error;",
+        "options": {
+          "queryReplacement": "={{[$json.review_id,$json.project_id,$json.review_status,$json.review_comment||null,$json.rejection_reason||null,$json.prompt_adjustment||null,Boolean($json.selected_as_primary),Boolean($json.lock_after_approval),$json.trace_id]}}"
+        }
+      },
+      "id": "00-stage3-apply-review",
+      "name": "Apply Asset or Frame Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        1180
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {success:$json.success,project_id:$json.project_id,trace_id:$json.trace_id,stage:$json.stage,status:$json.status,data_ref:$json.data_ref,metrics:{},error:$json.error} }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-stage3-review-response",
+      "name": "Stage 3 Review Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -640,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH promoted AS(UPDATE drama.projects p SET current_stage='visual_assets_locked',status='waiting_asset_lock'WHERE p.project_id=$1 AND p.current_stage='visual_asset_review'AND NOT EXISTS(SELECT 1 FROM drama.character_visual_profiles WHERE project_id=$1 AND lock_status<>'locked')AND NOT EXISTS(SELECT 1 FROM drama.location_visual_profiles WHERE project_id=$1 AND lock_status<>'locked')RETURNING p.project_id),completed AS(UPDATE drama.projects p SET current_stage='storyboard_images_approved',status='stage_3_completed'WHERE p.project_id=$1 AND p.current_stage='storyboard_image_review'AND EXISTS(SELECT 1 FROM drama.storyboard_images WHERE project_id=$1 AND is_current)AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images WHERE project_id=$1 AND is_current AND review_status<>'approved')RETURNING p.project_id)SELECT p.project_id,CASE WHEN EXISTS(SELECT 1 FROM completed)THEN'storyboard_images_approved'WHEN EXISTS(SELECT 1 FROM promoted)THEN'visual_assets_locked'ELSE p.current_stage END current_stage,p.test_mode,coalesce($2,(SELECT episode_id FROM drama.storyboards WHERE project_id=p.project_id AND status='approved'ORDER BY version DESC LIMIT 1))episode_id,$3::text shot_id,$4::int generation_version,$5::text trace_id,$6::text action,$7::jsonb payload FROM drama.projects p WHERE p.project_id=$1;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id||$json.payload?.episode_id||null,$json.shot_id||$json.payload?.shot_id||null,$json.generation_version,$json.trace_id,$json.action,JSON.stringify($json.payload||{})]}}"
+        }
+      },
+      "id": "00-stage3-resolve",
+      "name": "Resolve Stage 3 Breakpoint",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        1420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{['storyboard_approved','stage_2_completed'].includes($json.current_stage)}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage3-route-assets",
+      "name": "Resume Visual Assets?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -640,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_visual_assets",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": null,
+            "stage": "visual_assets",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run7",
+      "name": "Execute 07 Visual Assets",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -420,
+        1320
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.current_stage}}",
+              "rightValue": "visual_assets_locked",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage3-route-images",
+      "name": "Resume Storyboard Images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -420,
+        1520
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_storyboard_images",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "storyboard_images",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-run8",
+      "name": "Execute 08 Storyboard Images",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        1440
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{success:false,project_id:$json.project_id,trace_id:$json.trace_id,stage:'orchestrator',status:'failed',data_ref:null,metrics:{},error:{code:'BUSINESS_VALIDATION_FAILED',message:'stage 3 breakpoint is not resumable',retryable:false}}}];"
+      },
+      "id": "00-stage3-not-resumable",
+      "name": "Stage 3 Not Resumable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        1620
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-stage3-resume-response",
+      "name": "Stage 3 Resume Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        40,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-short-drama/stage4",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "00-stage4-webhook",
+      "name": "Stage 4 Review Resume Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1080,
+        1900
+      ],
+      "webhookId": "ai-short-drama-stage4"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),b=$json.body||$json,p=b.payload||{},project_id=b.project_id||p.project_id,action=b.action||p.action||'resume',requested_stage=b.stage||p.stage||null;if(!project_id)throw new Error('PROJECT_NOT_FOUND: project_id is required');if(!['run','retry','regenerate','review','resume','cancel','lock','unlock','select_voice','process'].includes(action))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported stage 4 action');if(requested_stage&&!['orchestrator','image_to_video','voice_audio'].includes(requested_stage))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported stage 4 target');const entity_type=b.entity_type||p.entity_type||null,entity_id=b.entity_id||p.entity_id||null,shot_id=b.shot_id||p.shot_id||null,dialogue_id=b.dialogue_id||p.dialogue_id||null;return [{json:{project_id,episode_id:b.episode_id||p.episode_id||null,shot_id,dialogue_id,stage:'orchestrator',requested_stage,action,generation_version:Math.max(1,Number(b.generation_version||p.generation_version||1)),test_mode:b.test_mode===undefined?Boolean(p.test_mode):Boolean(b.test_mode),trace_id:b.trace_id||p.trace_id||('trace_stage4_'+crypto.randomUUID()),breakpoint:b.breakpoint||p.breakpoint||null,entity_type,entity_id,payload:{...p,requested_stage,review_id:b.review_id||p.review_id||null,entity_type,entity_id,shot_id,dialogue_id,review_status:b.review_status||p.review_status||null,review_comment:b.review_comment||p.review_comment||'',rejection_reason:b.rejection_reason||p.rejection_reason||'',prompt_adjustment:b.prompt_adjustment||p.prompt_adjustment||'',lock_after_approval:Boolean(b.lock_after_approval??p.lock_after_approval)}}}];"
+      },
+      "id": "00-stage4-normalize",
+      "name": "Normalize Stage 4 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -860,
+        1900
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{['review','lock','unlock','select_voice'].includes($json.action)}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage4-review-if",
+      "name": "Stage 4 Review or Voice Action?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -640,
+        1900
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.entity_type}}",
+              "rightValue": "shot_video",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage4-video-review-if",
+      "name": "Shot Video Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -420,
+        1740
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_image_to_video",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "image_to_video",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-stage4-review-video",
+      "name": "Execute 09 Video Review",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        1660
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_voice_audio",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.project_id}}",
+            "episode_id": "={{$json.episode_id}}",
+            "shot_id": "={{$json.shot_id}}",
+            "stage": "voice_audio",
+            "action": "={{$json.action}}",
+            "generation_version": "={{$json.generation_version}}",
+            "test_mode": "={{$json.test_mode}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{$json.payload}}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "00-stage4-review-audio",
+      "name": "Execute 10 Audio Voice Review",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        1820
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "00-stage4-review-response",
+      "name": "Stage 4 Review Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        40,
+        1740
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ctx AS(SELECT p.*,coalesce($2::text,(SELECT es.episode_id FROM drama.episode_scripts es WHERE es.project_id=p.project_id AND es.status='approved'ORDER BY es.created_at LIMIT 1))resolved_episode_id FROM drama.projects p WHERE p.project_id=$1)SELECT ctx.project_id,ctx.current_stage,ctx.status,ctx.test_mode,ctx.resolved_episode_id episode_id,$3::text shot_id,$4::text dialogue_id,$5::int generation_version,$6::text trace_id,$7::text action,$8::text breakpoint,$9::jsonb payload,(SELECT count(*)::int FROM drama.storyboard_images i WHERE i.project_id=ctx.project_id AND i.episode_id=ctx.resolved_episode_id AND i.review_status='approved'AND i.is_current)approved_image_count,(SELECT count(*)::int FROM drama.shot_videos v WHERE v.project_id=ctx.project_id AND v.episode_id=ctx.resolved_episode_id AND v.review_status='approved'AND v.is_current)approved_video_count,(SELECT count(*)::int FROM drama.video_generation_tasks t WHERE t.project_id=ctx.project_id AND t.episode_id=ctx.resolved_episode_id AND t.status IN('submitting','processing'))video_processing_count,(SELECT count(*)::int FROM drama.dialogues d WHERE d.project_id=ctx.project_id AND d.episode_id=ctx.resolved_episode_id)dialogue_count,(SELECT count(*)::int FROM drama.dialogue_audio a WHERE a.project_id=ctx.project_id AND a.episode_id=ctx.resolved_episode_id AND a.status='succeeded'AND a.auto_qc_status<>'failed'AND a.is_current)audio_success_count,(SELECT count(*)::int FROM drama.tts_generation_tasks t WHERE t.project_id=ctx.project_id AND t.episode_id=ctx.resolved_episode_id AND t.status IN('submitting','processing'))audio_processing_count,(SELECT count(*)::int FROM drama.voice_profiles v WHERE v.project_id=ctx.project_id AND v.review_status='approved'AND v.lock_status='locked'AND v.is_default)locked_voice_count,(SELECT count(*)::int FROM drama.episode_audio_plans ap WHERE ap.project_id=ctx.project_id AND ap.episode_id=ctx.resolved_episode_id AND ap.status='ready')audio_plan_ready_count FROM ctx;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id,$json.dialogue_id,$json.generation_version,$json.trace_id,$json.action,$json.breakpoint,JSON.stringify($json.payload||{})]}}"
+        }
+      },
+      "id": "00-stage4-resolve",
+      "name": "Resolve Stage 4 Breakpoint",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -420,
+        2060
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json;if(!x.project_id)throw new Error('PROJECT_NOT_FOUND');if(!x.episode_id)throw new Error('EPISODE_SCRIPT_NOT_APPROVED: no approved episode');const allowed=['storyboard_images_approved','stage_3_completed','image_to_video','video_tasks_submitted','video_processing','shot_videos_generated','shot_video_review','shot_videos_approved','voice_audio','voice_profiles_created','voice_profile_review','voice_profiles_locked','tts_processing','dialogue_audio_generated','audio_processing','audio_review','audio_ready','audio_plan_completed','stage_4_completed','stage_4_failed'];if(!allowed.includes(x.current_stage)&&!x.breakpoint)throw new Error('STORYBOARD_NOT_APPROVED: stage 3 is not complete');const images=Number(x.approved_image_count),videos=Number(x.approved_video_count),dialogues=Number(x.dialogue_count),audio=Number(x.audio_success_count),plan=Number(x.audio_plan_ready_count),complete=images>0&&videos>=images&&dialogues>0&&audio>=dialogues&&plan>0,bp=x.breakpoint||x.current_stage,retry=['retry','regenerate'].includes(x.action),requested=x.payload?.requested_stage||null;let launch_video=!complete&&images>videos,launch_audio=!complete&&dialogues>audio;if(['video_tasks_submitted','video_processing'].includes(bp)&&!retry&&Number(x.video_processing_count)>0)launch_video=false;if(['dialogue_audio_generated','audio_processing'].includes(bp)&&!retry&&Number(x.audio_processing_count)>0)launch_audio=false;if(bp==='shot_videos_approved')launch_video=false;if(bp==='audio_plan_completed')launch_audio=false;if(bp==='storyboard_images_approved'||bp==='stage_3_completed'){launch_video=images>videos;launch_audio=dialogues>audio;}if(requested==='image_to_video')launch_audio=false;if(requested==='voice_audio')launch_video=false;return [{json:{...x,breakpoint:bp,launch_video,launch_audio,stage4_complete:complete}}];"
+      },
+      "id": "00-stage4-plan",
+      "name": "Plan Stage 4 Parallel Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        2060
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.projects SET current_stage=CASE WHEN $4 THEN'stage_4_completed'WHEN $2 THEN'video_processing'WHEN $3 THEN'audio_processing'ELSE current_stage END,status=CASE WHEN $4 THEN'stage_4_completed'WHEN $2 THEN'video_processing'WHEN $3 THEN'audio_processing'ELSE status END,config=config||jsonb_build_object('stage_4',jsonb_build_object('breakpoint',$5::text,'video_dispatched',$2,'audio_dispatched',$3,'trace_id',$6::text,'updated_at',now()))WHERE project_id=$1 RETURNING $7::jsonb context;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.launch_video,$json.launch_audio,$json.stage4_complete,$json.breakpoint,$json.trace_id,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "00-stage4-mark",
+      "name": "Mark Stage 4 Dispatch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        20,
+        2060
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.context.launch_video}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage4-launch-video-if",
+      "name": "Launch Video Branch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        1940
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.context.launch_audio}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "00-stage4-launch-audio-if",
+      "name": "Launch Audio Branch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        2100
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_image_to_video",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.context.project_id}}",
+            "episode_id": "={{$json.context.episode_id}}",
+            "shot_id": "={{$json.context.shot_id}}",
+            "stage": "image_to_video",
+            "action": "={{$json.context.action}}",
+            "generation_version": "={{$json.context.generation_version}}",
+            "test_mode": "={{$json.context.test_mode}}",
+            "trace_id": "={{$json.context.trace_id}}",
+            "payload": "={{ {...$json.context.payload,breakpoint:$json.context.breakpoint} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "00-stage4-run9",
+      "name": "Dispatch 09 Image to Video",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        1900
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_voice_audio",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{$json.context.project_id}}",
+            "episode_id": "={{$json.context.episode_id}}",
+            "shot_id": null,
+            "stage": "voice_audio",
+            "action": "={{$json.context.action}}",
+            "generation_version": "={{$json.context.generation_version}}",
+            "test_mode": "={{$json.context.test_mode}}",
+            "trace_id": "={{$json.context.trace_id}}",
+            "payload": "={{ {...$json.context.payload,dialogue_id:$json.context.dialogue_id,breakpoint:$json.context.breakpoint} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "00-stage4-run10",
+      "name": "Dispatch 10 Voice Audio",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        2060
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json.context;return [{json:{success:true,project_id:x.project_id,trace_id:x.trace_id,stage:'orchestrator',status:x.stage4_complete?'stage_4_completed':'stage_4_started',data_ref:{entity_type:'stage_4_dispatch',entity_id:x.project_id},metrics:{approved_image_count:Number(x.approved_image_count),approved_video_count:Number(x.approved_video_count),dialogue_count:Number(x.dialogue_count),audio_success_count:Number(x.audio_success_count),locked_voice_count:Number(x.locked_voice_count),audio_plan_ready_count:Number(x.audio_plan_ready_count),video_dispatched:Boolean(x.launch_video),audio_dispatched:Boolean(x.launch_audio)},error:null}}];"
+      },
+      "id": "00-stage4-ack",
+      "name": "Build Stage 4 Dispatch Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "00-stage4-ack-response",
+      "name": "Stage 4 Dispatch Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        460,
+        2260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Normalize Stage 4 Request').item.json,m=$json.error?.message||$json.message||'stage 4 dispatch failed',code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_');return [{json:{success:false,project_id:r.project_id,trace_id:r.trace_id,stage:'orchestrator',status:'failed',data_ref:null,metrics:{},error:{code,message:m,retryable:/429|timeout|5\\d\\d|network/i.test(m)}}}];"
+      },
+      "id": "00-stage4-failure",
+      "name": "Stage 4 Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        2380
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "00-stage4-failed-response",
+      "name": "Stage 4 Failed Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        20,
+        2380
+      ]
+    }
+  ],
+  "connections": {
+    "Create Project Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Project Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Project Request": {
+      "main": [
+        [
+          {
+            "node": "Create Project and Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Project and Task": {
+      "main": [
+        [
+          {
+            "node": "Already Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Completed?": {
+      "main": [
+        [
+          {
+            "node": "Cached Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Request": {
+      "main": [
+        [
+          {
+            "node": "Set Stage Novel Import",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Stage Novel Import": {
+      "main": [
+        [
+          {
+            "node": "Execute 01 Novel Import",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 01 Novel Import": {
+      "main": [
+        [
+          {
+            "node": "Import Successful?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Import Successful?": {
+      "main": [
+        [
+          {
+            "node": "Set Stage Chunk Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Stage Chunk Analysis": {
+      "main": [
+        [
+          {
+            "node": "Execute 02 Chunk Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 02 Chunk Analysis": {
+      "main": [
+        [
+          {
+            "node": "Analysis Successful?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analysis Successful?": {
+      "main": [
+        [
+          {
+            "node": "Set Stage Story Bible",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Stage Story Bible": {
+      "main": [
+        [
+          {
+            "node": "Execute 03 Story Bible",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 03 Story Bible": {
+      "main": [
+        [
+          {
+            "node": "Bible Successful?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bible Successful?": {
+      "main": [
+        [
+          {
+            "node": "Set Waiting Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Waiting Review": {
+      "main": [
+        [
+          {
+            "node": "Success Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Stage Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Stage Failure": {
+      "main": [
+        [
+          {
+            "node": "Save Project Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Project Failure": {
+      "main": [
+        [
+          {
+            "node": "Failure Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 2 Review Resume Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Review Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Review Resume": {
+      "main": [
+        [
+          {
+            "node": "Is Review Action?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Review Action?": {
+      "main": [
+        [
+          {
+            "node": "Apply Unified Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Resume Breakpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Unified Review": {
+      "main": [
+        [
+          {
+            "node": "Review Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Resume Breakpoint": {
+      "main": [
+        [
+          {
+            "node": "Resume Episode Planning?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Episode Planning?": {
+      "main": [
+        [
+          {
+            "node": "Execute 04 Episode Planning",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resume Episode Script?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 04 Episode Planning": {
+      "main": [
+        [
+          {
+            "node": "Resume Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Episode Script?": {
+      "main": [
+        [
+          {
+            "node": "Execute 05 Episode Script",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resume Storyboard?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 05 Episode Script": {
+      "main": [
+        [
+          {
+            "node": "Resume Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Storyboard?": {
+      "main": [
+        [
+          {
+            "node": "Execute 06 Storyboard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not Resumable Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 06 Storyboard": {
+      "main": [
+        [
+          {
+            "node": "Resume Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Resumable Response": {
+      "main": [
+        [
+          {
+            "node": "Resume Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 3 Review Resume Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Stage 3 Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Stage 3 Request": {
+      "main": [
+        [
+          {
+            "node": "Stage 3 Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 3 Review?": {
+      "main": [
+        [
+          {
+            "node": "Apply Asset or Frame Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Stage 3 Breakpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Asset or Frame Review": {
+      "main": [
+        [
+          {
+            "node": "Stage 3 Review Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Stage 3 Breakpoint": {
+      "main": [
+        [
+          {
+            "node": "Resume Visual Assets?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Visual Assets?": {
+      "main": [
+        [
+          {
+            "node": "Execute 07 Visual Assets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resume Storyboard Images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 07 Visual Assets": {
+      "main": [
+        [
+          {
+            "node": "Stage 3 Resume Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume Storyboard Images?": {
+      "main": [
+        [
+          {
+            "node": "Execute 08 Storyboard Images",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 3 Not Resumable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 08 Storyboard Images": {
+      "main": [
+        [
+          {
+            "node": "Stage 3 Resume Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 3 Not Resumable": {
+      "main": [
+        [
+          {
+            "node": "Stage 3 Resume Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 4 Review Resume Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Stage 4 Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Stage 4 Request": {
+      "main": [
+        [
+          {
+            "node": "Stage 4 Review or Voice Action?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 4 Review or Voice Action?": {
+      "main": [
+        [
+          {
+            "node": "Shot Video Review?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Stage 4 Breakpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shot Video Review?": {
+      "main": [
+        [
+          {
+            "node": "Execute 09 Video Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute 10 Audio Voice Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 09 Video Review": {
+      "main": [
+        [
+          {
+            "node": "Stage 4 Review Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 10 Audio Voice Review": {
+      "main": [
+        [
+          {
+            "node": "Stage 4 Review Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Stage 4 Breakpoint": {
+      "main": [
+        [
+          {
+            "node": "Plan Stage 4 Parallel Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Stage 4 Parallel Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Mark Stage 4 Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Stage 4 Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Launch Video Branch?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Launch Audio Branch?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Stage 4 Dispatch Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stage 4 Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Launch Video Branch?": {
+      "main": [
+        [
+          {
+            "node": "Dispatch 09 Image to Video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Launch Audio Branch?": {
+      "main": [
+        [
+          {
+            "node": "Dispatch 10 Voice Audio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build Stage 4 Dispatch Response": {
+      "main": [
+        [
+          {
+            "node": "Stage 4 Dispatch Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage 4 Failure Response": {
+      "main": [
+        [
+          {
+            "node": "Stage 4 Failed Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-000000000040",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

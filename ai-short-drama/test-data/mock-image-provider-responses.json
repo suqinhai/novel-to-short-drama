@@ -1,0 +1,9 @@
+{
+  "sync_success":{"provider":"mock","payload":{}},
+  "async_two_polls":{"provider":"mock","payload":{"mock_async":true}},
+  "simulate_429":{"provider":"mock","payload":{"simulate":"429"}},
+  "simulate_timeout":{"provider":"mock","payload":{"simulate":"timeout"}},
+  "simulate_invalid":{"provider":"mock","payload":{"simulate":"invalid"}},
+  "simulate_corrupt":{"provider":"mock","payload":{"simulate":"corrupt"}},
+  "simulate_shot_failure":{"provider":"mock","payload":{"simulate":"invalid","shot_id":"REPLACE_SHOT_ID"}}
+}

@@ -1,0 +1,93 @@
+{
+  "name": "01 小说导入与清洗",
+  "id": "wf_novel_import_clean",
+  "active": false,
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},
+  "nodes": [
+    {
+      "parameters": {"workflowInputs": {"values": [{"name": "project_id"}, {"name": "episode_id"}, {"name": "shot_id"}, {"name": "stage"}, {"name": "action"}, {"name": "generation_version", "type": "number"}, {"name": "test_mode", "type": "boolean"}, {"name": "trace_id"}, {"name": "payload", "type": "object"}]}},
+      "id": "01-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1, "position": [-1280, 0]
+    },
+    {
+      "parameters": {"jsCode": "const crypto=require('crypto'); const i=$json; const p=i.payload||{}; if(!i.project_id) throw new Error('INVALID_INPUT: project_id is required'); if(!['run','retry','regenerate','review','resume'].includes(i.action||'run')) throw new Error('INVALID_INPUT: unsupported action'); if(!p.novel_text&&!p.novel_source) throw new Error('INVALID_INPUT: novel_text or novel_source is required'); const action=i.action||'run', v=Number(i.generation_version||1), entity=p.novel_id||'source'; const key=p.idempotency_key||[i.project_id,'novel_import',entity,v,action].join(':'); return [{json:{...i,stage:'novel_import',action,generation_version:v,trace_id:i.trace_id||`trace_${crypto.randomUUID()}`,task_id:`task_${crypto.randomUUID()}`,idempotency_key:key,payload:p,started_ms:Date.now()}}];"},
+      "id": "01-normalize", "name": "Validate and Normalize", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-1060, 0]
+    },
+    {
+      "parameters": {"operation": "executeQuery", "query": "INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at) VALUES($1,$2,$3,'novel_import',$4,'novel',$5,$6,$7,'running',$8,$9::jsonb,now()) ON CONFLICT(idempotency_key) DO UPDATE SET status=CASE WHEN drama.workflow_tasks.status='failed' AND $4 IN ('retry','regenerate','resume') AND drama.workflow_tasks.retry_count < drama.workflow_tasks.max_retries THEN 'running' ELSE drama.workflow_tasks.status END, retry_count=CASE WHEN drama.workflow_tasks.status='failed' AND $4 IN ('retry','regenerate','resume') THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END, started_at=CASE WHEN drama.workflow_tasks.status='failed' AND $4 IN ('retry','regenerate','resume') THEN now() ELSE drama.workflow_tasks.started_at END RETURNING status,output_data,retry_count,$10::jsonb AS request;", "options": {"queryReplacement": "={{ [$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.payload.novel_id || 'source',$json.generation_version,$json.idempotency_key,Number($env.MODEL_MAX_RETRIES || 3),JSON.stringify($json),JSON.stringify($json)] }}"}},
+      "id": "01-task-gate", "name": "Idempotency Task Gate", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6, "position": [-840, 0],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}}, "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict"}, "conditions": [{"leftValue": "={{ $json.status }}", "rightValue": "completed", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}},
+      "id": "01-is-cached", "name": "Already Completed?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [-620, 0]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.output_data}];"},
+      "id": "01-cached", "name": "Return Cached Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-400, -180]
+    },
+    {
+      "parameters": {"jsCode": "if($json.status==='running'&&$json.request){return [{json:$json.request}];} throw new Error(`TASK_LOCKED_OR_RETRY_EXHAUSTED: status=${$json.status}`);"},
+      "id": "01-restore", "name": "Restore Request", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-400, 40]
+    },
+    {
+      "parameters": {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict"}, "conditions": [{"leftValue": "={{ Boolean($json.payload.novel_text) }}", "rightValue": true, "operator": {"type": "boolean", "operation": "equals"}}], "combinator": "and"}},
+      "id": "01-has-inline", "name": "Has Inline Text?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [-180, 40]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:{...$json,raw_text:String($json.payload.novel_text),source_type:'text',source_path:null,encoding:'UTF-8'}}];"},
+      "id": "01-inline", "name": "Use Inline Text", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [40, -80]
+    },
+    {
+      "parameters": {"operation": "read", "fileSelector": "={{ $json.payload.novel_source }}", "options": {}},
+      "id": "01-read-file", "name": "Read Local TXT", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1.1, "position": [40, 160], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"operation": "text", "binaryPropertyName": "data", "options": {"encoding": "utf8"}},
+      "id": "01-extract-text", "name": "Extract TXT", "type": "n8n-nodes-base.extractFromFile", "typeVersion": 1, "position": [260, 160], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "const req=$('Restore Request').item.json; const text=$json.data??$json.text??$json.content; if(typeof text!=='string') throw new Error('ENCODING_OR_FILE_ERROR: unable to decode TXT as UTF-8; convert GBK to UTF-8 and retry'); return [{json:{...req,raw_text:text,source_type:'local_file',source_path:req.payload.novel_source,encoding:'UTF-8'}}];"},
+      "id": "01-file-text", "name": "Attach File Text", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [480, 160]
+    },
+    {
+      "parameters": {"jsCode": "const crypto=require('crypto'); let t=String($json.raw_text||'').replace(/^\\uFEFF/,'').replace(/https?:\\/\\/[^\\s]+/gi,'').replace(/^.*(?:本章完|手机用户请访问|最新网址|加入书签|投推荐票).*$/gmi,'').replace(/[ \\t]+$/gm,'').replace(/\\n{3,}/g,'\\n\\n').trim(); if(!t) throw new Error('INVALID_INPUT: novel text is empty after cleaning'); if(/[锟斤拷�]{2,}/.test(t)) throw new Error('ENCODING_ERROR: probable decoding failure'); const re=/^(第[零〇一二三四五六七八九十百千万两0-9]+章(?:\\s+[^\\n]{0,40})?|卷[零〇一二三四五六七八九十百千万两0-9]+(?:\\s+[^\\n]{0,40})?)\\s*$/gm; const hits=[...t.matchAll(re)]; let chapters=[]; if(hits.length){for(let n=0;n<hits.length;n++){const start=hits[n].index+hits[n][0].length,end=n+1<hits.length?hits[n+1].index:t.length; chapters.push({title:hits[n][1].trim(),content:t.slice(start,end).trim()});} if(hits[0].index>0&&t.slice(0,hits[0].index).trim()) chapters.unshift({title:'序章',content:t.slice(0,hits[0].index).trim()});}else{const size=8000; for(let pos=0,n=1;pos<t.length;n++){let end=Math.min(pos+size,t.length); if(end<t.length){const p=t.lastIndexOf('\\n',end); if(p>pos+size*0.6)end=p;} chapters.push({title:`虚拟章节 ${n}`,content:t.slice(pos,end).trim()}); pos=end;}} chapters=chapters.filter(c=>c.content).map((c,n)=>({...c,chapter_number:n+1,char_count:[...c.content].length,content_hash:crypto.createHash('sha256').update(c.content).digest('hex')})); const content_hash=crypto.createHash('sha256').update(t).digest('hex'),novel_id=`novel_${content_hash.slice(0,20)}`; const warnings=chapters.filter(c=>c.char_count>Number($env.CHUNK_MAX_CHARS||12000)).map(c=>`${c.title} exceeds CHUNK_MAX_CHARS`); return [{json:{...$json,novel_id,cleaned_text:t,total_chars:[...t].length,chapter_count:chapters.length,content_hash,chapters,warnings}}];"},
+      "id": "01-clean", "name": "Clean Detect and Split Chapters", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [720, 20]
+    },
+    {
+      "parameters": {"operation": "executeQuery", "query": "WITH n AS (INSERT INTO drama.novels(novel_id,project_id,name,source_type,source_path,cleaned_path,encoding,total_chars,chapter_count,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(project_id,content_hash) DO UPDATE SET updated_at=now() RETURNING novel_id), c AS (INSERT INTO drama.novel_chapters(chapter_id,novel_id,project_id,chapter_number,title,content,char_count,content_hash) SELECT 'ch_'||substr(md5($1||':'||x.chapter_number),1,24),$1,$2,x.chapter_number,x.title,x.content,x.char_count,x.content_hash FROM jsonb_to_recordset($11::jsonb) AS x(chapter_number int,title text,content text,char_count int,content_hash text) ON CONFLICT(novel_id,chapter_number) DO NOTHING), done AS (UPDATE drama.workflow_tasks SET status='completed',completed_at=now(),output_data=jsonb_build_object('success',true,'project_id',$2,'trace_id',$12,'stage','novel_import','status','completed','data_ref',jsonb_build_object('entity_type','novel','entity_id',$1),'metrics',jsonb_build_object('duration_ms',$13,'input_chars',$8,'output_tokens',0,'estimated_cost',0),'error',NULL) WHERE idempotency_key=$14 RETURNING output_data) SELECT output_data FROM done;", "options": {"queryReplacement": "={{ [$json.novel_id,$json.project_id,$json.payload.novel_name || '未命名小说',$json.source_type,$json.source_path,'/data/storage/novels/'+$json.novel_id+'.txt',$json.encoding,$json.total_chars,$json.chapter_count,$json.content_hash,JSON.stringify($json.chapters),$json.trace_id,Date.now()-$json.started_ms,$json.idempotency_key] }}"}},
+      "id": "01-persist", "name": "Persist Novel Transaction", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6, "position": [960, 20],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}}, "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.output_data}];"},
+      "id": "01-success", "name": "Success Response", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1180, 20]
+    },
+    {
+      "parameters": {"jsCode": "const req=$('Validate and Normalize').item.json; const msg=$json.error?.message||$json.message||'Novel import failed'; return [{json:{success:false,project_id:req.project_id,trace_id:req.trace_id,stage:'novel_import',status:'failed',data_ref:null,metrics:{},error:{code:(msg.split(':')[0]||'NOVEL_IMPORT_ERROR').replace(/\\W+/g,'_'),message:msg,retryable:/429|timeout|5\\d\\d|network/i.test(msg)}}}];"},
+      "id": "01-failure", "name": "Failure Response", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [740, 360]
+    },
+    {
+      "parameters": {"operation": "executeQuery", "query": "UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,completed_at=now() WHERE idempotency_key=$3; SELECT $4::jsonb AS response;", "options": {"queryReplacement": "={{ [$json.error.code,$json.error.message,$('Validate and Normalize').item.json.idempotency_key,JSON.stringify($json)] }}"}},
+      "id": "01-save-failure", "name": "Save Failure", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6, "position": [960, 360],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}}
+    },
+    {"parameters": {"jsCode": "return [{json:$json.response}];"}, "id": "01-failed-final", "name": "Failed Final", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1180, 360]}
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {"main": [[{"node": "Validate and Normalize", "type": "main", "index": 0}]]},
+    "Validate and Normalize": {"main": [[{"node": "Idempotency Task Gate", "type": "main", "index": 0}]]},
+    "Idempotency Task Gate": {"main": [[{"node": "Already Completed?", "type": "main", "index": 0}], [{"node": "Failure Response", "type": "main", "index": 0}]]},
+    "Already Completed?": {"main": [[{"node": "Return Cached Result", "type": "main", "index": 0}], [{"node": "Restore Request", "type": "main", "index": 0}]]},
+    "Restore Request": {"main": [[{"node": "Has Inline Text?", "type": "main", "index": 0}]]},
+    "Has Inline Text?": {"main": [[{"node": "Use Inline Text", "type": "main", "index": 0}], [{"node": "Read Local TXT", "type": "main", "index": 0}]]},
+    "Use Inline Text": {"main": [[{"node": "Clean Detect and Split Chapters", "type": "main", "index": 0}]]},
+    "Read Local TXT": {"main": [[{"node": "Extract TXT", "type": "main", "index": 0}], [{"node": "Failure Response", "type": "main", "index": 0}]]},
+    "Extract TXT": {"main": [[{"node": "Attach File Text", "type": "main", "index": 0}], [{"node": "Failure Response", "type": "main", "index": 0}]]},
+    "Attach File Text": {"main": [[{"node": "Clean Detect and Split Chapters", "type": "main", "index": 0}]]},
+    "Clean Detect and Split Chapters": {"main": [[{"node": "Persist Novel Transaction", "type": "main", "index": 0}]]},
+    "Persist Novel Transaction": {"main": [[{"node": "Success Response", "type": "main", "index": 0}], [{"node": "Failure Response", "type": "main", "index": 0}]]},
+    "Failure Response": {"main": [[{"node": "Save Failure", "type": "main", "index": 0}]]},
+    "Save Failure": {"main": [[{"node": "Failed Final", "type": "main", "index": 0}]]}
+  },
+  "pinData": {}, "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-010000000001", "meta": {"templateCredsSetupCompleted": false}, "tags": []
+}

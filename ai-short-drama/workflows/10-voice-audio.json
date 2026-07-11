@@ -1,0 +1,264 @@
+{
+  "name": "10 配音与音频",
+  "id": "wf_voice_audio",
+  "active": false,
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},
+  "nodes": [
+    {
+      "parameters": {"workflowInputs": {"values": [{"name": "project_id"}, {"name": "episode_id"}, {"name": "shot_id"}, {"name": "stage"}, {"name": "action"}, {"name": "generation_version", "type": "number"}, {"name": "test_mode", "type": "boolean"}, {"name": "trace_id"}, {"name": "payload", "type": "object"}]}},
+      "id": "10-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
+      "position": [-1540, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},a=i.action||'run',v=Number(i.generation_version||1),allowed=['run','retry','regenerate','review','resume','cancel','lock','unlock','select_voice','process'];if(!i.project_id)throw new Error('PROJECT_NOT_FOUND');if(!allowed.includes(a))throw new Error('BUSINESS_VALIDATION_FAILED: unsupported action');const entityType=p.entity_type||'',entityId=p.entity_id||p.voice_profile_id||p.dialogue_audio_id||p.dialogue_id||i.episode_id||'episode_audio',route=(['review','lock','unlock','select_voice'].includes(a)&&entityType==='voice_profile')?'voice_review':(a==='review'&&entityType==='dialogue_audio')?'audio_review':'run';if(route==='run'&&!i.episode_id)throw new Error('EPISODE_SCRIPT_NOT_APPROVED: episode_id required');if(a==='regenerate'&&(!p.dialogue_id||v<2))throw new Error('BUSINESS_VALIDATION_FAILED: dialogue regeneration requires dialogue_id and new generation_version');if(route!=='run'&&!entityId)throw new Error('BUSINESS_VALIDATION_FAILED: review entity_id required');const key=[i.project_id,'voice_audio',entityId,v,a].join(':');return [{json:{...i,payload:p,stage:'voice_audio',action:a,generation_version:v,trace_id:i.trace_id||'trace_voice_'+crypto.randomUUID(),task_id:'task_'+crypto.randomUUID(),idempotency_key:key,route,entity_type:entityType,entity_id:entityId,started_ms:Date.now()}}];"
+      },
+      "id": "10-normalize", "name": "Validate Voice Audio Request", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1320, 0], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {"values": [
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "voice_review", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "voice_review"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "audio_review", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "audio_review"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "run", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "run"}
+        ]},
+        "options": {}
+      },
+      "id": "10-action-switch", "name": "Switch Voice Audio Action", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [-1100, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH target0 AS(SELECT * FROM drama.voice_profiles WHERE project_id=$1 AND voice_profile_id=$2),review_ok AS(SELECT 1 FROM drama.review_tasks WHERE project_id=$1 AND review_id=$4 AND entity_type='voice_profile'AND entity_id=$2),eligible AS(SELECT t.* FROM target0 t WHERE $3='unlock'OR($3='review'AND EXISTS(SELECT 1 FROM review_ok))OR($3 IN('lock','select_voice')AND t.review_status='approved')),unlocked AS(UPDATE drama.voice_profiles v SET lock_status='unlocked',is_default=false FROM eligible e WHERE v.voice_profile_id=e.voice_profile_id AND $3='unlock'RETURNING v.*),demoted AS(UPDATE drama.voice_profiles v SET lock_status='unlocked',is_default=false FROM eligible e WHERE (($3='review'AND $5='approved'AND $8::boolean)OR($3 IN('lock','select_voice')AND $8::boolean))AND coalesce($10,e.provider_voice_id)IS NOT NULL AND v.project_id=e.project_id AND v.voice_role=e.voice_role AND v.character_id IS NOT DISTINCT FROM e.character_id AND v.voice_profile_id<>e.voice_profile_id AND v.lock_status='locked'RETURNING v.voice_profile_id),reviewed AS(UPDATE drama.voice_profiles v SET status=CASE WHEN($3='review'AND $5='approved')OR $3 IN('lock','select_voice')THEN'ready'ELSE v.status END,review_status=CASE WHEN $3='review'THEN $5 ELSE v.review_status END,lock_status=CASE WHEN(($3='review'AND $5='approved')OR $3 IN('lock','select_voice'))AND $8::boolean THEN'locked'ELSE'unlocked'END,is_default=CASE WHEN(($3='review'AND $5='approved')OR $3 IN('lock','select_voice'))AND $8::boolean THEN true ELSE false END,provider_voice_id=coalesce($10,v.provider_voice_id)FROM eligible e WHERE v.voice_profile_id=e.voice_profile_id AND $3<>'unlock'AND(NOT(($3='review'AND $5='approved')OR $3 IN('lock','select_voice'))OR coalesce($10,v.provider_voice_id)IS NOT NULL)AND(SELECT count(*)FROM demoted)>=0 RETURNING v.*),chosen AS(SELECT * FROM unlocked UNION ALL SELECT * FROM reviewed),rv AS(UPDATE drama.review_tasks SET review_status=$5,review_comment=$6,rejection_reason=$7,reviewed_at=now()WHERE project_id=$1 AND review_id=$4 AND $3='review'AND EXISTS(SELECT 1 FROM chosen)RETURNING review_id),pr AS(UPDATE drama.projects p SET current_stage=CASE WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.current_stage WHEN EXISTS(SELECT 1 FROM chosen WHERE lock_status='locked')THEN'voice_profiles_locked'ELSE'voice_profile_review'END,status=CASE WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.status WHEN EXISTS(SELECT 1 FROM chosen WHERE lock_status='locked')THEN'running'ELSE'waiting_voice_profile_review'END WHERE p.project_id=$1)SELECT EXISTS(SELECT 1 FROM chosen)success,$1::text project_id,$9::text trace_id,'voice_audio'::text stage,CASE WHEN EXISTS(SELECT 1 FROM chosen)THEN CASE WHEN $3='unlock'THEN'unlocked'ELSE coalesce((SELECT review_status FROM chosen LIMIT 1),$5)END ELSE'failed'END status,jsonb_build_object('entity_type','voice_profile','entity_id',$2,'review_id',$4,'lock_status',(SELECT lock_status FROM chosen LIMIT 1),'is_default',(SELECT is_default FROM chosen LIMIT 1))data_ref,jsonb_build_object()metrics,CASE WHEN EXISTS(SELECT 1 FROM chosen)THEN NULL ELSE jsonb_build_object('code',CASE WHEN(($3='review'AND $5='approved')OR $3 IN('lock','select_voice'))AND $10::text IS NULL AND(SELECT provider_voice_id FROM target0)IS NULL THEN'VOICE_NOT_SUPPORTED'WHEN $3 IN('lock','select_voice')AND coalesce((SELECT review_status FROM target0),'pending')<>'approved'THEN'VOICE_PROFILE_NOT_APPROVED'ELSE'VOICE_PROFILE_NOT_FOUND'END,'message','voice profile is missing, unapproved, or has no provider voice','retryable',false)END error;",
+        "options": {"queryReplacement": "={{[$json.project_id,$json.entity_id,$json.action,$json.payload.review_id||null,$json.payload.review_status||'approved',$json.payload.review_comment||null,$json.payload.rejection_reason||null,Boolean($json.payload.lock_after_approval??true),$json.trace_id,$json.payload.provider_voice_id||null]}}"}
+      },
+      "id": "10-voice-review", "name": "Review Lock or Select Voice Atomically", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-860, -260],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:{success:Boolean($json.success),project_id:$json.project_id,trace_id:$json.trace_id,stage:$json.stage,status:$json.status,data_ref:$json.data_ref,metrics:$json.metrics||{},error:$json.error||null}}];"},
+      "id": "10-voice-review-result", "name": "Voice Review Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-620, -260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH r0 AS(SELECT * FROM drama.review_tasks WHERE project_id=$1 AND review_id=$3 AND entity_type='dialogue_audio'AND entity_id=$2),r AS(UPDATE drama.review_tasks SET review_status=$4,review_comment=$5,rejection_reason=$6,prompt_adjustment=$7,reviewed_at=now()WHERE project_id=$1 AND review_id=$3 RETURNING *),a AS(UPDATE drama.dialogue_audio SET review_status=$4,review_comment=$5,rejection_reason=$6,prompt_adjustment=$7 WHERE dialogue_audio_id=(SELECT entity_id FROM r0)AND EXISTS(SELECT 1 FROM r)RETURNING *)SELECT EXISTS(SELECT 1 FROM a)success,$1::text project_id,$8::text trace_id,'voice_audio'::text stage,$4::text status,jsonb_build_object('entity_type','dialogue_audio','entity_id',$2,'review_id',$3,'dialogue_id',(SELECT dialogue_id FROM a),'generation_version',(SELECT generation_version FROM a))data_ref,jsonb_build_object()metrics,CASE WHEN EXISTS(SELECT 1 FROM a)THEN NULL ELSE jsonb_build_object('code','REVIEW_NOT_FOUND','message','audio review task not found','retryable',false)END error;",
+        "options": {"queryReplacement": "={{[$json.project_id,$json.entity_id,$json.payload.review_id,$json.payload.review_status||'pending',$json.payload.review_comment||null,$json.payload.rejection_reason||null,$json.payload.prompt_adjustment||null,$json.trace_id]}}"}
+      },
+      "id": "10-audio-review", "name": "Review One Dialogue Audio", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-860, -80],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:{success:Boolean($json.success),project_id:$json.project_id,trace_id:$json.trace_id,stage:$json.stage,status:$json.status,data_ref:$json.data_ref,metrics:$json.metrics||{},error:$json.error||null}}];"},
+      "id": "10-audio-review-result", "name": "Dialogue Audio Review Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-620, -80]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at)VALUES($1,$2,$3,'voice_audio',$4,CASE WHEN $5::text IS NULL THEN'episode'ELSE'dialogue'END,coalesce($5,$6),$7,$8,'running',$9,$10::jsonb,now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.workflow_tasks.status='failed'AND $4 IN('retry','resume','regenerate')AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN'running'ELSE drama.workflow_tasks.status END,retry_count=CASE WHEN drama.workflow_tasks.status='failed'AND $4 IN('retry','resume','regenerate')THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END RETURNING status,output_data,$11::jsonb request;",
+        "options": {"queryReplacement": "={{[$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.payload.dialogue_id||null,$json.episode_id,$json.generation_version,$json.idempotency_key,Number($env.TTS_MAX_RETRIES||3),JSON.stringify($json),JSON.stringify($json)]}}"}
+      },
+      "id": "10-gate", "name": "Voice Audio Workflow Task Gate", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-860, 180],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.status}}", "rightValue": "completed", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}},
+      "id": "10-cache-if", "name": "Voice Audio Already Completed?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [-640, 180]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.output_data}];"},
+      "id": "10-cache", "name": "Return Cached Voice Audio Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-420, 80]
+    },
+    {
+      "parameters": {"jsCode": "if($json.status!=='running')throw new Error('DUPLICATE_TASK_RUNNING');return [{json:$json.request}];"},
+      "id": "10-restore", "name": "Restore Voice Audio Request", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-420, 240], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH es AS(SELECT * FROM drama.episode_scripts WHERE project_id=$1 AND episode_id=$2 AND status='approved'ORDER BY version DESC LIMIT 1),base AS(SELECT d.*,s.scene_number,vp.voice_profile_id,vp.provider voice_provider,vp.model voice_model,vp.provider_voice_id,vp.language voice_language,vp.pitch voice_pitch,vp.speed voice_speed,vp.volume voice_volume,cand.voice_profile_id candidate_voice_profile_id,cand.version candidate_voice_version,cand.review_status candidate_review_status,cand.provider_voice_id candidate_provider_voice_id,ca.dialogue_audio_id current_audio_id,ca.status current_audio_status,ca.auto_qc_status current_audio_qc,ca.generation_version current_audio_version,tt.task_id existing_task_id,tt.status existing_task_status,(SELECT sh.shot_id FROM drama.storyboards b JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id WHERE b.episode_id=d.episode_id AND b.status='approved'AND sh.dialogue_ids?d.dialogue_id ORDER BY b.version DESC,sh.shot_order LIMIT 1)shot_id FROM drama.dialogues d JOIN drama.script_scenes s ON s.scene_id=d.scene_id JOIN es ON es.script_id=s.script_id LEFT JOIN LATERAL(SELECT * FROM drama.voice_profiles v WHERE v.project_id=d.project_id AND v.voice_role=CASE WHEN d.character_id IS NULL OR d.dialogue_type='narration'THEN'narrator'ELSE'character'END AND v.character_id IS NOT DISTINCT FROM CASE WHEN d.character_id IS NULL OR d.dialogue_type='narration'THEN NULL ELSE d.character_id END AND v.status='ready'AND v.review_status='approved'AND v.lock_status='locked'AND v.is_default ORDER BY v.version DESC LIMIT 1)vp ON true LEFT JOIN LATERAL(SELECT * FROM drama.voice_profiles v WHERE v.project_id=d.project_id AND v.voice_role=CASE WHEN d.character_id IS NULL OR d.dialogue_type='narration'THEN'narrator'ELSE'character'END AND v.character_id IS NOT DISTINCT FROM CASE WHEN d.character_id IS NULL OR d.dialogue_type='narration'THEN NULL ELSE d.character_id END ORDER BY v.version DESC LIMIT 1)cand ON true LEFT JOIN LATERAL(SELECT * FROM drama.dialogue_audio a WHERE a.dialogue_id=d.dialogue_id AND a.is_current ORDER BY a.generation_version DESC LIMIT 1)ca ON true LEFT JOIN LATERAL(SELECT * FROM drama.tts_generation_tasks t WHERE t.dialogue_id=d.dialogue_id AND t.generation_version=$5 ORDER BY t.created_at DESC LIMIT 1)tt ON true WHERE d.episode_id=$2 AND($3::text IS NULL OR d.dialogue_id=$3)ORDER BY s.scene_number,d.sequence_number LIMIT $4)SELECT(SELECT script_id FROM es)script_id,(SELECT version FROM es)script_version,coalesce((SELECT jsonb_agg(to_jsonb(base)ORDER BY scene_number,sequence_number)FROM base),'[]'::jsonb)dialogues;",
+        "options": {"queryReplacement": "={{[$json.project_id,$json.episode_id,$json.payload.dialogue_id||null,($json.test_mode||$env.MOCK_MODE==='true')?Number($env.TEST_MAX_DIALOGUES||30):10000,$json.generation_version]}}"}
+      },
+      "id": "10-context", "name": "Load Approved Script Dialogues and Voices", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-200, 240],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),r=$('Restore Voice Audio Request').first().json,rows=$json.dialogues||[];if(!$json.script_id)throw new Error('EPISODE_SCRIPT_NOT_APPROVED');if(!rows.length)throw new Error('TTS_TASK_NOT_FOUND: no dialogues found');const byScope=new Map(),assign=r.payload.voice_assignments||{},provider=$env.TTS_PROVIDER||'mock',model=$env.TTS_MODEL||'mock-tts';for(const d of rows){if(d.voice_profile_id)continue;const role=d.character_id==null||d.dialogue_type==='narration'?'narrator':'character',cid=role==='narrator'?null:d.character_id,key=role+':'+(cid||'default');if(byScope.has(key))continue;const rejected=d.candidate_review_status==='rejected',version=rejected?Number(d.candidate_voice_version||1)+1:Number(d.candidate_voice_version||1),profileId=!rejected&&d.candidate_voice_profile_id?d.candidate_voice_profile_id:'voice_'+crypto.createHash('sha1').update(r.project_id+':'+key+':'+version).digest('hex').slice(0,20),voiceId=assign[cid||'narrator']||d.candidate_provider_voice_id||(role==='narrator'?$env.DEFAULT_NARRATOR_VOICE_ID:null)||(provider==='mock'?'mock_voice_'+crypto.createHash('sha1').update(key).digest('hex').slice(0,12):null),reviewId='review_'+crypto.createHash('sha1').update(profileId).digest('hex').slice(0,20);byScope.set(key,{voice_profile_id:profileId,project_id:r.project_id,character_id:cid,voice_role:role,provider,model,provider_voice_id:voiceId,language:$env.TTS_DEFAULT_LANGUAGE||'zh-CN',gender:'unknown',speaking_style:role==='narrator'?'清晰克制的短剧旁白':'自然、口语化、符合人物情绪',pitch:0,speed:1,volume:1,version,status:'ready',review_status:'pending',lock_status:'unlocked',is_default:false,prompt_or_description:'由第10阶段创建，试听审核后锁定',review_id:reviewId});}return [{json:{...r,script_id:$json.script_id,script_version:$json.script_version,dialogues:rows,missing_profiles:[...byScope.values()]}}];"
+      },
+      "id": "10-voices", "name": "Resolve Locked Voices or Create Candidates", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [20, 240], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.missing_profiles.length}}", "rightValue": 0, "operator": {"type": "number", "operation": "gt"}}], "combinator": "and"}},
+      "id": "10-missing-if", "name": "Missing Locked Voice Profiles?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [240, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH vp AS(INSERT INTO drama.voice_profiles(voice_profile_id,project_id,character_id,voice_role,provider,model,provider_voice_id,language,gender,speaking_style,pitch,speed,volume,emotion_capabilities,prompt_or_description,version,status,review_status,lock_status,is_default)SELECT z.voice_profile_id,z.project_id,z.character_id,z.voice_role,z.provider,z.model,z.provider_voice_id,z.language,z.gender,z.speaking_style,z.pitch,z.speed,z.volume,'[]'::jsonb,z.prompt_or_description,z.version,'draft','pending','unlocked',false FROM jsonb_to_recordset($1::jsonb)z(voice_profile_id text,project_id text,character_id text,voice_role text,provider text,model text,provider_voice_id text,language text,gender text,speaking_style text,pitch numeric,speed numeric,volume numeric,prompt_or_description text,version int)ON CONFLICT(voice_profile_id)DO NOTHING RETURNING voice_profile_id),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT z.review_id,$2,'voice_profile','voice_profile',z.voice_profile_id,'pending',jsonb_build_object('voice_role',z.voice_role,'character_id',z.character_id,'version',z.version,'provider_voice_id',z.provider_voice_id)FROM jsonb_to_recordset($1::jsonb)z(review_id text,voice_profile_id text,voice_role text,character_id text,version int,provider_voice_id text)ON CONFLICT(review_id)DO NOTHING),pr AS(UPDATE drama.projects p SET current_stage=CASE WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.current_stage ELSE'voice_profile_review'END,status=CASE WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.status ELSE'waiting_voice_profile_review'END WHERE p.project_id=$2),done AS(UPDATE drama.workflow_tasks SET status='completed',completed_at=now(),output_data=jsonb_build_object('success',true,'project_id',$2,'trace_id',$3::text,'stage','voice_audio','status','waiting_review','data_ref',jsonb_build_object('entity_type','voice_profiles','entity_id',NULL,'review_ids',(SELECT coalesce(jsonb_agg(review_id),'[]')FROM jsonb_to_recordset($1::jsonb)z(review_id text))),'metrics',jsonb_build_object('voice_profiles_created',jsonb_array_length($1::jsonb)),'error',NULL)WHERE idempotency_key=$4 RETURNING output_data)SELECT output_data FROM done;",
+        "options": {"queryReplacement": "={{[JSON.stringify($json.missing_profiles),$json.project_id,$json.trace_id,$json.idempotency_key]}}"}
+      },
+      "id": "10-save-voices", "name": "Save Voice Candidates and Reviews", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [460, 100],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.output_data}];"},
+      "id": "10-wait-voices", "name": "Wait for Voice Review and Lock", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [680, 100]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto=require('crypto'),x=$input.first().json,items=[],digits='零一二三四五六七八九';function cnInt(raw){let n=Math.trunc(Number(raw));if(!Number.isFinite(n))return String(raw);if(n===0)return'零';if(n<0)return'负'+cnInt(-n);const units=['','十','百','千','万','十万','百万','千万','亿'],s=String(n);let out='',zero=false;for(let i=0;i<s.length;i++){const d=Number(s[i]),u=s.length-i-1;if(d===0){zero=out.length>0;}else{if(zero&&!out.endsWith('零'))out+='零';if(!(d===1&&u===1&&out===''))out+=digits[d];out+=units[u]||'';zero=false;}}return out;}function cnNum(raw){const p=String(raw).split('.');return cnInt(p[0])+(p[1]?'点'+[...p[1]].map(v=>digits[Number(v)]).join(''):'');}function normalize(raw){let s=String(raw||'').normalize('NFKC').trim().replace(/\\s+/g,' ');s=s.replace(/(\\d{4})[-\\/年](\\d{1,2})[-\\/月](\\d{1,2})日?/g,(_,y,m,d)=>[...y].map(v=>digits[Number(v)]).join('')+'年'+cnNum(m)+'月'+cnNum(d)+'日');s=s.replace(/[¥￥]\\s*(\\d+(?:\\.\\d+)?)/g,(_,n)=>cnNum(n)+'元').replace(/\\$\\s*(\\d+(?:\\.\\d+)?)/g,(_,n)=>cnNum(n)+'美元').replace(/(\\d+(?:\\.\\d+)?)\\s*元/g,(_,n)=>cnNum(n)+'元').replace(/\\d+(?:\\.\\d+)?/g,n=>cnNum(n));return s.replace(/,+/g,'，').replace(/;+/g,'；').replace(/:+/g,'：').replace(/\\s*([，。！？；：])\\s*/g,'$1');}for(const d of x.dialogues){const sourceText=String(d.text||''),text=normalize(sourceText),hash=crypto.createHash('sha256').update(text).digest('hex'),provider=d.voice_provider||$env.TTS_PROVIDER||'mock',model=d.voice_model||$env.TTS_MODEL||'mock-tts',version=x.generation_version,key=[x.project_id,d.dialogue_id,d.voice_profile_id,version,provider,model,hash].join(':'),validCurrent=x.action!=='regenerate'&&Number(d.current_audio_version)>=version&&d.current_audio_status==='succeeded'&&['passed','warning'].includes(d.current_audio_qc),route=validCurrent?'skip':(['submitting','processing'].includes(d.existing_task_status)||(d.existing_task_status==='succeeded'&&!validCurrent))?'poll':'submit';items.push({json:{...x,...d,source_text:sourceText,text,normalized_text:text,normalized_text_hash:hash,provider,model,generation_version:version,idempotency_key:key,route,task_id_existing:d.existing_task_id||null,language:d.voice_language||$env.TTS_DEFAULT_LANGUAGE||'zh-CN',voice_id:d.provider_voice_id,speed:Number(d.voice_speed||1),pitch:Number(d.voice_pitch||0),volume:Number(d.voice_volume??1)}});}return items;"
+      },
+      "id": "10-build-items", "name": "Build Isolated Dialogue TTS Items", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [460, 340], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"options": {}},
+      "id": "10-loop", "name": "Loop Dialogue TTS Items", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [680, 340]
+    },
+    {
+      "parameters": {
+        "rules": {"values": [
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "submit", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "submit"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "poll", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "poll"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "skip", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "skip"}
+        ]},
+        "options": {}
+      },
+      "id": "10-item-switch", "name": "Switch Dialogue Submit Poll Skip", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {"__rl": true, "value": "wf_tts_provider_adapter", "mode": "id"},
+        "workflowInputs": {"mappingMode": "defineBelow", "value": {"provider": "={{$json.provider}}", "model": "={{$json.model}}", "project_id": "={{$json.project_id}}", "episode_id": "={{$json.episode_id}}", "dialogue_id": "={{$json.dialogue_id}}", "voice_profile_id": "={{$json.voice_profile_id}}", "text": "={{$json.text}}", "language": "={{$json.language}}", "voice_id": "={{$json.voice_id}}", "emotion": "={{$json.emotion}}", "speed": "={{$json.speed}}", "pitch": "={{$json.pitch}}", "volume": "={{$json.volume}}", "format": "={{$env.TTS_DEFAULT_FORMAT||'wav'}}", "sample_rate": "={{Number($env.TTS_DEFAULT_SAMPLE_RATE||48000)}}", "generation_version": "={{$json.generation_version}}", "idempotency_key": "={{$json.idempotency_key}}", "trace_id": "={{$json.trace_id}}", "action": "={{$json.action}}", "payload": "={{ {...$json.payload,action:$json.action,scene_id:$json.scene_id,shot_id:$json.shot_id,speaker_name:$json.speaker_name,dialogue_type:$json.dialogue_type,voice_profile_id:$json.voice_profile_id,normalized_text_hash:$json.normalized_text_hash} }}"}, "matchingColumns": [], "schema": []},
+        "options": {"waitForSubWorkflow": true}
+      },
+      "id": "10-call-tts", "name": "Execute 10a TTS Provider", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2,
+      "position": [1120, 280], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),q=$('Loop Dialogue TTS Items').item.json,res=$json&&typeof $json.success==='boolean'?$json:{success:false,provider:q.provider,model:q.model,status:'failed',audio:null,error:{code:'TTS_PROVIDER_INVALID_RESPONSE',message:$json.error?.message||$json.message||'provider call failed',retryable:true},task_id:null},audioId='audio_'+crypto.createHash('sha1').update(q.dialogue_id+':'+q.generation_version).digest('hex').slice(0,20),status=['processing','succeeded','failed','timeout'].includes(res.status)?res.status:'failed';return [{json:{q,res,audio_id:audioId,status,task_id:res.task_id||null}}];"
+      },
+      "id": "10-normalize-item", "name": "Normalize One Dialogue Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [1340, 280]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.dialogue_audio(dialogue_audio_id,project_id,episode_id,scene_id,dialogue_id,character_id,voice_profile_id,generation_version,dialogue_type,source_text,normalized_text,emotion,performance_instruction,requested_speed,provider,model,provider_task_id,original_url,storage_url,format,sample_rate,channels,bitrate,actual_duration_ms,content_hash,status,auto_qc_status,auto_qc_report,review_status,is_current)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'pending','{}'::jsonb,'pending',true)ON CONFLICT(dialogue_id,generation_version)DO UPDATE SET provider=excluded.provider,model=excluded.model,provider_task_id=excluded.provider_task_id,original_url=coalesce(excluded.original_url,drama.dialogue_audio.original_url),storage_url=coalesce(excluded.storage_url,drama.dialogue_audio.storage_url),format=coalesce(excluded.format,drama.dialogue_audio.format),sample_rate=coalesce(excluded.sample_rate,drama.dialogue_audio.sample_rate),channels=coalesce(excluded.channels,drama.dialogue_audio.channels),bitrate=coalesce(excluded.bitrate,drama.dialogue_audio.bitrate),actual_duration_ms=coalesce(excluded.actual_duration_ms,drama.dialogue_audio.actual_duration_ms),content_hash=coalesce(excluded.content_hash,drama.dialogue_audio.content_hash),status=excluded.status,is_current=true RETURNING $27::text task_id,$2::text project_id,$28::text trace_id;",
+        "options": {"queryReplacement": "={{[$json.audio_id,$json.q.project_id,$json.q.episode_id,$json.q.scene_id,$json.q.dialogue_id,$json.q.character_id||null,$json.q.voice_profile_id,$json.q.generation_version,$json.q.dialogue_type,$json.q.source_text,$json.q.normalized_text,$json.q.emotion||'',$json.q.performance_instruction||'',$json.q.speed,$json.q.provider,$json.q.model,$json.res.provider_task_id||null,$json.res.audio?.original_url||$json.res.audio?.url||null,$json.res.audio?.storage_url||null,$json.res.audio?.format||null,$json.res.audio?.sample_rate||null,$json.res.audio?.channels||null,$json.res.audio?.bitrate||null,$json.res.audio?.duration_ms||null,$json.res.audio?.content_hash||null,$json.status,$json.task_id,$json.q.trace_id]}}"}
+      },
+      "id": "10-save-item", "name": "Save One Dialogue Audio Version", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [1560, 280],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.task_id}}", "rightValue": "", "operator": {"type": "string", "operation": "notEmpty"}}], "combinator": "and"}},
+      "id": "10-task-if", "name": "Provider Task Exists?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [1780, 280]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {"__rl": true, "value": "wf_audio_task_poller_process", "mode": "id"},
+        "workflowInputs": {"mappingMode": "defineBelow", "value": {"task_id": "={{$json.task_id||$json.task_id_existing}}", "project_id": "={{$json.project_id}}", "trace_id": "={{$json.trace_id}}", "payload": "={{ {source:'voice_audio'} }}"}, "matchingColumns": [], "schema": []},
+        "options": {"waitForSubWorkflow": true}
+      },
+      "id": "10-call-poller", "name": "Execute 10b Audio Poll and Process", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2,
+      "position": [2000, 380], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH es AS(SELECT * FROM drama.episode_scripts WHERE project_id=$1 AND episode_id=$2 AND status='approved'ORDER BY version DESC LIMIT 1),stats AS(SELECT count(*)::int total_count,count(*)FILTER(WHERE a.status='succeeded'AND a.auto_qc_status IN('passed','warning'))::int success_count,count(*)FILTER(WHERE a.status IN('failed','timeout')OR a.auto_qc_status='failed')::int failed_count,count(*)FILTER(WHERE a.status IN('pending','generating','processing')OR(a.status='succeeded'AND a.auto_qc_status='pending'))::int processing_count,coalesce(sum(a.actual_duration_ms)FILTER(WHERE a.status='succeeded'),0)::int duration_ms FROM drama.dialogues d JOIN es ON es.episode_id=d.episode_id LEFT JOIN drama.dialogue_audio a ON a.dialogue_id=d.dialogue_id AND a.is_current),ids AS(SELECT coalesce(jsonb_agg(a.dialogue_audio_id ORDER BY s.scene_number,d.sequence_number)FILTER(WHERE a.status='succeeded'),'[]'::jsonb)audio_ids FROM drama.dialogues d JOIN drama.script_scenes s ON s.scene_id=d.scene_id JOIN es ON es.script_id=s.script_id LEFT JOIN drama.dialogue_audio a ON a.dialogue_id=d.dialogue_id AND a.is_current),shots AS(SELECT sh.* FROM drama.storyboards b JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id WHERE b.project_id=$1 AND b.episode_id=$2 AND b.status='approved'),cues AS(SELECT coalesce(jsonb_agg(jsonb_build_object('cue_id','bgm_'||shot_id,'scene_id',scene_id,'shot_id',shot_id,'start_hint','shot_'||shot_order,'end_hint','','mood',bgm_hint,'intensity',1,'music_style',bgm_hint,'duck_under_dialogue',true))FILTER(WHERE bgm_hint<>''),'[]'::jsonb)bgm,coalesce(jsonb_agg(jsonb_build_object('cue_id','sfx_'||shot_id,'shot_id',shot_id,'timing_hint','shot_'||shot_order,'description',sound_effect_hint,'priority','normal'))FILTER(WHERE sound_effect_hint<>''),'[]'::jsonb)sfx,coalesce(jsonb_agg(jsonb_build_object('cue_id','amb_'||shot_id,'shot_id',shot_id,'description',atmosphere))FILTER(WHERE atmosphere<>''),'[]'::jsonb)ambience FROM shots),narrator AS(SELECT voice_profile_id FROM drama.voice_profiles WHERE project_id=$1 AND voice_role='narrator'AND status='ready'AND review_status='approved'AND lock_status='locked'AND is_default ORDER BY version DESC LIMIT 1),plan AS(INSERT INTO drama.episode_audio_plans(audio_plan_id,project_id,episode_id,script_id,version,narrator_voice_profile_id,dialogue_audio_ids,bgm_cues,sound_effect_cues,ambience_cues,subtitle_config,estimated_duration_ms,status,review_status)SELECT $3,$1,$2,es.script_id,$4,(SELECT voice_profile_id FROM narrator),ids.audio_ids,cues.bgm,cues.sfx,cues.ambience,$5::jsonb,stats.duration_ms,CASE WHEN stats.failed_count>0 THEN'failed'WHEN stats.processing_count>0 OR stats.success_count<stats.total_count THEN'generating'ELSE'ready'END,'pending'FROM es CROSS JOIN stats CROSS JOIN ids CROSS JOIN cues ON CONFLICT(episode_id,version)DO UPDATE SET narrator_voice_profile_id=excluded.narrator_voice_profile_id,dialogue_audio_ids=excluded.dialogue_audio_ids,bgm_cues=excluded.bgm_cues,sound_effect_cues=excluded.sound_effect_cues,ambience_cues=excluded.ambience_cues,subtitle_config=excluded.subtitle_config,estimated_duration_ms=excluded.estimated_duration_ms,status=excluded.status RETURNING *),flags AS(SELECT(SELECT status='ready'FROM plan)audio_ready,EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=$1 AND i.is_current AND i.review_status='approved')AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=$1 AND i.is_current AND i.review_status='approved'AND NOT EXISTS(SELECT 1 FROM drama.shot_videos v WHERE v.shot_id=i.shot_id AND v.is_current AND v.review_status='approved'))AND EXISTS(SELECT 1 FROM drama.episode_scripts e WHERE e.project_id=$1 AND e.status='approved')AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts e JOIN drama.dialogues d ON d.episode_id=e.episode_id WHERE e.project_id=$1 AND e.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.dialogue_audio a WHERE a.dialogue_id=d.dialogue_id AND a.is_current AND a.status='succeeded'AND a.auto_qc_status IN('passed','warning')))AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts e WHERE e.project_id=$1 AND e.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.episode_audio_plans p WHERE p.episode_id=e.episode_id AND p.status='ready'))full_done),next_state AS(SELECT p.project_id,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.current_stage WHEN f.audio_ready THEN'audio_ready'ELSE'audio_processing'END next_stage,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')THEN p.status WHEN f.audio_ready THEN'audio_ready'ELSE'audio_processing'END next_status FROM drama.projects p CROSS JOIN flags f WHERE p.project_id=$1),pr AS(UPDATE drama.projects p SET current_stage=n.next_stage,status=n.next_status FROM next_state n WHERE p.project_id=n.project_id),done AS(UPDATE drama.workflow_tasks SET status='completed',completed_at=now(),output_data=jsonb_build_object('success',true,'project_id',$1,'trace_id',$6::text,'stage','voice_audio','status',CASE WHEN(SELECT full_done FROM flags)THEN'stage_4_completed'WHEN(SELECT audio_ready FROM flags)THEN'audio_ready'ELSE'audio_processing'END,'data_ref',jsonb_build_object('entity_type','episode_audio_plan','entity_id',$3,'episode_id',$2),'metrics',jsonb_build_object('total_dialogues',(SELECT total_count FROM stats),'succeeded',(SELECT success_count FROM stats),'failed',(SELECT failed_count FROM stats),'processing',(SELECT processing_count FROM stats),'duration_ms',(SELECT duration_ms FROM stats)),'error',NULL)WHERE idempotency_key=$7 RETURNING output_data)SELECT output_data FROM done;",
+        "options": {"queryReplacement": "={{[$('Validate Voice Audio Request').first().json.project_id,$('Validate Voice Audio Request').first().json.episode_id,'audioplan_'+$('Validate Voice Audio Request').first().json.episode_id+'_v'+$('Validate Voice Audio Request').first().json.generation_version,$('Validate Voice Audio Request').first().json.generation_version,JSON.stringify($('Validate Voice Audio Request').first().json.payload.subtitle_config||{max_lines:2,show_speaker:false}),$('Validate Voice Audio Request').first().json.trace_id,$('Validate Voice Audio Request').first().json.idempotency_key]}}"}
+      },
+      "id": "10-finalize", "name": "Build BGM SFX Plan and Aggregate Completion", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [900, 120],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.output_data}];"},
+      "id": "10-success", "name": "Voice Audio Success Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [1120, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "let r={};try{r=$('Validate Voice Audio Request').item.json||{};}catch(e){}const m=$json.error?.message||$json.message||'voice audio failed',code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_');return [{json:{response:{success:false,project_id:r.project_id||null,trace_id:r.trace_id||null,stage:'voice_audio',status:/NOT_APPROVED|NOT_LOCKED|NOT_FOUND/.test(code)?'waiting_review':'failed',data_ref:null,metrics:{},error:{code,message:m.replace(/^[A-Z_]+:\\s*/,''),retryable:/429|timeout|5\\d\\d|network/i.test(m)}},key:r.idempotency_key||null}}];"
+      },
+      "id": "10-failure", "name": "Voice Audio Failure Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [240, 660]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,output_data=$3::jsonb,completed_at=now()WHERE idempotency_key=$4;SELECT $3::jsonb response;",
+        "options": {"queryReplacement": "={{[$json.response.error.code,$json.response.error.message,JSON.stringify($json.response),$json.key]}}"}
+      },
+      "id": "10-save-failure", "name": "Save Voice Audio Failure", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [460, 660],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}}
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.response}];"},
+      "id": "10-final-failure", "name": "Voice Audio Failed Final", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [680, 660]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {"main": [[{"node": "Validate Voice Audio Request", "type": "main", "index": 0}]]},
+    "Validate Voice Audio Request": {"main": [[{"node": "Switch Voice Audio Action", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Switch Voice Audio Action": {"main": [[{"node": "Review Lock or Select Voice Atomically", "type": "main", "index": 0}], [{"node": "Review One Dialogue Audio", "type": "main", "index": 0}], [{"node": "Voice Audio Workflow Task Gate", "type": "main", "index": 0}]]},
+    "Review Lock or Select Voice Atomically": {"main": [[{"node": "Voice Review Result", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Review One Dialogue Audio": {"main": [[{"node": "Dialogue Audio Review Result", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Voice Audio Workflow Task Gate": {"main": [[{"node": "Voice Audio Already Completed?", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Voice Audio Already Completed?": {"main": [[{"node": "Return Cached Voice Audio Result", "type": "main", "index": 0}], [{"node": "Restore Voice Audio Request", "type": "main", "index": 0}]]},
+    "Restore Voice Audio Request": {"main": [[{"node": "Load Approved Script Dialogues and Voices", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Load Approved Script Dialogues and Voices": {"main": [[{"node": "Resolve Locked Voices or Create Candidates", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Resolve Locked Voices or Create Candidates": {"main": [[{"node": "Missing Locked Voice Profiles?", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Missing Locked Voice Profiles?": {"main": [[{"node": "Save Voice Candidates and Reviews", "type": "main", "index": 0}], [{"node": "Build Isolated Dialogue TTS Items", "type": "main", "index": 0}]]},
+    "Save Voice Candidates and Reviews": {"main": [[{"node": "Wait for Voice Review and Lock", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Build Isolated Dialogue TTS Items": {"main": [[{"node": "Loop Dialogue TTS Items", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Loop Dialogue TTS Items": {"main": [[{"node": "Build BGM SFX Plan and Aggregate Completion", "type": "main", "index": 0}], [{"node": "Switch Dialogue Submit Poll Skip", "type": "main", "index": 0}]]},
+    "Switch Dialogue Submit Poll Skip": {"main": [[{"node": "Execute 10a TTS Provider", "type": "main", "index": 0}], [{"node": "Execute 10b Audio Poll and Process", "type": "main", "index": 0}], [{"node": "Loop Dialogue TTS Items", "type": "main", "index": 0}]]},
+    "Execute 10a TTS Provider": {"main": [[{"node": "Normalize One Dialogue Result", "type": "main", "index": 0}], [{"node": "Normalize One Dialogue Result", "type": "main", "index": 0}]]},
+    "Normalize One Dialogue Result": {"main": [[{"node": "Save One Dialogue Audio Version", "type": "main", "index": 0}]]},
+    "Save One Dialogue Audio Version": {"main": [[{"node": "Provider Task Exists?", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Provider Task Exists?": {"main": [[{"node": "Execute 10b Audio Poll and Process", "type": "main", "index": 0}], [{"node": "Loop Dialogue TTS Items", "type": "main", "index": 0}]]},
+    "Execute 10b Audio Poll and Process": {"main": [[{"node": "Loop Dialogue TTS Items", "type": "main", "index": 0}], [{"node": "Loop Dialogue TTS Items", "type": "main", "index": 0}]]},
+    "Build BGM SFX Plan and Aggregate Completion": {"main": [[{"node": "Voice Audio Success Response", "type": "main", "index": 0}], [{"node": "Voice Audio Failure Response", "type": "main", "index": 0}]]},
+    "Voice Audio Failure Response": {"main": [[{"node": "Save Voice Audio Failure", "type": "main", "index": 0}]]},
+    "Save Voice Audio Failure": {"main": [[{"node": "Voice Audio Failed Final", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-100000000010",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

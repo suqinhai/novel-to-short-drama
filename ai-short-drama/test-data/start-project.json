@@ -1,0 +1,13 @@
+{
+  "idempotency_key": "demo-rain-city-v1",
+  "novel_name": "雨夜归人",
+  "novel_source": "/data/test-data/sample-novel.txt",
+  "target_episode_count": 12,
+  "episode_duration_seconds": 90,
+  "visual_style": "东方悬疑写实",
+  "aspect_ratio": "9:16",
+  "target_platform": "抖音",
+  "test_mode": true,
+  "generation_version": 1
+}
+

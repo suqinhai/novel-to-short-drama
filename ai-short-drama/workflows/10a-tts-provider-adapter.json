@@ -1,0 +1,178 @@
+{
+  "name": "10a TTS 平台适配器",
+  "id": "wf_tts_provider_adapter",
+  "active": false,
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {"name": "provider"}, {"name": "model"}, {"name": "project_id"}, {"name": "episode_id"},
+            {"name": "dialogue_id"}, {"name": "voice_profile_id"}, {"name": "text"}, {"name": "language"},
+            {"name": "voice_id"}, {"name": "emotion"}, {"name": "speed", "type": "number"},
+            {"name": "pitch", "type": "number"}, {"name": "volume", "type": "number"}, {"name": "format"},
+            {"name": "sample_rate", "type": "number"}, {"name": "generation_version", "type": "number"},
+            {"name": "idempotency_key"}, {"name": "trace_id"}, {"name": "action"}, {"name": "payload", "type": "object"}
+          ]
+        }
+      },
+      "id": "10a-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
+      "position": [-1260, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},provider=i.provider||$env.TTS_PROVIDER||'mock',model=i.model||$env.TTS_MODEL||'mock-tts',action=i.action||p.action||'run',text=String(i.text||'').trim().replace(/\\s+/g,' '),max=Number($env.TTS_MAX_TEXT_LENGTH||500),version=Number(i.generation_version||1);if(!i.project_id||!i.episode_id||!i.dialogue_id||!i.voice_profile_id)throw new Error('TTS_PROVIDER_INVALID_RESPONSE: project_id, episode_id, dialogue_id and voice_profile_id are required');if(!['mock','generic_sync_tts','generic_async_tts'].includes(provider))throw new Error('UNSUPPORTED_TTS_PROVIDER: '+provider);if(!text)throw new Error('TTS_PROVIDER_INVALID_RESPONSE: text is empty');if([...text].length>max)throw new Error('MAX_TASK_LIMIT_EXCEEDED: TTS text exceeds '+max+' characters');if(!i.voice_id)throw new Error('VOICE_NOT_SUPPORTED: provider voice_id is required');if(!Number.isInteger(version)||version<1)throw new Error('TTS_PROVIDER_INVALID_RESPONSE: invalid generation_version');const scrub=v=>Array.isArray(v)?v.map(scrub):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>!/authorization|api[_-]?key|token|secret/i.test(k)).map(([k,z])=>[k,scrub(z)])):v,clean=scrub(i),normalized_text_hash=crypto.createHash('sha256').update(text).digest('hex'),key=i.idempotency_key||[i.project_id,i.dialogue_id,i.voice_profile_id,version,provider,model,normalized_text_hash].join(':'),claim_token=crypto.randomUUID();return [{json:{...clean,payload:clean.payload||{},provider,model,action,text,language:i.language||$env.TTS_DEFAULT_LANGUAGE||'zh-CN',voice_id:String(i.voice_id),emotion:String(i.emotion||''),speed:Number(i.speed||1),pitch:Number(i.pitch||0),volume:Number(i.volume??1),format:i.format||$env.TTS_DEFAULT_FORMAT||'wav',sample_rate:Number(i.sample_rate||$env.TTS_DEFAULT_SAMPLE_RATE||48000),generation_version:version,trace_id:i.trace_id||'trace_tts_'+crypto.randomUUID(),idempotency_key:key,normalized_text_hash,claim_token,task_id:'ttstask_'+crypto.createHash('sha1').update(key).digest('hex').slice(0,20),started_ms:Date.now()}}];"
+      },
+      "id": "10a-normalize", "name": "Normalize and Sanitize TTS Request", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1040, 0], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.tts_generation_tasks(task_id,idempotency_key,trace_id,project_id,episode_id,dialogue_id,voice_profile_id,generation_version,provider,model,request_payload,response_payload,status,max_poll_count,max_retries,estimated_cost,started_at)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,jsonb_build_object('_claim_token',$15::text),'submitting',$12,$13,$17,now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN(((drama.tts_generation_tasks.status='failed'AND $14 IN('retry','regenerate'))OR(drama.tts_generation_tasks.status='timeout'AND $14='retry'))AND drama.tts_generation_tasks.retry_count<drama.tts_generation_tasks.max_retries)THEN'submitting'ELSE drama.tts_generation_tasks.status END,retry_count=CASE WHEN(((drama.tts_generation_tasks.status='failed'AND $14 IN('retry','regenerate'))OR(drama.tts_generation_tasks.status='timeout'AND $14='retry'))AND drama.tts_generation_tasks.retry_count<drama.tts_generation_tasks.max_retries)THEN drama.tts_generation_tasks.retry_count+1 ELSE drama.tts_generation_tasks.retry_count END,response_payload=CASE WHEN(((drama.tts_generation_tasks.status='failed'AND $14 IN('retry','regenerate'))OR(drama.tts_generation_tasks.status='timeout'AND $14='retry'))AND drama.tts_generation_tasks.retry_count<drama.tts_generation_tasks.max_retries)THEN jsonb_build_object('_claim_token',$15::text)ELSE drama.tts_generation_tasks.response_payload END,error_code=CASE WHEN(((drama.tts_generation_tasks.status='failed'AND $14 IN('retry','regenerate'))OR(drama.tts_generation_tasks.status='timeout'AND $14='retry'))AND drama.tts_generation_tasks.retry_count<drama.tts_generation_tasks.max_retries)THEN NULL ELSE drama.tts_generation_tasks.error_code END,error_message=CASE WHEN(((drama.tts_generation_tasks.status='failed'AND $14 IN('retry','regenerate'))OR(drama.tts_generation_tasks.status='timeout'AND $14='retry'))AND drama.tts_generation_tasks.retry_count<drama.tts_generation_tasks.max_retries)THEN NULL ELSE drama.tts_generation_tasks.error_message END RETURNING task_id,status,response_payload,provider_task_id,(response_payload->>'_claim_token'=$15::text)should_submit,$16::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.idempotency_key,$json.trace_id,$json.project_id,$json.episode_id,$json.dialogue_id,$json.voice_profile_id,$json.generation_version,$json.provider,$json.model,JSON.stringify($json),Number($env.TTS_MAX_POLL_COUNT||30),Number($env.TTS_MAX_RETRIES||3),$json.action,$json.claim_token,JSON.stringify($json),Number($json.payload.estimated_cost||0)]}}"
+        }
+      },
+      "id": "10a-gate", "name": "Atomic TTS Task Gate", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-820, 0],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status==='succeeded')return [{json:{route:'cached',result:$json.response_payload}}];if($json.should_submit===true)return [{json:{route:$json.request.provider,request:$json.request}}];if(['submitting','processing'].includes($json.status))throw new Error('DUPLICATE_TASK_RUNNING: an identical TTS task is already active');if($json.status==='timeout')throw new Error('TTS_TASK_TIMEOUT: explicit retry is required');if($json.status==='failed')throw new Error('MAX_RETRIES_EXCEEDED: failed TTS task is not eligible for this action');if($json.status==='cancelled')throw new Error('TTS_TASK_NOT_FOUND: task was cancelled');throw new Error('TTS_PROVIDER_INVALID_RESPONSE: unexpected task state');"
+      },
+      "id": "10a-route", "name": "Route Claimed or Cached Task", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-600, 0], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "cached", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}
+      },
+      "id": "10a-cached-if", "name": "Cached TTS Result?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [-380, 0]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.result}];"},
+      "id": "10a-cached", "name": "Return Cached TTS Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-160, -180]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "mock", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "mock"},
+            {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "generic_sync_tts", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "generic_sync_tts"},
+            {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "generic_async_tts", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "generic_async_tts"}
+          ]
+        },
+        "options": {}
+      },
+      "id": "10a-switch", "name": "Switch TTS Provider", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [-160, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),path=require('path'),crypto=require('crypto'),r=$json.request,sim=String(r.payload?.simulate||'');if(sim==='429')throw new Error('TTS_PROVIDER_RATE_LIMITED: simulated 429');if(sim==='5xx')throw new Error('TTS_PROVIDER_INVALID_RESPONSE: simulated 5xx');if(sim==='timeout')throw new Error('TTS_PROVIDER_TIMEOUT: simulated timeout');if(sim==='invalid')throw new Error('TTS_PROVIDER_INVALID_RESPONSE: simulated invalid response');const asyncMode=r.payload?.mock_async===true||$env.TTS_PROVIDER_MODE==='async';if(asyncMode)return [{json:{request:r,result:{success:true,provider:'mock',model:r.model,mode:'async',provider_task_id:'mocktts_'+r.task_id,status:'processing',audio:null,usage:{characters:[...r.text].length,estimated_cost:0},warnings:[],error:null,task_id:r.task_id}}}];const safe=v=>String(v).replace(/[^A-Za-z0-9_-]/g,'_'),sr=r.sample_rate,seconds=Math.min(12,Math.max(.8,[...r.text].length*.12/Math.max(.25,r.speed))),n=Math.floor(sr*seconds),buf=Buffer.alloc(44+n*2),seed=crypto.createHash('sha256').update(r.idempotency_key).digest('hex'),freq=180+(parseInt(seed.slice(0,4),16)%220);buf.write('RIFF',0);buf.writeUInt32LE(36+n*2,4);buf.write('WAVE',8);buf.write('fmt ',12);buf.writeUInt32LE(16,16);buf.writeUInt16LE(1,20);buf.writeUInt16LE(1,22);buf.writeUInt32LE(sr,24);buf.writeUInt32LE(sr*2,28);buf.writeUInt16LE(2,32);buf.writeUInt16LE(16,34);buf.write('data',36);buf.writeUInt32LE(n*2,40);for(let x=0;x<n;x++){const t=x/sr,fade=Math.min(1,t/.03,(seconds-t)/.03),gate=.55+.45*Math.sin(2*Math.PI*3*t),sample=sim==='silent'?0:Math.round(5200*Math.sin(2*Math.PI*freq*t)*gate*Math.max(0,fade));buf.writeInt16LE(sample,44+x*2);}const dir=path.join($env.MEDIA_STORAGE_PATH||'/data/storage','dialogue-audio',safe(r.project_id),safe(r.episode_id),safe(r.dialogue_id)),file='audio_'+safe(r.dialogue_id)+'_v'+r.generation_version+'_'+seed.slice(0,16)+'.wav';fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,file),sim==='corrupt'?Buffer.from('broken audio'):buf);const rel=['dialogue-audio',safe(r.project_id),safe(r.episode_id),safe(r.dialogue_id),file].join('/'),url=($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/[/]$/,'')+'/'+rel,content=sim==='corrupt'?crypto.createHash('sha256').update('broken audio').digest('hex'):crypto.createHash('sha256').update(buf).digest('hex');return [{json:{request:r,result:{success:true,provider:'mock',model:r.model,mode:'sync',provider_task_id:null,status:'succeeded',audio:{url,original_url:url,storage_url:path.join(dir,file),format:'wav',duration_ms:Math.round(seconds*1000),sample_rate:sr,channels:1,bitrate:sr*16,content_hash:content,size_bytes:sim==='corrupt'?12:buf.length},usage:{characters:[...r.text].length,estimated_cost:0},warnings:[],error:null,task_id:r.task_id}}}];"
+      },
+      "id": "10a-mock", "name": "Generate Stable Playable Mock WAV", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [80, -100], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "={{$env.TTS_API_BASE_URL+'/tts'}}", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "={{'Bearer '+$env.TTS_API_KEY}}"}, {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ {model:$json.request.model,text:$json.request.text,language:$json.request.language,voice_id:$json.request.voice_id,emotion:$json.request.payload?.supports_emotion===false?undefined:$json.request.emotion,speed:$json.request.speed,pitch:$json.request.pitch,volume:$json.request.volume,format:$json.request.format,sample_rate:$json.request.sample_rate} }}",
+        "options": {"timeout": "={{Number($env.TTS_REQUEST_TIMEOUT_SECONDS||120)*1000}}"}
+      },
+      "id": "10a-sync-http", "name": "Generic Sync TTS Submit", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [80, 60], "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000, "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Route Claimed or Cached Task').item.json.request,a=$json.audio||$json,url=a.url||a.audio_url;if(!url||typeof url!=='string'||/^data:/i.test(url)||a.base64||a.audio_base64)throw new Error('TTS_PROVIDER_INVALID_RESPONSE: sync provider must return a media URL, never base64');const warnings=[...(Array.isArray($json.warnings)?$json.warnings:[]),...(r.payload?.supports_emotion===false&&r.emotion?['emotion_parameter_unsupported_degraded']:[])];return [{json:{request:r,result:{success:true,provider:r.provider,model:r.model,mode:'sync',provider_task_id:$json.task_id||$json.id||null,status:'succeeded',audio:{url,original_url:url,storage_url:a.storage_url||null,format:a.format||r.format,duration_ms:Number(a.duration_ms||a.duration*1000||0)||null,sample_rate:Number(a.sample_rate||r.sample_rate),channels:Number(a.channels||1),bitrate:Number(a.bitrate||0)||null,content_hash:a.content_hash||null},usage:{characters:[...r.text].length,estimated_cost:Number($json.usage?.estimated_cost||0)},warnings,error:null,task_id:r.task_id}}}];"
+      },
+      "id": "10a-sync-normalize", "name": "Normalize Sync TTS Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [320, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST", "url": "={{$env.TTS_API_BASE_URL+'/tasks'}}", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "={{'Bearer '+$env.TTS_API_KEY}}"}, {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": true, "specifyBody": "json",
+        "jsonBody": "={{ {model:$json.request.model,text:$json.request.text,language:$json.request.language,voice_id:$json.request.voice_id,emotion:$json.request.payload?.supports_emotion===false?undefined:$json.request.emotion,speed:$json.request.speed,pitch:$json.request.pitch,volume:$json.request.volume,format:$json.request.format,sample_rate:$json.request.sample_rate,idempotency_key:$json.request.idempotency_key} }}",
+        "options": {"timeout": "={{Number($env.TTS_REQUEST_TIMEOUT_SECONDS||120)*1000}}"}
+      },
+      "id": "10a-async-http", "name": "Generic Async TTS Submit", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [80, 220], "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000, "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Route Claimed or Cached Task').item.json.request,id=$json.task_id||$json.id||$json.provider_task_id;if(!id)throw new Error('TTS_PROVIDER_INVALID_RESPONSE: async provider did not return task_id');const warnings=[...(Array.isArray($json.warnings)?$json.warnings:[]),...(r.payload?.supports_emotion===false&&r.emotion?['emotion_parameter_unsupported_degraded']:[])];return [{json:{request:r,result:{success:true,provider:r.provider,model:r.model,mode:'async',provider_task_id:String(id),status:'processing',audio:null,usage:{characters:[...r.text].length,estimated_cost:Number($json.usage?.estimated_cost||0)},warnings,error:null,task_id:r.task_id}}}];"
+      },
+      "id": "10a-async-normalize", "name": "Normalize Async TTS Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [320, 220], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.tts_generation_tasks SET provider_task_id=$1,status=$2,response_payload=$3::jsonb,next_poll_at=CASE WHEN $2='processing'THEN now()+make_interval(secs=>$4)ELSE NULL END,estimated_cost=$5,completed_at=CASE WHEN $2='succeeded'THEN now()ELSE NULL END WHERE task_id=$6;SELECT $3::jsonb result;",
+        "options": {"queryReplacement": "={{[$json.result.provider_task_id,$json.result.status,JSON.stringify($json.result),Number($env.TTS_POLL_INTERVAL_SECONDS||10),Number($json.result.usage?.estimated_cost||0),$json.result.task_id]}}"}
+      },
+      "id": "10a-save", "name": "Persist Standard TTS Result", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [560, 40],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.result}];"},
+      "id": "10a-result", "name": "Standard TTS Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [800, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "let r={};try{r=$('Normalize and Sanitize TTS Request').item.json||{};}catch(e){}const m=$json.error?.message||$json.message||'TTS provider failed',raw=(m.split(':')[0]||'TTS_PROVIDER_INVALID_RESPONSE').replace(/\\W/g,'_'),code=/429|rate.?limit/i.test(m)?'TTS_PROVIDER_RATE_LIMITED':/timeout/i.test(m)?'TTS_PROVIDER_TIMEOUT':/401|403|auth/i.test(m)?'TTS_PROVIDER_AUTH_FAILED':raw,doNotOverwrite=['DUPLICATE_TASK_RUNNING','TTS_TASK_TIMEOUT','MAX_RETRIES_EXCEEDED'].includes(code);return [{json:{task_id:r.task_id||null,persist:!doNotOverwrite,result:{success:false,provider:r.provider||null,model:r.model||null,mode:null,provider_task_id:null,status:'failed',audio:null,usage:{characters:[...(r.text||'')].length,estimated_cost:0},warnings:[],error:{code,message:m.replace(/^[A-Z_]+:\\s*/,''),retryable:/429|timeout|5\\d\\d|network/i.test(m)},task_id:r.task_id||null}}}];"
+      },
+      "id": "10a-failure", "name": "Normalize TTS Failure", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [320, 440]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.tts_generation_tasks SET status='failed',error_code=$1,error_message=$2,response_payload=$3::jsonb,completed_at=now()WHERE task_id=$4 AND $5::boolean AND status NOT IN('processing','succeeded');SELECT $3::jsonb result;",
+        "options": {"queryReplacement": "={{[$json.result.error.code,$json.result.error.message,JSON.stringify($json.result),$json.task_id,$json.persist]}}"}
+      },
+      "id": "10a-save-failure", "name": "Persist TTS Failure Safely", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [560, 440],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}}
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$json.result}];"},
+      "id": "10a-failure-result", "name": "Standard TTS Failure Result", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [800, 440]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {"main": [[{"node": "Normalize and Sanitize TTS Request", "type": "main", "index": 0}]]},
+    "Normalize and Sanitize TTS Request": {"main": [[{"node": "Atomic TTS Task Gate", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Atomic TTS Task Gate": {"main": [[{"node": "Route Claimed or Cached Task", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Route Claimed or Cached Task": {"main": [[{"node": "Cached TTS Result?", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Cached TTS Result?": {"main": [[{"node": "Return Cached TTS Result", "type": "main", "index": 0}], [{"node": "Switch TTS Provider", "type": "main", "index": 0}]]},
+    "Switch TTS Provider": {"main": [[{"node": "Generate Stable Playable Mock WAV", "type": "main", "index": 0}], [{"node": "Generic Sync TTS Submit", "type": "main", "index": 0}], [{"node": "Generic Async TTS Submit", "type": "main", "index": 0}]]},
+    "Generate Stable Playable Mock WAV": {"main": [[{"node": "Persist Standard TTS Result", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Generic Sync TTS Submit": {"main": [[{"node": "Normalize Sync TTS Response", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Normalize Sync TTS Response": {"main": [[{"node": "Persist Standard TTS Result", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Generic Async TTS Submit": {"main": [[{"node": "Normalize Async TTS Response", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Normalize Async TTS Response": {"main": [[{"node": "Persist Standard TTS Result", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Persist Standard TTS Result": {"main": [[{"node": "Standard TTS Result", "type": "main", "index": 0}], [{"node": "Normalize TTS Failure", "type": "main", "index": 0}]]},
+    "Normalize TTS Failure": {"main": [[{"node": "Persist TTS Failure Safely", "type": "main", "index": 0}]]},
+    "Persist TTS Failure Safely": {"main": [[{"node": "Standard TTS Failure Result", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-10000000010a",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

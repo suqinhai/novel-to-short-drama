@@ -1,0 +1,439 @@
+{
+  "name": "08a 图片任务轮询",
+  "id": "wf_image_task_poller",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "08a-cron",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1100,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "task_id"
+            },
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "08a-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1100,
+        100
+      ]
+    },
+    {
+      "parameters":{"httpMethod":"POST","path":"ai-short-drama/image-poller","responseMode":"onReceived","options":{}},
+      "id":"08a-webhook","name":"Manual Poll Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[-1100,260],"webhookId":"ai-short-drama-image-poller"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.body||$json;return [{json:{task_id:b.task_id||null,project_id:b.project_id||null,trace_id:b.trace_id||`trace_poll_${Date.now()}`,batch_size:Math.max(1,Math.min(Number($env.IMAGE_POLLER_BATCH_SIZE||10),50))}}];"
+      },
+      "id": "08a-normalize",
+      "name": "Normalize Poll Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidates AS(SELECT id FROM drama.image_generation_tasks WHERE status='processing' AND(next_poll_at IS NULL OR next_poll_at<=now())AND($1::text IS NULL OR task_id=$1)AND($2::text IS NULL OR project_id=$2)AND started_at>now()-make_interval(mins=>$3)ORDER BY next_poll_at NULLS FIRST LIMIT $4 FOR UPDATE SKIP LOCKED),claimed AS(UPDATE drama.image_generation_tasks t SET next_poll_at=now()+make_interval(secs=>$5)FROM candidates c WHERE t.id=c.id RETURNING t.*)SELECT * FROM claimed;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.project_id,Number($env.IMAGE_MAX_WAIT_MINUTES||10),$json.batch_size,Number($env.IMAGE_POLL_INTERVAL_SECONDS||10)]}}"
+        }
+      },
+      "id": "08a-claim",
+      "name": "Claim Due Tasks SKIP LOCKED",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -660,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "08a-loop",
+      "name": "Loop Claimed Tasks",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.provider}}",
+              "rightValue": "mock",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "08a-mock-if",
+      "name": "Mock Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),path=require('path'),crypto=require('crypto'),t=$json,next=Number(t.poll_count)+1;if(next<2)return [{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,mode:'async',provider_task_id:t.provider_task_id,status:'processing',images:[]}}}];const h=crypto.createHash('sha256').update(t.idempotency_key+':async').digest('hex'),dir=path.join($env.MEDIA_STORAGE_PATH||'/data/storage','provider-responses'),file=`mock_async_${h.slice(0,24)}.svg`,req=t.request_payload||{},w=Number(req.width||1024),hh=Number(req.height||1792);fs.mkdirSync(dir,{recursive:true});const svg=`<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"${w}\" height=\"${hh}\"><rect width=\"100%\" height=\"100%\" fill=\"#${h.slice(0,6)}\"/><text x=\"50%\" y=\"50%\" text-anchor=\"middle\" fill=\"white\" font-size=\"48\">ASYNC MOCK</text></svg>`;fs.writeFileSync(path.join(dir,file),svg);const url=($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/[/]$/,'')+'/provider-responses/'+file;return [{json:{...t,new_status:'succeeded',new_poll_count:next,result:{success:true,provider:'mock',model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:'succeeded',images:[{url,storage_url:'/data/storage/provider-responses/'+file,width:w,height:hh,seed:parseInt(h.slice(0,8),16),content_hash:h,mime_type:'image/svg+xml',size_bytes:Buffer.byteLength(svg)}],usage:{image_count:1,estimated_cost:0},task_id:t.task_id,error:null}}}];"
+      },
+      "id": "08a-mock",
+      "name": "Mock Two Poll Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.IMAGE_API_BASE_URL+'/tasks/'+$json.provider_task_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer '+$env.IMAGE_API_KEY}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": "={{Number($env.IMAGE_REQUEST_TIMEOUT_SECONDS||180)*1000}}"
+        }
+      },
+      "id": "08a-http",
+      "name": "Poll Generic Provider",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$('Loop Claimed Tasks').item.json,s=String($json.status||'processing').toLowerCase(),done=['succeeded','completed','success'].includes(s),failed=['failed','error','cancelled'].includes(s),images=$json.images||($json.url?[{url:$json.url}]:[]);if(done&&!images.length)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE');return [{json:{...t,new_status:done?'succeeded':failed?'failed':'processing',new_poll_count:Number(t.poll_count)+1,result:{success:!failed,provider:t.provider,model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:done?'succeeded':failed?'failed':'processing',images,usage:{image_count:images.length,estimated_cost:0},error:failed?{code:'IMAGE_PROVIDER_INVALID_RESPONSE',message:$json.error||'provider failed',retryable:false}:null,task_id:t.task_id}}}];"
+      },
+      "id": "08a-http-normalize",
+      "name": "Normalize Poll Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const max=Number($json.max_poll_count),wait=Number($env.IMAGE_MAX_WAIT_MINUTES||10)*60000,expired=Date.now()-new Date($json.started_at).getTime()>wait;if($json.new_poll_count>=max||expired){$json.new_status='timeout';$json.result={...$json.result,success:false,status:'timeout',error:{code:'IMAGE_TASK_TIMEOUT',message:'poll limit or wait limit exceeded',retryable:false}}}return [{json:$json}];"
+      },
+      "id": "08a-limit",
+      "name": "Enforce Poll and Time Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH t AS(UPDATE drama.image_generation_tasks SET status=$1,poll_count=$2,response_payload=$3::jsonb,next_poll_at=CASE WHEN $1='processing'THEN now()+make_interval(secs=>$4)ELSE NULL END,completed_at=CASE WHEN $1 IN('succeeded','failed','timeout')THEN now()ELSE completed_at END,error_code=$5,error_message=$6 WHERE task_id=$7 RETURNING *),a AS(UPDATE drama.generated_assets SET status=$1,original_url=$3::jsonb#>>'{images,0,url}',storage_url=$3::jsonb#>>'{images,0,storage_url}',width=coalesce(($3::jsonb#>>'{images,0,width}')::int,width),height=coalesce(($3::jsonb#>>'{images,0,height}')::int,height),content_hash=coalesce($3::jsonb#>>'{images,0,content_hash}',content_hash),error_code=$5,error_message=$6 WHERE asset_id=(SELECT asset_id FROM t)RETURNING asset_id),im AS(UPDATE drama.storyboard_images SET status=$1,image_url=$3::jsonb#>>'{images,0,url}',storage_url=$3::jsonb#>>'{images,0,storage_url}',auto_qc_status=CASE WHEN $1='succeeded'THEN'passed'WHEN $1 IN('failed','timeout')THEN'failed'ELSE auto_qc_status END,auto_qc_report=CASE WHEN $1='succeeded'THEN jsonb_build_object('status','passed','checks',jsonb_build_object('file_valid',true,'mime_valid',true,'resolution_valid',true,'aspect_ratio_valid',true,'duplicate_detected',false),'warnings','[]'::jsonb)ELSE auto_qc_report END WHERE image_asset_id=(SELECT asset_id FROM t)RETURNING *),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT 'review_'||substr(md5(storyboard_image_id),1,20),project_id,'storyboard_image','storyboard_image',storyboard_image_id,'pending',jsonb_build_object('shot_id',shot_id,'generation_version',generation_version)FROM im WHERE $1='succeeded'ON CONFLICT(review_id)DO NOTHING)SELECT task_id,status FROM t;",
+        "options": {
+          "queryReplacement": "={{[$json.new_status,$json.new_poll_count,JSON.stringify($json.result),Number($env.IMAGE_POLL_INTERVAL_SECONDS||10),$json.result.error?.code||null,$json.result.error?.message||null,$json.task_id]}}"
+        }
+      },
+      "id": "08a-save",
+      "name": "Save Poll State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const a=$input.all();return [{json:{success:true,stage:'image_poller',status:'completed',data_ref:{entity_type:'image_tasks',entity_id:null},metrics:{processed:a.length},error:null}}];"
+      },
+      "id": "08a-summary",
+      "name": "Poll Batch Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$('Loop Claimed Tasks').item.json,m=$json.error?.message||$json.message||'poll failed';return [{json:{...t,new_status:'failed',new_poll_count:Number(t.poll_count)+1,result:{success:false,status:'failed',images:[],error:{code:'IMAGE_PROVIDER_INVALID_RESPONSE',message:m,retryable:/timeout|network|5\\d\\d/i.test(m)},task_id:t.task_id}}}];"
+      },
+      "id": "08a-failure",
+      "name": "Normalize Poll Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        360
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Poll Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Poll Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Poll Webhook": {
+      "main": [[{"node":"Normalize Poll Request","type":"main","index":0}]]
+    },
+    "Normalize Poll Request": {
+      "main": [
+        [
+          {
+            "node": "Claim Due Tasks SKIP LOCKED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Due Tasks SKIP LOCKED": {
+      "main": [
+        [
+          {
+            "node": "Loop Claimed Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Claimed Tasks": {
+      "main": [
+        [
+          {
+            "node": "Poll Batch Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mock Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Task?": {
+      "main": [
+        [
+          {
+            "node": "Mock Two Poll Completion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Generic Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Two Poll Completion": {
+      "main": [
+        [
+          {
+            "node": "Enforce Poll and Time Limits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Generic Provider": {
+      "main": [
+        [
+          {
+            "node": "Normalize Poll Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Poll Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Poll Response": {
+      "main": [
+        [
+          {
+            "node": "Enforce Poll and Time Limits",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Poll Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Poll and Time Limits": {
+      "main": [
+        [
+          {
+            "node": "Save Poll State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Poll State": {
+      "main": [
+        [
+          {
+            "node": "Loop Claimed Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Poll Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Poll Failure": {
+      "main": [
+        [
+          {
+            "node": "Enforce Poll and Time Limits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-080000000081",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

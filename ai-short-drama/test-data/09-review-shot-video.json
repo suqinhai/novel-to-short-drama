@@ -1,0 +1,13 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "review_id": "REPLACE_SHOT_VIDEO_REVIEW_ID",
+  "entity_type": "shot_video",
+  "entity_id": "REPLACE_SHOT_VIDEO_ID",
+  "shot_id": "REPLACE_SHOT_ID",
+  "action": "review",
+  "review_status": "approved",
+  "review_comment": "人物一致性、动作与镜头运动通过",
+  "rejection_reason": "",
+  "prompt_adjustment": "",
+  "trace_id": "trace_review_shot_video_001"
+}

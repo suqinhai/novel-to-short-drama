@@ -1,0 +1,11 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "review_id": "REPLACE_SEASON_REVIEW_ID",
+  "action": "review",
+  "review_status": "approved",
+  "review_comment": "整季覆盖与连续性通过",
+  "rejection_reason": "",
+  "revision_instruction": "",
+  "trace_id": "trace_review_season_001"
+}
+

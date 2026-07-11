@@ -1,0 +1,11 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "review_id": "REPLACE_STORYBOARD_REVIEW_ID",
+  "action": "review",
+  "review_status": "approved",
+  "review_comment": "镜头映射与连续性通过",
+  "rejection_reason": "",
+  "revision_instruction": "",
+  "trace_id": "trace_review_board_001"
+}
+

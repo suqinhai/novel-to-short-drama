@@ -1,0 +1,13 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "episode_id": "REPLACE_APPROVED_EPISODE_ID",
+  "shot_id": null,
+  "stage": "image_to_video",
+  "action": "run",
+  "generation_version": 1,
+  "test_mode": true,
+  "trace_id": "trace_shot_videos_001",
+  "payload": {
+    "mock_async": true
+  }
+}

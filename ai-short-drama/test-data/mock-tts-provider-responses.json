@@ -1,0 +1,56 @@
+{
+  "sync_success": {
+    "provider": "mock",
+    "payload": {}
+  },
+  "async_two_polls": {
+    "provider": "mock",
+    "payload": {
+      "mock_async": true
+    }
+  },
+  "simulate_429": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "429"
+    }
+  },
+  "simulate_5xx": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "5xx"
+    }
+  },
+  "simulate_timeout": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "timeout"
+    }
+  },
+  "simulate_invalid": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "invalid"
+    }
+  },
+  "simulate_corrupt": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "corrupt"
+    }
+  },
+  "simulate_silent": {
+    "provider": "mock",
+    "payload": {
+      "simulate": "silent"
+    }
+  },
+  "simulate_dialogue_failure": {
+    "provider": "mock",
+    "dialogue_id": "REPLACE_DIALOGUE_ID",
+    "payload": {
+      "simulate": "invalid",
+      "dialogue_id": "REPLACE_DIALOGUE_ID"
+    }
+  }
+}

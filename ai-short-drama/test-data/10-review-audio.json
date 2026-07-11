@@ -1,0 +1,13 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "review_id": "REPLACE_DIALOGUE_AUDIO_REVIEW_ID",
+  "entity_type": "dialogue_audio",
+  "entity_id": "REPLACE_DIALOGUE_AUDIO_ID",
+  "dialogue_id": "REPLACE_DIALOGUE_ID",
+  "action": "review",
+  "review_status": "approved",
+  "review_comment": "音色、语气、时长和字幕对齐通过",
+  "rejection_reason": "",
+  "prompt_adjustment": "",
+  "trace_id": "trace_review_dialogue_audio_001"
+}

@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+ARG N8N_VERSION=2.4.4
+ARG FFMPEG_VERSION=7.1.1
+FROM mwader/static-ffmpeg:${FFMPEG_VERSION} AS ffmpeg
+
+FROM docker.n8n.io/n8nio/n8n:${N8N_VERSION}
+
+USER root
+COPY --from=ffmpeg --chmod=0755 /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg --chmod=0755 /ffprobe /usr/local/bin/ffprobe
+
+ENV FFMPEG_PATH=ffmpeg \
+    FFPROBE_PATH=ffprobe
+
+USER node

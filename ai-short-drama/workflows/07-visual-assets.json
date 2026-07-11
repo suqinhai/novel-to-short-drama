@@ -1,0 +1,646 @@
+{
+  "name": "07 视觉资产",
+  "id": "wf_visual_assets",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "episode_id"
+            },
+            {
+              "name": "shot_id"
+            },
+            {
+              "name": "stage"
+            },
+            {
+              "name": "action"
+            },
+            {
+              "name": "generation_version",
+              "type": "number"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "07-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},a=i.action||'run',v=Number(i.generation_version||1),entity=p.asset_id||p.character_id||p.location_id||'visual_batch';if(!i.project_id)throw new Error('PROJECT_NOT_FOUND');if(a==='regenerate'&&v<2)throw new Error('BUSINESS_VALIDATION_FAILED: regenerate requires new version');return [{json:{...i,payload:p,stage:'visual_assets',action:a,generation_version:v,trace_id:i.trace_id||`trace_visual_${crypto.randomUUID()}`,task_id:`task_${crypto.randomUUID()}`,idempotency_key:[i.project_id,'visual_assets',entity,v,a].join(':'),started_ms:Date.now()}}];"
+      },
+      "id": "07-normalize",
+      "name": "Validate and Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at)VALUES($1,$2,$3,'visual_assets',$4,'visual_asset_batch',$5,$6,$7,'running',$8,$9::jsonb,now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.workflow_tasks.status='failed' AND $4 IN('retry','resume') AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN'running'ELSE drama.workflow_tasks.status END,retry_count=CASE WHEN drama.workflow_tasks.status='failed' AND $4 IN('retry','resume')THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END RETURNING status,output_data,$10::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.payload.asset_id||$json.payload.character_id||$json.payload.location_id||'visual_batch',$json.generation_version,$json.idempotency_key,Number($env.IMAGE_MAX_RETRIES||3),JSON.stringify($json),JSON.stringify($json)]}}"
+        }
+      },
+      "id": "07-gate",
+      "name": "Idempotency Task Gate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.status}}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "07-cache-if",
+      "name": "Already Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.output_data}];"
+      },
+      "id": "07-cache",
+      "name": "Return Cached Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status!=='running')throw new Error('DUPLICATE_IMAGE_TASK_RUNNING');return [{json:$json.request}];"
+      },
+      "id": "07-restore",
+      "name": "Restore Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.project_id,p.visual_style,p.aspect_ratio,p.test_mode,sb.story_bible_id,sb.version story_bible_version,sb.characters,sb.locations,sb.key_events FROM drama.projects p LEFT JOIN LATERAL(SELECT * FROM drama.story_bibles WHERE project_id=p.project_id AND status='approved'ORDER BY version DESC LIMIT 1)sb ON true WHERE p.project_id=$1;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id]}}"
+        }
+      },
+      "id": "07-context",
+      "name": "Load Approved Bible",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -200,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),r=$('Restore Request').first().json,c=$json;if(!c.project_id)throw new Error('PROJECT_NOT_FOUND');if(!c.story_bible_id)throw new Error('STORY_BIBLE_NOT_APPROVED');if(!(c.characters||[]).length&&!(c.locations||[]).length)throw new Error('VISUAL_PROFILE_NOT_FOUND');if(!c.visual_style||!c.aspect_ratio)throw new Error('VISUAL_STYLE_NOT_FOUND');const h=s=>crypto.createHash('sha1').update(s).digest('hex').slice(0,20),v=r.generation_version,chars=(c.characters||[]).filter(x=>!r.payload.character_id||x.character_id===r.payload.character_id).slice(0,r.test_mode?Number($env.TEST_MAX_CHARACTERS||2):999),locs=(c.locations||[]).filter(x=>!r.payload.location_id||x.location_id===r.payload.location_id).slice(0,r.test_mode?Number($env.TEST_MAX_LOCATIONS||2):999),style={style_id:`style_${h(r.project_id+':'+v)}`,project_id:r.project_id,name:c.visual_style,style_type:'project',description:c.visual_style,positive_prompt:`${c.visual_style}，统一电影感，角色和场景连续`,negative_prompt:'文字，水印，Logo，多手多脚，面部变形，构图异常',aspect_ratio:c.aspect_ratio,width:Number($env.IMAGE_DEFAULT_WIDTH||1024),height:Number($env.IMAGE_DEFAULT_HEIGHT||1792),version:v};const profiles=[],costumes=[],locations=[],requests=[];for(const x of chars){const pid=`cvp_${h(x.character_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.gender||'unknown',x.identity||'',(x.appearance||[]).join('，'),(x.personality||[]).join('，'),'单人，干净中性背景，稳定五官与发型'].filter(Boolean).join('，');profiles.push({profile_id:pid,character_id:x.character_id,version:v,canonical_name:name,gender:x.gender||'unknown',apparent_age:x.age==null?'设计推断：成年':String(x.age),facial_features:{design_inference:true},distinctive_features:x.appearance||[],prohibited_changes:['身份特征','脸型','发型','显著特征'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});const cid=`costume_${h(x.character_id+':default:'+v)}`;costumes.push({costume_id:cid,character_id:x.character_id,profile_id:pid,costume_name:'default',usage_context:'default',costume_prompt:`${base}，符合${x.identity||'人物身份'}的日常服装`,negative_prompt:style.negative_prompt,version:v});for(const typ of ['character_front','character_full_body'].slice(0,r.test_mode?Number($env.TEST_MAX_ASSETS_PER_ENTITY||2):2))requests.push({entity_type:'character',entity_id:x.character_id,profile_id:pid,asset_type:typ,prompt:`${style.positive_prompt}，${base}，${typ==='character_front'?'正面半身肖像':'全身定妆照'}`,negative_prompt:style.negative_prompt});}for(const x of locs){const pid=`lvp_${h(x.location_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.description||'','固定空间布局，标志物位置稳定，无人物'].filter(Boolean).join('，');locations.push({profile_id:pid,location_id:x.location_id,version:v,canonical_name:name,layout_description:x.description||'',key_objects:[],fixed_features:[x.description||name],prohibited_changes:['建筑布局','标志物位置'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});requests.push({entity_type:'location',entity_id:x.location_id,profile_id:pid,asset_type:'location_reference',prompt:`${style.positive_prompt}，${base}`,negative_prompt:style.negative_prompt});}if(!requests.length)throw new Error('VISUAL_PROFILE_NOT_FOUND');return [{json:{...r,context:c,style,profiles,costumes,locations,requests:requests.map((q,n)=>({...q,request_index:n}))}}];"
+      },
+      "id": "07-prepare",
+      "name": "Build Stable Visual Profiles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH st AS(INSERT INTO drama.visual_styles(style_id,project_id,name,style_type,description,positive_prompt,negative_prompt,aspect_ratio,resolution_width,resolution_height,version,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'approved')ON CONFLICT(project_id,version)DO NOTHING),cp AS(INSERT INTO drama.character_visual_profiles(profile_id,project_id,character_id,version,canonical_name,gender,apparent_age,facial_features,distinctive_features,prohibited_changes,base_prompt,negative_prompt,source_story_bible_version,status)SELECT x.profile_id,$2,x.character_id,x.version,x.canonical_name,x.gender,x.apparent_age,x.facial_features,x.distinctive_features,x.prohibited_changes,x.base_prompt,x.negative_prompt,x.source_story_bible_version,'ready'FROM jsonb_to_recordset($12::jsonb)x(profile_id text,character_id text,version int,canonical_name text,gender text,apparent_age text,facial_features jsonb,distinctive_features jsonb,prohibited_changes jsonb,base_prompt text,negative_prompt text,source_story_bible_version int)ON CONFLICT(character_id,version)DO NOTHING),co AS(INSERT INTO drama.character_costumes(costume_id,project_id,character_id,profile_id,costume_name,usage_context,costume_prompt,negative_prompt,version,status)SELECT x.costume_id,$2,x.character_id,x.profile_id,x.costume_name,x.usage_context,x.costume_prompt,x.negative_prompt,x.version,'ready'FROM jsonb_to_recordset($13::jsonb)x(costume_id text,character_id text,profile_id text,costume_name text,usage_context text,costume_prompt text,negative_prompt text,version int)ON CONFLICT(character_id,costume_name,version)DO NOTHING),lp AS(INSERT INTO drama.location_visual_profiles(profile_id,project_id,location_id,version,canonical_name,layout_description,key_objects,fixed_features,prohibited_changes,base_prompt,negative_prompt,source_story_bible_version,status)SELECT x.profile_id,$2,x.location_id,x.version,x.canonical_name,x.layout_description,x.key_objects,x.fixed_features,x.prohibited_changes,x.base_prompt,x.negative_prompt,x.source_story_bible_version,'ready'FROM jsonb_to_recordset($14::jsonb)x(profile_id text,location_id text,version int,canonical_name text,layout_description text,key_objects jsonb,fixed_features jsonb,prohibited_changes jsonb,base_prompt text,negative_prompt text,source_story_bible_version int)ON CONFLICT(location_id,version)DO NOTHING)SELECT $15::jsonb requests;",
+        "options": {
+          "queryReplacement": "={{[$json.style.style_id,$json.project_id,$json.style.name,$json.style.style_type,$json.style.description,$json.style.positive_prompt,$json.style.negative_prompt,$json.style.aspect_ratio,$json.style.width,$json.style.height,$json.style.version,JSON.stringify($json.profiles),JSON.stringify($json.costumes),JSON.stringify($json.locations),JSON.stringify($json.requests)]}}"
+        }
+      },
+      "id": "07-save-profiles",
+      "name": "Persist Profiles and Style",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Build Stable Visual Profiles').first().json;return ($json.requests||[]).map(q=>({json:{...q,project_id:r.project_id,generation_version:r.generation_version,trace_id:r.trace_id,test_mode:r.test_mode,action:r.action,style:r.style,payload:r.payload}}));"
+      },
+      "id": "07-expand",
+      "name": "Expand Asset Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "07-loop",
+      "name": "Loop Asset Requests",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        680,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_image_provider_adapter",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "provider": "={{$env.IMAGE_PROVIDER||'mock'}}",
+            "model": "={{$env.IMAGE_MODEL||'mock-image-model'}}",
+            "task_type": "text_to_image",
+            "project_id": "={{$json.project_id}}",
+            "entity_type": "={{$json.entity_type}}",
+            "entity_id": "={{$json.entity_id}}",
+            "asset_type": "={{$json.asset_type}}",
+            "prompt": "={{$json.prompt}}",
+            "negative_prompt": "={{$json.negative_prompt}}",
+            "reference_image_urls": "={{[]}}",
+            "width": "={{$json.style.width}}",
+            "height": "={{$json.style.height}}",
+            "aspect_ratio": "={{$json.style.aspect_ratio}}",
+            "seed": null,
+            "count": 1,
+            "generation_version": "={{$json.generation_version}}",
+            "idempotency_key": "={{[$json.project_id,$json.entity_type,$json.entity_id,$json.asset_type,$json.generation_version,$env.IMAGE_PROVIDER||'mock',$env.IMAGE_MODEL||'mock-image-model'].join(':')}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{ {...$json.payload,action:$json.action} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "07-provider",
+      "name": "Execute 07a Image Provider",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        900,
+        140
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),q=$('Loop Asset Requests').item.json,res=$json,img=res.images?.[0]||{},asset_id=`asset_${crypto.createHash('sha1').update(q.project_id+':'+q.profile_id+':'+q.asset_type+':'+q.generation_version).digest('hex').slice(0,20)}`,review_id=`review_${crypto.createHash('sha1').update(asset_id).digest('hex').slice(0,20)}`;return [{json:{q,res,img,asset_id,review_id,status:res.status||'failed'}}];"
+      },
+      "id": "07-normalize-result",
+      "name": "Normalize Asset Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH a AS(INSERT INTO drama.generated_assets(asset_id,project_id,asset_type,entity_type,entity_id,profile_id,generation_version,provider,model,provider_task_id,prompt,negative_prompt,request_parameters,seed,status,original_url,storage_url,width,height,content_hash,error_code,error_message)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21,$22)ON CONFLICT(asset_id)DO UPDATE SET status=excluded.status,provider_task_id=excluded.provider_task_id,original_url=excluded.original_url,storage_url=excluded.storage_url,error_code=excluded.error_code,error_message=excluded.error_message RETURNING asset_id),t AS(UPDATE drama.image_generation_tasks SET asset_id=$1 WHERE task_id=$23),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT $24,$2,'visual_asset','generated_asset',$1,'pending',jsonb_build_object('profile_id',$6,'asset_type',$3)WHERE $15='succeeded'ON CONFLICT(review_id)DO NOTHING)SELECT $1::text asset_id;",
+        "options": {
+          "queryReplacement": "={{[$json.asset_id,$json.q.project_id,$json.q.asset_type,$json.q.entity_type,$json.q.entity_id,$json.q.profile_id,$json.q.generation_version,$json.res.provider||$env.IMAGE_PROVIDER,$json.res.model||$env.IMAGE_MODEL,$json.res.provider_task_id||null,$json.q.prompt,$json.q.negative_prompt,JSON.stringify({width:$json.q.style.width,height:$json.q.style.height}),$json.img.seed||null,$json.status,$json.img.url||null,$json.img.storage_url||null,$json.img.width||null,$json.img.height||null,$json.img.content_hash||null,$json.res.error?.code||null,$json.res.error?.message||null,$json.res.task_id,$json.review_id]}}"
+        }
+      },
+      "id": "07-save-asset",
+      "name": "Save Asset and Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1340,
+        140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT count(*)::int task_count,count(*)FILTER(WHERE status='succeeded')::int success_count,count(*)FILTER(WHERE status IN('failed','timeout'))::int failed_count FROM drama.generated_assets WHERE project_id=$1 AND generation_version=$2 AND $3::timestamptz IS NOT NULL;",
+        "options": {
+          "queryReplacement": "={{[$('Build Stable Visual Profiles').first().json.project_id,$('Build Stable Visual Profiles').first().json.generation_version,new Date($('Build Stable Visual Profiles').first().json.started_ms).toISOString()]}}"
+        }
+      },
+      "id": "07-stats",
+      "name": "Collect Visual Asset Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        900,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Build Stable Visual Profiles').first().json,s=$json,ok=Number(s.failed_count)===0;return [{json:{response:{success:ok,project_id:r.project_id,trace_id:r.trace_id,stage:'visual_assets',status:ok?'completed':'failed',data_ref:{entity_type:'visual_asset_batch',entity_id:`batch_${r.project_id}_${r.generation_version}`},metrics:{duration_ms:Date.now()-r.started_ms,task_count:Number(s.task_count),success_count:Number(s.success_count),failed_count:Number(s.failed_count),estimated_cost:0},error:ok?null:{code:'PARTIAL_SAVE_REQUIRES_RECOVERY',message:'some assets failed',retryable:true}},key:r.idempotency_key}}];"
+      },
+      "id": "07-result",
+      "name": "Build Batch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(UPDATE drama.projects SET current_stage=CASE WHEN $2='completed'THEN'visual_asset_review'ELSE'storyboard_approved'END,status=CASE WHEN $2='completed'THEN'waiting_visual_asset_review'ELSE'stage_3_failed'END WHERE project_id=$1),t AS(UPDATE drama.workflow_tasks SET status=$2,output_data=$3::jsonb,error_code=$4,error_message=$5,completed_at=now()WHERE idempotency_key=$6)SELECT $3::jsonb response;",
+        "options": {
+          "queryReplacement": "={{[$json.response.project_id,$json.response.success?'completed':'failed',JSON.stringify($json.response),$json.response.error?.code||null,$json.response.error?.message||null,$json.key]}}"
+        }
+      },
+      "id": "07-finalize",
+      "name": "Finalize Visual Asset Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1340,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response}];"
+      },
+      "id": "07-final",
+      "name": "Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Validate and Normalize').first().json,m=$json.error?.message||$json.message||'visual assets failed',code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_');return [{json:{success:false,project_id:r.project_id,trace_id:r.trace_id,stage:'visual_assets',status:code==='STORY_BIBLE_NOT_APPROVED'?'waiting_review':'failed',data_ref:null,metrics:{},error:{code,message:m,retryable:/429|timeout|network|5\\d\\d/i.test(m)}}}];"
+      },
+      "id": "07-failure",
+      "name": "Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        420
+      ]
+    },
+    {
+      "parameters": {"operation":"executeQuery","query":"UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,output_data=$3::jsonb,completed_at=now()WHERE idempotency_key=$4;SELECT $3::jsonb response;","options":{"queryReplacement":"={{[$json.error.code,$json.error.message,JSON.stringify($json),$('Validate and Normalize').first().json.idempotency_key]}}"}},
+      "id":"07-save-failure","name":"Save Workflow Failure","type":"n8n-nodes-base.postgres","typeVersion":2.6,"position":[680,420],
+      "credentials":{"postgres":{"id":"REPLACE_WITH_POSTGRES_CREDENTIAL_ID","name":"Short Drama PostgreSQL"}}
+    },
+    {
+      "parameters":{"jsCode":"return [{json:$json.response}];"},"id":"07-failed-final","name":"Failed Final","type":"n8n-nodes-base.code","typeVersion":2,"position":[900,420]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate and Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Normalize": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Idempotency Task Gate": {
+      "main": [
+        [
+          {
+            "node": "Already Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Completed?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Request": {
+      "main": [
+        [
+          {
+            "node": "Load Approved Bible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Approved Bible": {
+      "main": [
+        [
+          {
+            "node": "Build Stable Visual Profiles",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Stable Visual Profiles": {
+      "main": [
+        [
+          {
+            "node": "Persist Profiles and Style",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Profiles and Style": {
+      "main": [
+        [
+          {
+            "node": "Expand Asset Requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Asset Requests": {
+      "main": [
+        [
+          {
+            "node": "Loop Asset Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Asset Requests": {
+      "main": [
+        [
+          {
+            "node": "Collect Visual Asset Stats",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute 07a Image Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 07a Image Provider": {
+      "main": [
+        [
+          {
+            "node": "Normalize Asset Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Asset Result": {
+      "main": [
+        [
+          {
+            "node": "Save Asset and Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Asset and Review": {
+      "main": [[{"node":"Loop Asset Requests","type":"main","index":0}],[{"node":"Failure Response","type":"main","index":0}]]
+    },
+    "Collect Visual Asset Stats": {
+      "main": [
+        [
+          {
+            "node": "Build Batch Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Batch Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize Visual Asset Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Visual Asset Batch": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Response": {
+      "main": [[{"node":"Save Workflow Failure","type":"main","index":0}]]
+    },
+    "Save Workflow Failure": {
+      "main": [[{"node":"Failed Final","type":"main","index":0}]]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-070000000007",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

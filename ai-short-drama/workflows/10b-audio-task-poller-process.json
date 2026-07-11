@@ -1,0 +1,193 @@
+{
+  "name": "10b 音频任务轮询与处理",
+  "id": "wf_audio_task_poller_process",
+  "active": false,
+  "settings": {"executionOrder": "v1", "saveManualExecutions": true, "timezone": "Asia/Taipei"},
+  "nodes": [
+    {
+      "parameters": {"rule": {"interval": [{"field": "minutes", "minutesInterval": 1}]}},
+      "id": "10b-cron", "name": "Schedule Trigger", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2,
+      "position": [-1360, -180]
+    },
+    {
+      "parameters": {"workflowInputs": {"values": [{"name": "task_id"}, {"name": "project_id"}, {"name": "trace_id"}, {"name": "payload", "type": "object"}]}},
+      "id": "10b-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
+      "position": [-1360, 0]
+    },
+    {
+      "parameters": {"httpMethod": "POST", "path": "ai-short-drama/audio-poller", "responseMode": "onReceived", "options": {}},
+      "id": "10b-webhook", "name": "Manual Audio Poll Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2.1,
+      "position": [-1360, 180], "webhookId": "ai-short-drama-audio-poller"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b=$json.body||$json;return [{json:{task_id:b.task_id||null,project_id:b.project_id||null,trace_id:b.trace_id||'trace_audio_poll_'+Date.now(),batch_size:Math.max(1,Math.min(Number(b.payload?.batch_size||$env.TTS_POLLER_BATCH_SIZE||10),50))}}];"
+      },
+      "id": "10b-normalize", "name": "Normalize Audio Poll Request", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-1140, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH candidates AS(SELECT t.id FROM drama.tts_generation_tasks t LEFT JOIN drama.dialogue_audio a ON a.dialogue_id=t.dialogue_id AND a.generation_version=t.generation_version AND a.is_current WHERE((t.status='processing'AND(t.next_poll_at IS NULL OR t.next_poll_at<=now()))OR(t.status='succeeded'AND a.auto_qc_status='pending'))AND($1::text IS NULL OR t.task_id=$1)AND($2::text IS NULL OR t.project_id=$2)ORDER BY t.next_poll_at NULLS FIRST,t.created_at LIMIT $3 FOR UPDATE OF t SKIP LOCKED),claimed AS(UPDATE drama.tts_generation_tasks t SET next_poll_at=now()+make_interval(secs=>$4)FROM candidates c WHERE t.id=c.id RETURNING t.*)SELECT * FROM claimed;",
+        "options": {"queryReplacement": "={{[$json.task_id,$json.project_id,$json.batch_size,Number($env.TTS_POLL_INTERVAL_SECONDS||10)]}}"}
+      },
+      "id": "10b-claim", "name": "Claim Due Audio Tasks SKIP LOCKED", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [-920, 0],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"options": {}},
+      "id": "10b-loop", "name": "Loop Claimed Audio Tasks", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 3,
+      "position": [-700, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$json,wait=Number($env.TTS_MAX_WAIT_MINUTES||10)*60000,expired=!t.started_at||Date.now()-new Date(t.started_at).getTime()>wait;if(t.status==='succeeded'&&t.response_payload?.audio)return [{json:{...t,route:'ready',new_status:'succeeded',new_poll_count:Number(t.poll_count),result:t.response_payload}}];if(Number(t.poll_count)>=Number(t.max_poll_count)||expired)return [{json:{...t,route:'timeout',new_status:'timeout',new_poll_count:Number(t.poll_count),result:{success:false,provider:t.provider,model:t.model,status:'timeout',audio:null,error:{code:'TTS_TASK_TIMEOUT',message:'poll count or wait limit exceeded',retryable:false},task_id:t.task_id}}}];return [{json:{...t,route:t.provider==='mock'?'mock':'generic'}}];"
+      },
+      "id": "10b-classify", "name": "Classify Claimed Audio Task", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-480, 80]
+    },
+    {
+      "parameters": {
+        "rules": {"values": [
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "ready", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "ready"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "timeout", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "timeout"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "mock", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "mock"},
+          {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2}, "conditions": [{"leftValue": "={{$json.route}}", "rightValue": "generic", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}, "renameOutput": true, "outputKey": "generic"}
+        ]},
+        "options": {}
+      },
+      "id": "10b-switch", "name": "Switch Audio Poll Route", "type": "n8n-nodes-base.switch", "typeVersion": 3.2,
+      "position": [-260, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),path=require('path'),crypto=require('crypto'),t=$json,r=t.request_payload||{},next=Number(t.poll_count)+1;if(next<2)return [{json:{...t,new_status:'processing',new_poll_count:next,result:{success:true,provider:'mock',model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:'processing',audio:null,usage:{characters:[...String(r.text||'')].length,estimated_cost:0},warnings:[],error:null,task_id:t.task_id}}}];const safe=v=>String(v).replace(/[^A-Za-z0-9_-]/g,'_'),sr=Number(r.sample_rate||$env.TTS_DEFAULT_SAMPLE_RATE||48000),seconds=Math.min(12,Math.max(.8,[...String(r.text||'')].length*.12/Math.max(.25,Number(r.speed||1)))),n=Math.floor(sr*seconds),buf=Buffer.alloc(44+n*2),seed=crypto.createHash('sha256').update(t.idempotency_key).digest('hex'),freq=180+(parseInt(seed.slice(0,4),16)%220);buf.write('RIFF',0);buf.writeUInt32LE(36+n*2,4);buf.write('WAVE',8);buf.write('fmt ',12);buf.writeUInt32LE(16,16);buf.writeUInt16LE(1,20);buf.writeUInt16LE(1,22);buf.writeUInt32LE(sr,24);buf.writeUInt32LE(sr*2,28);buf.writeUInt16LE(2,32);buf.writeUInt16LE(16,34);buf.write('data',36);buf.writeUInt32LE(n*2,40);for(let x=0;x<n;x++){const z=x/sr,fade=Math.min(1,z/.03,(seconds-z)/.03),sample=r.payload?.simulate==='silent'?0:Math.round(5200*Math.sin(2*Math.PI*freq*z)*(.55+.45*Math.sin(2*Math.PI*3*z))*Math.max(0,fade));buf.writeInt16LE(sample,44+x*2);}const dir=path.join($env.MEDIA_STORAGE_PATH||'/data/storage','dialogue-audio',safe(t.project_id),safe(t.episode_id),safe(t.dialogue_id)),file='audio_'+safe(t.dialogue_id)+'_v'+t.generation_version+'_'+seed.slice(0,16)+'.wav';fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,file),r.payload?.simulate==='corrupt'?Buffer.from('broken audio'):buf);const rel=['dialogue-audio',safe(t.project_id),safe(t.episode_id),safe(t.dialogue_id),file].join('/'),url=($env.MEDIA_PUBLIC_BASE_URL||'http://localhost:8088').replace(/[/]$/,'')+'/'+rel;return [{json:{...t,new_status:'succeeded',new_poll_count:next,result:{success:true,provider:'mock',model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:'succeeded',audio:{url,original_url:url,storage_url:path.join(dir,file),format:'wav',duration_ms:Math.round(seconds*1000),sample_rate:sr,channels:1,bitrate:sr*16,content_hash:crypto.createHash('sha256').update(buf).digest('hex')},usage:{characters:[...String(r.text||'')].length,estimated_cost:0},warnings:[],error:null,task_id:t.task_id}}}];"
+      },
+      "id": "10b-mock", "name": "Mock Completes On Second Poll", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-20, 160], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET", "url": "={{$env.TTS_API_BASE_URL+'/tasks/'+$json.provider_task_id}}", "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "Authorization", "value": "={{'Bearer '+$env.TTS_API_KEY}}"}]},
+        "options": {"timeout": "={{Number($env.TTS_REQUEST_TIMEOUT_SECONDS||120)*1000}}"}
+      },
+      "id": "10b-http", "name": "Poll Generic TTS Provider", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
+      "position": [-20, 320], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t=$('Switch Audio Poll Route').item.json,s=String($json.status||'processing').toLowerCase(),done=['succeeded','completed','success'].includes(s),failed=['failed','error','cancelled'].includes(s),a=$json.audio||$json,url=a?.url||a?.audio_url;if(done&&(!url||/^data:/i.test(url)||a.base64||a.audio_base64))throw new Error('TTS_PROVIDER_INVALID_RESPONSE: completed task must return URL, never base64');return [{json:{...t,new_status:done?'succeeded':failed?'failed':'processing',new_poll_count:Number(t.poll_count)+1,result:{success:!failed,provider:t.provider,model:t.model,mode:'async',provider_task_id:t.provider_task_id,status:done?'succeeded':failed?'failed':'processing',audio:done?{url,original_url:url,storage_url:a.storage_url||null,format:a.format||t.request_payload.format||'wav',duration_ms:Number(a.duration_ms||a.duration*1000||0)||null,sample_rate:Number(a.sample_rate||t.request_payload.sample_rate||48000),channels:Number(a.channels||1),bitrate:Number(a.bitrate||0)||null,content_hash:a.content_hash||null}:null,usage:{characters:[...String(t.request_payload.text||'')].length,estimated_cost:Number($json.usage?.estimated_cost||t.estimated_cost||0)},warnings:Array.isArray($json.warnings)?$json.warnings:[],error:failed?{code:'TTS_PROVIDER_INVALID_RESPONSE',message:String($json.error?.message||$json.error||'provider failed'),retryable:false}:null,task_id:t.task_id}}}];"
+      },
+      "id": "10b-http-normalize", "name": "Normalize TTS Poll Response", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [220, 320], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json,wait=Number($env.TTS_MAX_WAIT_MINUTES||10)*60000,expired=!x.started_at||Date.now()-new Date(x.started_at).getTime()>wait;if(x.new_status==='processing'&&(x.new_poll_count>=Number(x.max_poll_count)||expired)){x.new_status='timeout';x.result={...x.result,success:false,status:'timeout',error:{code:'TTS_TASK_TIMEOUT',message:'poll count or wait limit exceeded',retryable:false}}}return [{json:x}];"
+      },
+      "id": "10b-limit", "name": "Enforce Audio Poll Limits", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [460, 160]
+    },
+    {
+      "parameters": {
+        "conditions": {"options": {"typeValidation": "strict"}, "conditions": [{"leftValue": "={{$json.new_status}}", "rightValue": "succeeded", "operator": {"type": "string", "operation": "equals"}}], "combinator": "and"}
+      },
+      "id": "10b-ready-if", "name": "Audio Ready For Processing?", "type": "n8n-nodes-base.if", "typeVersion": 2.2,
+      "position": [680, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const path=require('path'),crypto=require('crypto'),x=$json,r=x.request_payload||{},a=x.result.audio||{},safe=v=>String(v).replace(/[^A-Za-z0-9_-]/g,'_'),base=$env.MEDIA_STORAGE_PATH||'/data/storage',dir=path.join(base,'dialogue-audio',safe(x.project_id),safe(x.episode_id),safe(x.dialogue_id)),file='audio_'+safe(x.dialogue_id)+'_v'+x.generation_version+'_processed.wav',target=a.storage_url&&String(a.storage_url).startsWith(base)?String(a.storage_url):path.join(dir,file),download=!(a.storage_url&&String(a.storage_url).startsWith(base)),ffmpeg=String($env.FFMPEG_PATH||'ffmpeg'),ffprobe=String($env.FFPROBE_PATH||'ffprobe');if(!/^[A-Za-z0-9_./-]+$/.test(ffmpeg)||!/^[A-Za-z0-9_./-]+$/.test(ffprobe))throw new Error('AUDIO_FILE_INVALID: unsafe media tool path');if(download&&!/^https?:\\/\\//i.test(String(a.url||'')))throw new Error('AUDIO_DOWNLOAD_FAILED: provider URL is not http(s)');const q=v=>\"'\"+String(v).replace(/'/g,\"'\\\\''\")+\"'\",parts=['set -eu','mkdir -p '+q(dir)];if(download){parts.push('url='+q(String(a.url)));parts.push(q(ffmpeg)+' -y -v error -i \"$url\" -vn -ac 1 -ar '+Number(r.sample_rate||48000)+' -af '+q('loudnorm=I='+Number($env.TTS_TARGET_LOUDNESS_LUFS||-16)+':TP='+Number($env.TTS_MAX_PEAK_DB||-1)+':LRA=11')+' '+q(target+'.tmp.wav'));parts.push('mv '+q(target+'.tmp.wav')+' '+q(target));}parts.push(q(ffprobe)+' -v error -show_entries format=duration,size,format_name:stream=codec_name,sample_rate,channels,bit_rate -of json '+q(target));parts.push(q(ffmpeg)+' -hide_banner -nostats -i '+q(target)+' -af '+q('ebur128=peak=true,silencedetect=noise=-50dB:d=0.3')+' -f null -');const job_key=[x.project_id,x.dialogue_id,x.generation_version,'probe_audio',target].join(':'),job_id='mediajob_'+crypto.createHash('sha1').update(job_key).digest('hex').slice(0,20);return [{json:{...x,audio_target_path:target,audio_original_url:a.original_url||a.url,audio_public_url:a.url,media_job_id:job_id,media_job_key:job_key,media_command:parts.join('; ')}}];"
+      },
+      "id": "10b-prepare-media", "name": "Prepare Safe Audio Media Job", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [900, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.media_processing_jobs(job_id,idempotency_key,project_id,episode_id,entity_type,entity_id,operation,input_url,output_url,parameters,status,started_at)VALUES($1,$2,$3,$4,'dialogue_audio',$5,'probe_audio',$6,$7,jsonb_build_object('task_id',$8::text,'generation_version',$9::int),'processing',now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout')THEN'processing'ELSE drama.media_processing_jobs.status END,error_code=NULL,error_message=NULL,started_at=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout')THEN now()ELSE drama.media_processing_jobs.started_at END RETURNING $10::jsonb request;",
+        "options": {"queryReplacement": "={{[$json.media_job_id,$json.media_job_key,$json.project_id,$json.episode_id,$json.dialogue_id,$json.audio_original_url,$json.audio_target_path,$json.task_id,$json.generation_version,JSON.stringify($json)]}}"}
+      },
+      "id": "10b-start-media", "name": "Start Audio Media Job", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [1120, 60],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {"command": "={{$json.request.media_command}}"},
+      "id": "10b-exec-media", "name": "Download Normalize and FFprobe Audio", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1,
+      "position": [1340, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),crypto=require('crypto'),x=$('Prepare Safe Audio Media Job').item.json,r=x.request_payload||{},stdout=String($json.stdout||'').trim(),stderr=String($json.stderr||''),probe=JSON.parse(stdout),stream=(probe.streams||[]).find(v=>v.codec_name)||{},duration=Math.round(Number(probe.format?.duration||0)*1000),lufs=Number((stderr.match(/I:\\s*(-?[0-9.]+)\\s*LUFS/g)||[]).pop()?.match(/-?[0-9.]+/)?.[0]),peak=Number((stderr.match(/Peak:\\s*(-?[0-9.]+)\\s*dBFS/g)||[]).pop()?.match(/-?[0-9.]+/)?.[0]),silences=[...stderr.matchAll(/silence_duration:\\s*([0-9.]+)/g)].reduce((s,m)=>s+Number(m[1]),0),silenceRatio=duration>0?Math.min(1,silences/(duration/1000)):1,text=String(r.text||''),chars=Math.max(1,[...text].length),speed=Math.max(.25,Number(r.speed||1)),minDuration=Math.max(250,chars*30/speed),maxDuration=Math.max(2000,chars*600/speed),fileValid=fs.existsSync(x.audio_target_path)&&Number(probe.format?.size||0)>44,audioTrack=Boolean(stream.codec_name),durationValid=duration>=minDuration&&duration<=maxDuration,notSilent=silenceRatio<.98,target=Number($env.TTS_TARGET_LOUDNESS_LUFS||-16),maxPeak=Number($env.TTS_MAX_PEAK_DB||-1),loudnessValid=!Number.isFinite(lufs)||Math.abs(lufs-target)<=8,peakValid=!Number.isFinite(peak)||peak<=maxPeak+2,status=!fileValid||!audioTrack||!durationValid||!notSilent?'failed':loudnessValid&&peakValid?'passed':'warning',hash=fileValid?crypto.createHash('sha256').update(fs.readFileSync(x.audio_target_path)).digest('hex'):null,parts=text.match(/[^。！？!?；;]+[。！？!?；;]?/gu)?.filter(Boolean)||[text],weights=parts.map(v=>Math.max(1,[...v].length)),total=weights.reduce((a,b)=>a+b,0);let cursor=0;const cues=parts.map((v,i)=>{const end=i===parts.length-1?duration:Math.max(cursor+1,Math.round(duration*weights.slice(0,i+1).reduce((a,b)=>a+b,0)/total)),id='sub_'+crypto.createHash('sha1').update(x.dialogue_id+':'+x.generation_version+':'+(i+1)).digest('hex').slice(0,20),z={subtitle_cue_id:id,sequence_number:i+1,text:v.trim(),start_ms:cursor,end_ms:end,duration_ms:end-cursor};cursor=end;return z;}),report={status,checks:{file_valid:fileValid,audio_track_valid:audioTrack,duration_valid:durationValid,duration_text_bounds:{min_ms:Math.round(minDuration),max_ms:Math.round(maxDuration)},not_silent:notSilent,loudness_valid:loudnessValid,peak_valid:peakValid,voice_profile_consistent:Boolean(r.voice_profile_id),content_hash_duplicate:false},metrics:{duration_ms:duration,loudness_lufs:Number.isFinite(lufs)?lufs:null,peak_db:Number.isFinite(peak)?peak:null,silence_ratio:silenceRatio,text_characters:chars},warnings:[...(!Number.isFinite(lufs)?['loudness_not_measured']:[]),...(!Number.isFinite(peak)?['peak_not_measured']:[])]},error=status==='failed'?{code:'AUDIO_AUTO_QC_FAILED',message:'audio failed automatic QC',retryable:true}:null,result={...x.result,audio:{...x.result.audio,original_url:x.audio_original_url,storage_url:x.audio_target_path,format:stream.codec_name||x.result.audio?.format||'wav',duration_ms:duration,sample_rate:Number(stream.sample_rate||r.sample_rate||48000),channels:Number(stream.channels||1),bitrate:Number(stream.bit_rate||x.result.audio?.bitrate||0)||null,content_hash:hash},status:status==='failed'?'failed':'succeeded',error};return [{json:{...x,new_status:status==='failed'?'failed':'succeeded',result,auto_qc_status:status,auto_qc_report:report,subtitle_cues:cues,actual_duration_ms:duration,loudness_lufs:Number.isFinite(lufs)?lufs:null,peak_db:Number.isFinite(peak)?peak:null,silence_ratio:silenceRatio,content_hash:hash,sample_rate:Number(stream.sample_rate||r.sample_rate||48000),channels:Number(stream.channels||1),bitrate:Number(stream.bit_rate||0)||null,audio_format:stream.codec_name||'wav'}}];"
+      },
+      "id": "10b-qc", "name": "Parse FFprobe QC and Align Subtitles", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [1560, 60], "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH t AS(UPDATE drama.tts_generation_tasks SET status=$1,poll_count=$2,response_payload=$3::jsonb,next_poll_at=NULL,completed_at=now(),error_code=$4,error_message=$5 WHERE task_id=$6 RETURNING *),dup AS(SELECT EXISTS(SELECT 1 FROM drama.dialogue_audio o WHERE o.project_id=(SELECT project_id FROM t)AND o.dialogue_id<>(SELECT dialogue_id FROM t)AND o.is_current AND o.content_hash=$17 AND $17 IS NOT NULL)duplicate),a AS(UPDATE drama.dialogue_audio SET original_url=$7,storage_url=$8,format=$9,sample_rate=$10,channels=$11,bitrate=$12,actual_duration_ms=$13,loudness_lufs=$14,peak_db=$15,silence_ratio=$16,content_hash=$17,status=$1,auto_qc_status=CASE WHEN $18='passed'AND(SELECT duplicate FROM dup)THEN'warning'ELSE $18 END,auto_qc_report=jsonb_set(jsonb_set($19::jsonb,'{checks,content_hash_duplicate}',to_jsonb((SELECT duplicate FROM dup)),true),'{warnings}',coalesce($19::jsonb->'warnings','[]'::jsonb)||CASE WHEN(SELECT duplicate FROM dup)THEN'[\"content_hash_duplicate\"]'::jsonb ELSE'[]'::jsonb END,true)WHERE dialogue_id=(SELECT dialogue_id FROM t)AND generation_version=(SELECT generation_version FROM t)RETURNING *),sc AS(INSERT INTO drama.subtitle_cues(subtitle_cue_id,project_id,episode_id,scene_id,shot_id,dialogue_id,dialogue_audio_id,sequence_number,speaker_name,text,start_ms,end_ms,duration_ms,style_config,status)SELECT z.subtitle_cue_id,a.project_id,a.episode_id,a.scene_id,$20,a.dialogue_id,a.dialogue_audio_id,z.sequence_number,$21,z.text,z.start_ms,z.end_ms,z.duration_ms,$22::jsonb,'aligned'FROM a CROSS JOIN jsonb_to_recordset($23::jsonb)z(subtitle_cue_id text,sequence_number int,text text,start_ms int,end_ms int,duration_ms int)WHERE $1='succeeded'ON CONFLICT(dialogue_audio_id,sequence_number)DO UPDATE SET text=excluded.text,start_ms=excluded.start_ms,end_ms=excluded.end_ms,duration_ms=excluded.duration_ms,style_config=excluded.style_config,status='aligned'),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT 'review_'||substr(md5(a.dialogue_audio_id),1,20),a.project_id,'dialogue_audio','dialogue_audio',a.dialogue_audio_id,'pending',jsonb_build_object('dialogue_id',a.dialogue_id,'generation_version',a.generation_version,'auto_qc_status',a.auto_qc_status)FROM a WHERE $1='succeeded'ON CONFLICT(review_id)DO NOTHING),mj AS(UPDATE drama.media_processing_jobs SET status=CASE WHEN $1='succeeded'THEN'succeeded'ELSE'failed'END,output_url=$8,error_code=$4,error_message=$5,completed_at=now()WHERE job_id=$24),pl AS(UPDATE drama.episode_audio_plans p SET status='ready'WHERE p.episode_id=(SELECT episode_id FROM t)AND NOT EXISTS(SELECT 1 FROM drama.dialogues d WHERE d.episode_id=p.episode_id AND NOT EXISTS(SELECT 1 FROM drama.dialogue_audio da WHERE da.dialogue_id=d.dialogue_id AND da.is_current AND da.status='succeeded'AND da.auto_qc_status IN('passed','warning')))RETURNING p.episode_id),flags AS(SELECT EXISTS(SELECT 1 FROM pl)audio_ready,EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=(SELECT project_id FROM t)AND i.is_current AND i.review_status='approved')AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.project_id=(SELECT project_id FROM t)AND i.is_current AND i.review_status='approved'AND NOT EXISTS(SELECT 1 FROM drama.shot_videos v WHERE v.shot_id=i.shot_id AND v.is_current AND v.review_status='approved'))AND EXISTS(SELECT 1 FROM drama.episode_scripts es WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved')AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts es JOIN drama.dialogues d ON d.episode_id=es.episode_id WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.dialogue_audio da WHERE da.dialogue_id=d.dialogue_id AND da.is_current AND da.status='succeeded'AND da.auto_qc_status IN('passed','warning')))AND NOT EXISTS(SELECT 1 FROM drama.episode_scripts es WHERE es.project_id=(SELECT project_id FROM t)AND es.status='approved'AND NOT EXISTS(SELECT 1 FROM drama.episode_audio_plans ap WHERE ap.episode_id=es.episode_id AND ap.status='ready'))full_done),next_state AS(SELECT p.project_id,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage NOT IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')AND f.audio_ready THEN'audio_ready'ELSE p.current_stage END next_stage,CASE WHEN f.full_done THEN'stage_4_completed'WHEN p.current_stage NOT IN('video_processing','shot_video_review','shot_videos_generated','shot_videos_approved')AND f.audio_ready THEN'audio_ready'ELSE p.status END next_status FROM drama.projects p CROSS JOIN flags f WHERE p.project_id=(SELECT project_id FROM t)),pupd AS(UPDATE drama.projects p SET current_stage=n.next_stage,status=n.next_status FROM next_state n WHERE p.project_id=n.project_id RETURNING p.project_id)SELECT(SELECT task_id FROM t)task_id;",
+        "options": {"queryReplacement": "={{[$json.new_status,$json.new_poll_count,JSON.stringify($json.result),$json.result.error?.code||null,$json.result.error?.message||null,$json.task_id,$json.audio_original_url,$json.audio_target_path,$json.audio_format,$json.sample_rate,$json.channels,$json.bitrate,$json.actual_duration_ms,$json.loudness_lufs,$json.peak_db,$json.silence_ratio,$json.content_hash,$json.auto_qc_status,JSON.stringify($json.auto_qc_report),$json.request_payload.shot_id||null,$json.request_payload.speaker_name||'',JSON.stringify($json.request_payload.subtitle_style||{}),JSON.stringify($json.subtitle_cues),$json.media_job_id]}}"}
+      },
+      "id": "10b-save-complete", "name": "Save Processed Audio QC and Subtitles", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [1780, 60],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH t AS(UPDATE drama.tts_generation_tasks SET status=$1,poll_count=$2,response_payload=$3::jsonb,next_poll_at=CASE WHEN $1='processing'THEN now()+make_interval(secs=>$4)ELSE NULL END,completed_at=CASE WHEN $1 IN('failed','timeout')THEN now()ELSE completed_at END,error_code=$5,error_message=$6 WHERE task_id=$7 RETURNING *),a AS(UPDATE drama.dialogue_audio SET status=CASE WHEN $1='processing'THEN'processing'WHEN $1='timeout'THEN'timeout'ELSE'failed'END,auto_qc_status=CASE WHEN $1 IN('failed','timeout')THEN'failed'ELSE auto_qc_status END,auto_qc_report=CASE WHEN $1 IN('failed','timeout')THEN jsonb_build_object('status','failed','error_code',$5,'error_message',$6)ELSE auto_qc_report END WHERE dialogue_id=(SELECT dialogue_id FROM t)AND generation_version=(SELECT generation_version FROM t)),mj AS(UPDATE drama.media_processing_jobs SET status='failed',error_code=$5,error_message=$6,completed_at=now()WHERE entity_type='dialogue_audio'AND entity_id=(SELECT dialogue_id FROM t)AND status='processing' RETURNING job_id)SELECT task_id,status FROM t;",
+        "options": {"queryReplacement": "={{[$json.new_status,$json.new_poll_count,JSON.stringify($json.result),Number($env.TTS_POLL_INTERVAL_SECONDS||10),$json.result.error?.code||null,$json.result.error?.message||null,$json.task_id]}}"}
+      },
+      "id": "10b-save-state", "name": "Save Audio Poll State", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6,
+      "position": [900, 300],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Short Drama PostgreSQL"}},
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "let t={};try{t=$('Loop Claimed Audio Tasks').item.json||{};}catch(e){}const m=$json.error?.message||$json.message||'audio poll or processing failed',code=/download/i.test(m)?'AUDIO_DOWNLOAD_FAILED':/ffprobe|audio|media|command/i.test(m)?'AUDIO_FILE_INVALID':/timeout/i.test(m)?'TTS_PROVIDER_TIMEOUT':'TTS_PROVIDER_INVALID_RESPONSE';return [{json:{...t,new_status:'failed',new_poll_count:Number(t.poll_count||0)+1,result:{success:false,provider:t.provider||null,model:t.model||null,status:'failed',audio:null,error:{code,message:m,retryable:/timeout|network|5\\d\\d/i.test(m)},task_id:t.task_id||null}}}];"
+      },
+      "id": "10b-failure", "name": "Normalize Audio Poll Failure", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {"mode": "runOnceForAllItems", "jsCode": "const a=$input.all();return [{json:{success:true,stage:'audio_poller',status:'completed',data_ref:{entity_type:'tts_tasks',entity_id:null},metrics:{processed:a.length},error:null}}];"},
+      "id": "10b-summary", "name": "Audio Poll Batch Summary", "type": "n8n-nodes-base.code", "typeVersion": 2,
+      "position": [-480, -160]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {"main": [[{"node": "Normalize Audio Poll Request", "type": "main", "index": 0}]]},
+    "Sub-workflow Trigger": {"main": [[{"node": "Normalize Audio Poll Request", "type": "main", "index": 0}]]},
+    "Manual Audio Poll Webhook": {"main": [[{"node": "Normalize Audio Poll Request", "type": "main", "index": 0}]]},
+    "Normalize Audio Poll Request": {"main": [[{"node": "Claim Due Audio Tasks SKIP LOCKED", "type": "main", "index": 0}]]},
+    "Claim Due Audio Tasks SKIP LOCKED": {"main": [[{"node": "Loop Claimed Audio Tasks", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Loop Claimed Audio Tasks": {"main": [[{"node": "Audio Poll Batch Summary", "type": "main", "index": 0}], [{"node": "Classify Claimed Audio Task", "type": "main", "index": 0}]]},
+    "Classify Claimed Audio Task": {"main": [[{"node": "Switch Audio Poll Route", "type": "main", "index": 0}]]},
+    "Switch Audio Poll Route": {"main": [[{"node": "Prepare Safe Audio Media Job", "type": "main", "index": 0}], [{"node": "Save Audio Poll State", "type": "main", "index": 0}], [{"node": "Mock Completes On Second Poll", "type": "main", "index": 0}], [{"node": "Poll Generic TTS Provider", "type": "main", "index": 0}]]},
+    "Mock Completes On Second Poll": {"main": [[{"node": "Enforce Audio Poll Limits", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Poll Generic TTS Provider": {"main": [[{"node": "Normalize TTS Poll Response", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Normalize TTS Poll Response": {"main": [[{"node": "Enforce Audio Poll Limits", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Enforce Audio Poll Limits": {"main": [[{"node": "Audio Ready For Processing?", "type": "main", "index": 0}]]},
+    "Audio Ready For Processing?": {"main": [[{"node": "Prepare Safe Audio Media Job", "type": "main", "index": 0}], [{"node": "Save Audio Poll State", "type": "main", "index": 0}]]},
+    "Prepare Safe Audio Media Job": {"main": [[{"node": "Start Audio Media Job", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Start Audio Media Job": {"main": [[{"node": "Download Normalize and FFprobe Audio", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Download Normalize and FFprobe Audio": {"main": [[{"node": "Parse FFprobe QC and Align Subtitles", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Parse FFprobe QC and Align Subtitles": {"main": [[{"node": "Save Processed Audio QC and Subtitles", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Save Processed Audio QC and Subtitles": {"main": [[{"node": "Loop Claimed Audio Tasks", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Save Audio Poll State": {"main": [[{"node": "Loop Claimed Audio Tasks", "type": "main", "index": 0}], [{"node": "Normalize Audio Poll Failure", "type": "main", "index": 0}]]},
+    "Normalize Audio Poll Failure": {"main": [[{"node": "Save Audio Poll State", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-10000000010b",
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

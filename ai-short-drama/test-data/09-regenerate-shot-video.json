@@ -1,0 +1,14 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "episode_id": "REPLACE_APPROVED_EPISODE_ID",
+  "shot_id": "REPLACE_REJECTED_SHOT_ID",
+  "stage": "image_to_video",
+  "action": "regenerate",
+  "generation_version": 2,
+  "test_mode": true,
+  "trace_id": "trace_regenerate_shot_video_002",
+  "payload": {
+    "shot_id": "REPLACE_REJECTED_SHOT_ID",
+    "prompt_adjustment": "修正人物一致性与动作节奏，仅重生当前镜头"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "project_id": "REPLACE_PROJECT_ID",
+  "review_id": "REPLACE_STORY_BIBLE_REVIEW_ID",
+  "action": "review",
+  "review_status": "approved",
+  "review_comment": "故事圣经结构与原著依据通过",
+  "rejection_reason": "",
+  "revision_instruction": "",
+  "trace_id": "trace_review_bible_001"
+}
+

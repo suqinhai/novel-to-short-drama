@@ -1,0 +1,648 @@
+{
+  "name": "08 分镜图片",
+  "id": "wf_storyboard_images",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "episode_id"
+            },
+            {
+              "name": "shot_id"
+            },
+            {
+              "name": "stage"
+            },
+            {
+              "name": "action"
+            },
+            {
+              "name": "generation_version",
+              "type": "number"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
+            },
+            {
+              "name": "trace_id"
+            },
+            {
+              "name": "payload",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "08-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},ep=i.episode_id||p.episode_id,shot=i.shot_id||p.shot_id||null,a=i.action||'run',v=Number(i.generation_version||1);if(!i.project_id||!ep)throw new Error('STORYBOARD_NOT_FOUND');if(a==='regenerate'&&v<2)throw new Error('BUSINESS_VALIDATION_FAILED: regenerate requires new version');return [{json:{...i,episode_id:ep,shot_id:shot,payload:p,stage:'storyboard_images',action:a,generation_version:v,trace_id:i.trace_id||`trace_frame_${crypto.randomUUID()}`,task_id:`task_${crypto.randomUUID()}`,idempotency_key:[i.project_id,'storyboard_images',shot||ep,v,a].join(':'),started_ms:Date.now()}}];"
+      },
+      "id": "08-normalize",
+      "name": "Validate and Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.workflow_tasks(task_id,trace_id,project_id,workflow_stage,action,entity_type,entity_id,generation_version,idempotency_key,status,max_retries,input_data,started_at)VALUES($1,$2,$3,'storyboard_images',$4,$5,$6,$7,$8,'running',$9,$10::jsonb,now())ON CONFLICT(idempotency_key)DO UPDATE SET status=CASE WHEN drama.workflow_tasks.status='failed'AND $4 IN('retry','resume')AND drama.workflow_tasks.retry_count<drama.workflow_tasks.max_retries THEN'running'ELSE drama.workflow_tasks.status END,retry_count=CASE WHEN drama.workflow_tasks.status='failed'AND $4 IN('retry','resume')THEN drama.workflow_tasks.retry_count+1 ELSE drama.workflow_tasks.retry_count END RETURNING status,output_data,$11::jsonb request;",
+        "options": {
+          "queryReplacement": "={{[$json.task_id,$json.trace_id,$json.project_id,$json.action,$json.shot_id?'shot':'episode',$json.shot_id||$json.episode_id,$json.generation_version,$json.idempotency_key,Number($env.IMAGE_MAX_RETRIES||3),JSON.stringify($json),JSON.stringify($json)]}}"
+        }
+      },
+      "id": "08-gate",
+      "name": "Idempotency Task Gate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -860,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.status}}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "08-cache-if",
+      "name": "Already Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.output_data}];"
+      },
+      "id": "08-cache",
+      "name": "Return Cached Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if($json.status!=='running')throw new Error('DUPLICATE_IMAGE_TASK_RUNNING');return [{json:$json.request}];"
+      },
+      "id": "08-restore",
+      "name": "Restore Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT sh.*,b.storyboard_id,b.version storyboard_version,st.style_id,st.positive_prompt style_prompt,st.negative_prompt style_negative,st.aspect_ratio,st.resolution_width,st.resolution_height,coalesce((SELECT jsonb_agg(jsonb_build_object('character_id',p.character_id,'profile_id',p.profile_id,'base_prompt',p.base_prompt,'negative_prompt',p.negative_prompt,'asset_id',a.asset_id,'reference_url',a.storage_url,'costume_id',co.costume_id,'costume_prompt',co.costume_prompt))FROM drama.character_visual_profiles p LEFT JOIN LATERAL(SELECT * FROM drama.generated_assets WHERE profile_id=p.profile_id AND selected_as_primary AND review_status='approved'AND status='succeeded'LIMIT 1)a ON true LEFT JOIN LATERAL(SELECT * FROM drama.character_costumes WHERE profile_id=p.profile_id AND lock_status='locked'AND review_status='approved'ORDER BY version DESC LIMIT 1)co ON true WHERE p.project_id=sh.project_id AND p.lock_status='locked'AND p.review_status='approved'AND p.character_id IN(SELECT jsonb_array_elements_text(sh.character_ids))),'[]')characters,(SELECT jsonb_build_object('location_id',p.location_id,'profile_id',p.profile_id,'base_prompt',p.base_prompt,'negative_prompt',p.negative_prompt,'asset_id',a.asset_id,'reference_url',a.storage_url)FROM drama.location_visual_profiles p LEFT JOIN LATERAL(SELECT * FROM drama.generated_assets WHERE profile_id=p.profile_id AND selected_as_primary AND review_status='approved'AND status='succeeded'LIMIT 1)a ON true WHERE p.project_id=sh.project_id AND p.location_id=sh.location_id AND p.lock_status='locked'AND p.review_status='approved'ORDER BY p.version DESC LIMIT 1)location FROM drama.storyboards b JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id JOIN drama.episode_scripts es ON es.script_id=b.script_id JOIN LATERAL(SELECT * FROM drama.visual_styles WHERE project_id=b.project_id AND status IN('approved','locked')ORDER BY version DESC LIMIT 1)st ON true WHERE b.project_id=$1 AND b.episode_id=$2 AND b.status='approved'AND es.status='approved'AND sh.status IN('approved','ready')AND($3::text IS NULL OR sh.shot_id=$3)AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.shot_id=sh.shot_id AND i.review_status='approved'AND i.is_current)ORDER BY sh.shot_order LIMIT $4;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id,$json.test_mode?Number($env.TEST_MAX_IMAGE_SHOTS||10):1000]}}"
+        }
+      },
+      "id": "08-context",
+      "name": "Load Approved Shots and Locked Assets",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -200,
+        40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$('Restore Request').first().json,rows=$input.all().map(x=>x.json);if(!rows.length)throw new Error('STORYBOARD_NOT_APPROVED: no eligible approved shots');let missingChars=[],missingLocs=[];for(const s of rows){const got=new Set((s.characters||[]).filter(x=>x.asset_id&&x.costume_id).map(x=>x.character_id));for(const id of s.character_ids||[])if(!got.has(id))missingChars.push(id);if(s.location_id&&(!s.location||!s.location.asset_id))missingLocs.push(s.location_id);}missingChars=[...new Set(missingChars)];missingLocs=[...new Set(missingLocs)];if(($env.REQUIRE_LOCKED_ASSETS||'true')==='true'&&(missingChars.length||missingLocs.length)){const e=new Error('REQUIRED_ASSETS_NOT_LOCKED: '+JSON.stringify({missing_character_ids:missingChars,missing_location_ids:missingLocs,missing_costume_ids:[]}));throw e;}return rows.map(s=>{const refs=[...(s.characters||[]).map(x=>x.asset_id),s.location?.asset_id].filter(Boolean),charText=(s.characters||[]).map(x=>`${x.base_prompt}；当前服装：${x.costume_prompt}`).join('；'),prompt=[s.style_prompt,`${s.aspect_ratio}，${s.resolution_width}x${s.resolution_height}`,s.location?.base_prompt,`灯光：${s.lighting}，气氛：${s.atmosphere}`,charText,`动作与表情：${s.action_description}，${s.facial_expression}`,`镜头：${s.shot_size}，${s.camera_angle}，${s.camera_motion}，${s.composition}`,`连续性：${JSON.stringify(s.continuity_notes)}`,'高质量短剧关键帧，无文字无水印'].filter(Boolean).join('。');return {json:{...r,shot:s,reference_asset_ids:refs,reference_urls:[...(s.characters||[]).map(x=>x.reference_url),s.location?.reference_url].filter(Boolean),final_prompt:prompt,negative_prompt:[s.style_negative,...(s.characters||[]).map(x=>x.negative_prompt),s.location?.negative_prompt,'字幕，气泡，文字，水印，Logo'].filter(Boolean).join('，')}}});"
+      },
+      "id": "08-prepare",
+      "name": "Validate Locks and Build Final Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        40
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "08-loop",
+      "name": "Loop Image Shots",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        240,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf_image_provider_adapter",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "provider": "={{$env.IMAGE_PROVIDER||'mock'}}",
+            "model": "={{$env.IMAGE_MODEL||'mock-image-model'}}",
+            "task_type": "text_to_image",
+            "project_id": "={{$json.project_id}}",
+            "entity_type": "storyboard_shot",
+            "entity_id": "={{$json.shot.shot_id}}",
+            "asset_type": "storyboard_frame",
+            "prompt": "={{$json.final_prompt}}",
+            "negative_prompt": "={{$json.negative_prompt}}",
+            "reference_image_urls": "={{$json.reference_urls}}",
+            "width": "={{$json.shot.resolution_width}}",
+            "height": "={{$json.shot.resolution_height}}",
+            "aspect_ratio": "={{$json.shot.aspect_ratio}}",
+            "seed": null,
+            "count": 1,
+            "generation_version": "={{$json.generation_version}}",
+            "idempotency_key": "={{[$json.project_id,'storyboard_shot',$json.shot.shot_id,'storyboard_frame',$json.generation_version,$env.IMAGE_PROVIDER||'mock',$env.IMAGE_MODEL||'mock-image-model'].join(':')}}",
+            "trace_id": "={{$json.trace_id}}",
+            "payload": "={{ {...$json.payload,episode_id:$json.episode_id,shot_id:$json.shot.shot_id,action:$json.action} }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "08-provider",
+      "name": "Execute 07a Image Provider",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        460,
+        140
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs=require('fs'),crypto=require('crypto'),q=$('Loop Image Shots').item.json,res=$json,img=res.images?.[0]||{},asset_id=`asset_${crypto.createHash('sha1').update(q.shot.shot_id+':frame:'+q.generation_version).digest('hex').slice(0,20)}`,image_id=`frame_${crypto.createHash('sha1').update(q.shot.shot_id+':'+q.generation_version).digest('hex').slice(0,20)}`,review_id=`review_${crypto.createHash('sha1').update(image_id).digest('hex').slice(0,20)}`,exists=img.storage_url?fs.existsSync(img.storage_url):Boolean(img.url),mime=img.mime_type||'',ratio=img.width&&img.height?img.width/img.height:null,target=q.shot.resolution_width/q.shot.resolution_height,checks={file_valid:exists,mime_valid:!mime||mime.startsWith('image/'),resolution_valid:img.width===q.shot.resolution_width&&img.height===q.shot.resolution_height,aspect_ratio_valid:ratio==null||Math.abs(ratio-target)<0.02,duplicate_detected:false,character_count_valid:null,watermark_detected:null},passed=checks.file_valid&&checks.mime_valid&&checks.resolution_valid&&checks.aspect_ratio_valid&&!checks.duplicate_detected;return [{json:{q,res,img,asset_id,image_id,review_id,qc:{status:passed?'passed':'failed',checks,scores:{character_consistency:null,scene_consistency:null,overall:passed?100:0},warnings:[]},status:res.status||'failed'}}];"
+      },
+      "id": "08-qc",
+      "name": "Automatic Technical QC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        140
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH a AS(INSERT INTO drama.generated_assets(asset_id,project_id,asset_type,entity_type,entity_id,generation_version,provider,model,provider_task_id,prompt,negative_prompt,request_parameters,reference_asset_ids,reference_image_urls,seed,status,original_url,storage_url,width,height,content_hash)VALUES($3,$4,'storyboard_frame','storyboard_shot',$1,$2,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18,$19)ON CONFLICT(asset_id)DO UPDATE SET status=excluded.status,original_url=excluded.original_url,storage_url=excluded.storage_url RETURNING asset_id),it AS(UPDATE drama.image_generation_tasks SET asset_id=$3 WHERE task_id=$20),im AS(INSERT INTO drama.storyboard_images(storyboard_image_id,project_id,episode_id,storyboard_id,shot_id,generation_version,source_storyboard_version,visual_style_id,character_profile_ids,costume_ids,location_profile_id,reference_asset_ids,final_prompt,negative_prompt,provider,model,seed,image_asset_id,image_url,storage_url,status,auto_qc_status,auto_qc_report,review_status,is_current)VALUES($21,$4,$22,$23,$1,$2,$24,$25,$26::jsonb,$27::jsonb,$28,$11::jsonb,$8,$9,$5,$6,$13,$3,$15,$16,$29,$30,$31::jsonb,'pending',true)ON CONFLICT(shot_id,generation_version)DO UPDATE SET status=excluded.status,image_url=excluded.image_url,storage_url=excluded.storage_url,auto_qc_status=excluded.auto_qc_status,auto_qc_report=excluded.auto_qc_report RETURNING storyboard_image_id),rv AS(INSERT INTO drama.review_tasks(review_id,project_id,stage,entity_type,entity_id,review_status,metadata)SELECT $32,$4,'storyboard_image','storyboard_image',$21,'pending',jsonb_build_object('shot_id',$1,'generation_version',$2)WHERE $29='succeeded'AND $30<>'failed'ON CONFLICT(review_id)DO NOTHING)SELECT $21::text storyboard_image_id;",
+        "options": {
+          "queryReplacement": "={{[$json.q.shot.shot_id,$json.q.generation_version,$json.asset_id,$json.q.project_id,$json.res.provider||$env.IMAGE_PROVIDER,$json.res.model||$env.IMAGE_MODEL,$json.res.provider_task_id||null,$json.q.final_prompt,$json.q.negative_prompt,JSON.stringify({width:$json.q.shot.resolution_width,height:$json.q.shot.resolution_height}),JSON.stringify($json.q.reference_asset_ids),JSON.stringify($json.q.reference_urls),$json.img.seed||null,$json.status,$json.img.url||null,$json.img.storage_url||null,$json.img.width||null,$json.img.height||null,$json.img.content_hash||null,$json.res.task_id,$json.image_id,$json.q.episode_id,$json.q.shot.storyboard_id,$json.q.shot.storyboard_version,$json.q.shot.style_id,JSON.stringify(($json.q.shot.characters||[]).map(x=>x.profile_id)),JSON.stringify(($json.q.shot.characters||[]).map(x=>x.costume_id)), $json.q.shot.location?.profile_id||null,$json.status==='processing'?'generating':$json.status,$json.qc.status,JSON.stringify($json.qc),$json.review_id]}}"
+        }
+      },
+      "id": "08-save",
+      "name": "Save Frame QC Review Dependencies",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        900,
+        140
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT count(*)::int task_count,count(*)FILTER(WHERE status='succeeded')::int success_count,count(*)FILTER(WHERE status IN('failed','timeout'))::int failed_count FROM drama.storyboard_images WHERE project_id=$1 AND episode_id=$2 AND generation_version=$3;",
+        "options": {
+          "queryReplacement": "={{[$('Validate and Normalize').first().json.project_id,$('Validate and Normalize').first().json.episode_id,$('Validate and Normalize').first().json.generation_version]}}"
+        }
+      },
+      "id": "08-stats",
+      "name": "Collect Frame Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        460,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Validate and Normalize').first().json,s=$json,ok=Number(s.failed_count)===0;return [{json:{response:{success:ok,project_id:r.project_id,trace_id:r.trace_id,stage:'storyboard_images',status:ok?'completed':'failed',data_ref:{entity_type:'storyboard_image_batch',entity_id:`frames_${r.episode_id}_${r.generation_version}`},metrics:{duration_ms:Date.now()-r.started_ms,task_count:Number(s.task_count),success_count:Number(s.success_count),failed_count:Number(s.failed_count),estimated_cost:0},error:ok?null:{code:'PARTIAL_SAVE_REQUIRES_RECOVERY',message:'some frames failed',retryable:true}},key:r.idempotency_key}}];"
+      },
+      "id": "08-result",
+      "name": "Build Frame Batch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS(UPDATE drama.projects SET current_stage='storyboard_image_review',status='waiting_storyboard_image_review'WHERE project_id=$1),t AS(UPDATE drama.workflow_tasks SET status=$2,output_data=$3::jsonb,error_code=$4,error_message=$5,completed_at=now()WHERE idempotency_key=$6)SELECT $3::jsonb response;",
+        "options": {
+          "queryReplacement": "={{[$json.response.project_id,$json.response.success?'completed':'failed',JSON.stringify($json.response),$json.response.error?.code||null,$json.response.error?.message||null,$json.key]}}"
+        }
+      },
+      "id": "08-finalize",
+      "name": "Finalize Frame Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        900,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response}];"
+      },
+      "id": "08-final",
+      "name": "Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$('Validate and Normalize').first().json,m=$json.error?.message||$json.message||'storyboard images failed',code=(m.split(':')[0]||'DATABASE_WRITE_FAILED').replace(/\\W/g,'_'),details=code==='REQUIRED_ASSETS_NOT_LOCKED'?(()=>{try{return JSON.parse(m.slice(m.indexOf('{')))}catch{return {}}})():undefined;return [{json:{success:false,project_id:r.project_id,trace_id:r.trace_id,stage:'storyboard_images',status:code==='REQUIRED_ASSETS_NOT_LOCKED'?'waiting_assets':'failed',data_ref:null,metrics:{},error:{code,message:m,retryable:/429|timeout|network|5\\d\\d/i.test(m),details}}}];"
+      },
+      "id": "08-failure",
+      "name": "Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,output_data=$3::jsonb,completed_at=now()WHERE idempotency_key=$4;SELECT $3::jsonb response;",
+        "options": {
+          "queryReplacement": "={{[$json.error.code,$json.error.message,JSON.stringify($json),$('Validate and Normalize').first().json.idempotency_key]}}"
+        }
+      },
+      "id": "08-save-failure",
+      "name": "Save Workflow Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        460,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:$json.response}];"
+      },
+      "id": "08-failed-final",
+      "name": "Failed Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate and Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Normalize": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Idempotency Task Gate": {
+      "main": [
+        [
+          {
+            "node": "Already Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Completed?": {
+      "main": [
+        [
+          {
+            "node": "Return Cached Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Request": {
+      "main": [
+        [
+          {
+            "node": "Load Approved Shots and Locked Assets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Approved Shots and Locked Assets": {
+      "main": [
+        [
+          {
+            "node": "Validate Locks and Build Final Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Locks and Build Final Prompts": {
+      "main": [
+        [
+          {
+            "node": "Loop Image Shots",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Image Shots": {
+      "main": [
+        [
+          {
+            "node": "Collect Frame Stats",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute 07a Image Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute 07a Image Provider": {
+      "main": [
+        [
+          {
+            "node": "Automatic Technical QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Automatic Technical QC": {
+      "main": [
+        [
+          {
+            "node": "Save Frame QC Review Dependencies",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Frame QC Review Dependencies": {
+      "main": [
+        [
+          {
+            "node": "Loop Image Shots",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Frame Stats": {
+      "main": [
+        [
+          {
+            "node": "Build Frame Batch Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Frame Batch Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize Frame Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Frame Batch": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure Response": {
+      "main": [
+        [
+          {
+            "node": "Save Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Workflow Failure": {
+      "main": [
+        [
+          {
+            "node": "Failed Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "d6a6a2fb-7fcb-4f1c-bbb1-080000000008",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
