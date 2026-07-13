@@ -24,10 +24,13 @@ npm run dev
 ## 已有页面
 
 - 项目列表
+- 新建项目（粘贴 `novel_text`，通过 n8n webhook 创建）
 - 项目详情
 - 系统诊断
 - AI 配置（密钥不下发、配置只读）
 
 项目详情会读取 `workflow_tasks`、`review_tasks`、`novels`、`story_bibles`、`episode_outlines`、`episode_scripts` 和 `storyboards`。
 
-CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。后端只注册 `GET` 接口，并为 PostgreSQL 连接设置 `default_transaction_read_only=on`，从接口层和数据库会话层同时阻止写入。
+CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。所有数据库访问均为查询，并为 PostgreSQL 连接设置 `default_transaction_read_only=on`，从数据库会话层阻止 CMS 直接写入。
+
+新建项目是唯一的业务提交接口：`POST /api/v1/projects` 只负责校验请求并转发到 `CMS_N8N_PROJECT_WEBHOOK_URL`，CMS 自身不执行数据库写入。n8n 返回后，前端跳转到项目详情并显示该次 webhook 结果。

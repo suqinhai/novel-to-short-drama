@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
@@ -11,6 +11,7 @@ const project = ref(null)
 const loading = ref(true)
 const error = ref('')
 const activeDataTab = ref('workflow_tasks')
+const createResult = ref(null)
 const stages = [
   ['novel_import', '小说导入'], ['chunk_analysis', '文本拆解'], ['story_bible', '故事圣经'],
   ['episode_planning', '分集策划'], ['episode_script', '单集剧本'], ['storyboard', '分镜设计'],
@@ -76,9 +77,18 @@ async function load() {
   catch (err) { error.value = err.message }
   finally { loading.value = false }
 }
-onMounted(load)
+onMounted(() => {
+  if (route.query.created === '1') {
+    try {
+      const stored = sessionStorage.getItem(`cms:create-result:${route.params.projectId}`)
+      if (stored) createResult.value = JSON.parse(stored)
+    } catch { /* 无可用缓存时只展示项目详情 */ }
+  }
+  load()
+})
 
 const formatDate = (value) => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'long', timeStyle: 'short' }).format(new Date(value))
+const createResultText = computed(() => JSON.stringify(createResult.value, null, 2))
 </script>
 
 <template>
@@ -91,6 +101,11 @@ const formatDate = (value) => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'lon
         <div class="detail-title"><div class="project-cover large">{{ project.novel_name.slice(0, 1) }}</div><div><div class="title-line"><h2>{{ project.novel_name }}</h2><StatusBadge :status="project.status" /></div><p>{{ project.project_id }} · 创建于 {{ formatDate(project.created_at) }}</p></div></div>
         <button class="button button-secondary" @click="load"><RefreshCw :size="16" />刷新详情</button>
       </div>
+
+      <article v-if="createResult" class="creation-result-card">
+        <div class="creation-result-head"><div class="creation-success-icon"><CircleCheckBig :size="21" /></div><div><span>N8N WEBHOOK RESPONSE</span><h3>项目已提交，返回结果如下</h3></div><Webhook :size="20" /></div>
+        <pre>{{ createResultText }}</pre>
+      </article>
 
       <div class="detail-grid">
         <div class="main-column">

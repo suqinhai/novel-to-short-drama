@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
-import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle } from 'lucide-vue-next'
+import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle, Plus } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -45,7 +45,7 @@ const progress = (item) => Math.min(100, Math.round((item.generated_episode_coun
   <section class="view-stack">
     <div class="hero-row">
       <div><h2>生产项目</h2><p>追踪从小说拆解到成片发布的完整生产进度。</p></div>
-      <button class="button button-secondary" :disabled="loading" @click="loadProjects"><RefreshCw :size="16" :class="{ spin: loading }" />刷新数据</button>
+      <div class="hero-actions"><button class="button button-secondary" :disabled="loading" @click="loadProjects"><RefreshCw :size="16" :class="{ spin: loading }" />刷新数据</button><RouterLink to="/projects/new" class="button button-primary"><Plus :size="16" />新建项目</RouterLink></div>
     </div>
 
     <div class="metric-grid">

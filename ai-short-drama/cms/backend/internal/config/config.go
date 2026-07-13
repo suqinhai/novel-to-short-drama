@@ -16,8 +16,10 @@ type Config struct {
 	DatabaseURL    string
 	AllowedOrigins []string
 	N8NHealthURL   string
+	N8NProjectURL  string
 	MediaHealthURL string
 	ProbeTimeout   time.Duration
+	WebhookTimeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -40,6 +42,10 @@ func Load() (Config, error) {
 	if err != nil || timeoutSeconds <= 0 {
 		timeoutSeconds = 3
 	}
+	webhookTimeoutSeconds, err := strconv.Atoi(env("CMS_N8N_WEBHOOK_TIMEOUT_SECONDS", "900"))
+	if err != nil || webhookTimeoutSeconds <= 0 {
+		webhookTimeoutSeconds = 900
+	}
 
 	return Config{
 		Host:           env("CMS_HOST", "127.0.0.1"),
@@ -47,8 +53,10 @@ func Load() (Config, error) {
 		DatabaseURL:    databaseURL,
 		AllowedOrigins: splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		N8NHealthURL:   env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),
+		N8NProjectURL:  env("CMS_N8N_PROJECT_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/projects"),
 		MediaHealthURL: env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
 		ProbeTimeout:   time.Duration(timeoutSeconds) * time.Second,
+		WebhookTimeout: time.Duration(webhookTimeoutSeconds) * time.Second,
 	}, nil
 }
 

@@ -20,6 +20,9 @@ export const api = {
   getProject(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}`)
   },
+  createProject(payload) {
+    return request('/projects', { method: 'POST', body: JSON.stringify(payload) })
+  },
   getDiagnostics() {
     return request('/diagnostics')
   },
