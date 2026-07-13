@@ -17,15 +17,17 @@ import (
 
 	"short-drama-cms/backend/internal/aiconfig"
 	"short-drama-cms/backend/internal/config"
+	systemdiagnostics "short-drama-cms/backend/internal/diagnostics"
 	"short-drama-cms/backend/internal/store"
 )
 
 type Handler struct {
-	store           *store.Store
-	config          config.Config
-	client          *http.Client
-	webhookClient   *http.Client
-	aiConfigManager *aiconfig.Manager
+	store             *store.Store
+	config            config.Config
+	client            *http.Client
+	webhookClient     *http.Client
+	aiConfigManager   *aiconfig.Manager
+	diagnosticsRunner *systemdiagnostics.Runner
 }
 
 func New(store *store.Store, cfg config.Config) *Handler {
@@ -34,6 +36,10 @@ func New(store *store.Store, cfg config.Config) *Handler {
 		client:          &http.Client{Timeout: cfg.ProbeTimeout},
 		webhookClient:   &http.Client{Timeout: cfg.WebhookTimeout},
 		aiConfigManager: aiconfig.New(cfg.ManagedEnvFile, cfg.N8NContainer),
+		diagnosticsRunner: systemdiagnostics.New(
+			cfg.N8NContainer, cfg.PostgresContainer, cfg.MediaContainer,
+			cfg.MediaWorkerContainer, cfg.LiteLLMContainer, cfg.WorkflowDirectory,
+		),
 	}
 }
 
@@ -655,22 +661,70 @@ type componentStatus struct {
 }
 
 func (h *Handler) diagnostics(c *gin.Context) {
-	started := time.Now()
-	stats, dbErr := h.store.DatabaseStats(c.Request.Context())
-	database := componentStatus{Name: "PostgreSQL", Status: "healthy", Message: "short_drama 连接正常", LatencyMS: time.Since(started).Milliseconds()}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	result := h.diagnosticsRunner.Run(ctx)
+	stats, dbErr := h.store.DatabaseStats(ctx)
+	failedTasks, failedErr := h.store.RecentFailedWorkflowTasks(ctx, 20)
+
+	databaseCheck := gin.H{"status": "healthy", "message": "short_drama 数据库只读查询正常", "suggestion": ""}
 	if dbErr != nil {
-		database.Status = "unhealthy"
-		database.Message = "数据库查询失败"
-	}
-	components := []componentStatus{database, h.probe("n8n", h.config.N8NHealthURL), h.probe("媒体服务", h.config.MediaHealthURL)}
-	overall := "healthy"
-	for _, item := range components {
-		if item.Status != "healthy" {
-			overall = "degraded"
+		databaseCheck = gin.H{
+			"status": "unhealthy", "message": "short_drama 数据库查询失败",
+			"suggestion": "检查 CMS 的 DATABASE_URL、Postgres 容器状态和 drama schema 是否已完成初始化。",
 		}
 	}
+	failedCheck := gin.H{
+		"status": "healthy", "total": failedTasks.Total, "items": failedTasks.Items,
+		"message": "最近没有失败的 workflow_tasks。", "suggestion": "",
+	}
+	if failedErr != nil {
+		failedCheck = gin.H{
+			"status": "unhealthy", "total": 0, "items": []store.FailedWorkflowTask{},
+			"message": "失败任务读取失败。", "suggestion": "确认 drama.workflow_tasks 可读并检查数据库连接。",
+		}
+	} else if failedTasks.Total > 0 {
+		failedCheck["status"] = "degraded"
+		failedCheck["message"] = fmt.Sprintf("共有 %d 条失败任务，下方显示最近 %d 条。", failedTasks.Total, len(failedTasks.Items))
+		failedCheck["suggestion"] = "先按 error_code 和 workflow_stage 聚类排查；确认依赖恢复后，在项目详情对单个失败任务执行 Retry。反复失败时先查看对应 n8n execution。"
+	}
+
+	recommendations := make([]gin.H, 0)
+	healthyCount, degradedCount, unhealthyCount := 0, 0, 0
+	countStatus := func(title, status, suggestion string) {
+		switch status {
+		case "healthy":
+			healthyCount++
+		case "degraded":
+			degradedCount++
+		default:
+			unhealthyCount++
+		}
+		if status != "healthy" && suggestion != "" {
+			recommendations = append(recommendations, gin.H{"title": title, "severity": status, "description": suggestion})
+		}
+	}
+	for _, service := range result.Services {
+		countStatus(service.Name, service.Status, service.Suggestion)
+	}
+	countStatus("Workflow active 状态", result.WorkflowActivation.Status, result.WorkflowActivation.Suggestion)
+	countStatus("Postgres Credential", result.PostgresCredential.Status, result.PostgresCredential.Suggestion)
+	countStatus("executeCommand 节点", result.ExecuteCommand.Status, result.ExecuteCommand.Suggestion)
+	countStatus("short_drama 数据库", databaseCheck["status"].(string), databaseCheck["suggestion"].(string))
+	countStatus("失败的 workflow_tasks", failedCheck["status"].(string), failedCheck["suggestion"].(string))
+	overall := "healthy"
+	if unhealthyCount > 0 {
+		overall = "unhealthy"
+	} else if degradedCount > 0 {
+		overall = "degraded"
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"status": overall, "checked_at": time.Now(), "components": components, "database": stats,
+		"status": overall, "checked_at": time.Now(),
+		"summary":  gin.H{"healthy": healthyCount, "degraded": degradedCount, "unhealthy": unhealthyCount, "total": healthyCount + degradedCount + unhealthyCount},
+		"services": result.Services, "workflow_activation": result.WorkflowActivation,
+		"postgres_credential": result.PostgresCredential, "execute_command": result.ExecuteCommand,
+		"failed_tasks": failedCheck, "database_check": databaseCheck, "database": stats,
+		"recommendations": recommendations,
 	}})
 }
 

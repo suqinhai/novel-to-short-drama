@@ -80,6 +80,27 @@ type WorkflowTask struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
+type FailedWorkflowTask struct {
+	TaskID            string    `json:"task_id"`
+	ProjectID         string    `json:"project_id"`
+	NovelName         string    `json:"novel_name"`
+	WorkflowStage     string    `json:"workflow_stage"`
+	Action            string    `json:"action"`
+	EntityType        string    `json:"entity_type"`
+	EntityID          string    `json:"entity_id"`
+	GenerationVersion int       `json:"generation_version"`
+	RetryCount        int       `json:"retry_count"`
+	MaxRetries        int       `json:"max_retries"`
+	ErrorCode         *string   `json:"error_code,omitempty"`
+	ErrorMessage      *string   `json:"error_message,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type FailedWorkflowTaskResult struct {
+	Items []FailedWorkflowTask `json:"items"`
+	Total int                  `json:"total"`
+}
+
 type ReviewTask struct {
 	ReviewID            string     `json:"review_id"`
 	Stage               string     `json:"stage"`
@@ -354,6 +375,32 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+func (s *Store) RecentFailedWorkflowTasks(ctx context.Context, limit int) (FailedWorkflowTaskResult, error) {
+	result := FailedWorkflowTaskResult{Items: make([]FailedWorkflowTask, 0)}
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM drama.workflow_tasks WHERE status='failed'`).Scan(&result.Total); err != nil {
+		return FailedWorkflowTaskResult{}, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT w.task_id,w.project_id,p.novel_name,w.workflow_stage,w.action,
+		w.entity_type,w.entity_id,w.generation_version,w.retry_count,w.max_retries,w.error_code,
+		w.error_message,w.updated_at
+		FROM drama.workflow_tasks w JOIN drama.projects p ON p.project_id=w.project_id
+		WHERE w.status='failed' ORDER BY w.updated_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return FailedWorkflowTaskResult{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item FailedWorkflowTask
+		if err := rows.Scan(&item.TaskID, &item.ProjectID, &item.NovelName, &item.WorkflowStage,
+			&item.Action, &item.EntityType, &item.EntityID, &item.GenerationVersion, &item.RetryCount,
+			&item.MaxRetries, &item.ErrorCode, &item.ErrorMessage, &item.UpdatedAt); err != nil {
+			return FailedWorkflowTaskResult{}, err
+		}
+		result.Items = append(result.Items, item)
+	}
+	return result, rows.Err()
+}
 
 func (s *Store) ListProjects(ctx context.Context, query, status string, page, limit int) (ListResult, error) {
 	query = strings.TrimSpace(query)

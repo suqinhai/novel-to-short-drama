@@ -11,22 +11,27 @@ import (
 )
 
 type Config struct {
-	Host           string
-	Port           string
-	DatabaseURL    string
-	AllowedOrigins []string
-	N8NHealthURL   string
-	N8NProjectURL  string
-	N8NStage2URL   string
-	N8NStage3URL   string
-	N8NStage4URL   string
-	N8NStage5URL   string
-	MediaHealthURL string
-	MediaPublicURL string
-	N8NContainer   string
-	ManagedEnvFile string
-	ProbeTimeout   time.Duration
-	WebhookTimeout time.Duration
+	Host                 string
+	Port                 string
+	DatabaseURL          string
+	AllowedOrigins       []string
+	N8NHealthURL         string
+	N8NProjectURL        string
+	N8NStage2URL         string
+	N8NStage3URL         string
+	N8NStage4URL         string
+	N8NStage5URL         string
+	MediaHealthURL       string
+	MediaPublicURL       string
+	N8NContainer         string
+	PostgresContainer    string
+	MediaContainer       string
+	MediaWorkerContainer string
+	LiteLLMContainer     string
+	WorkflowDirectory    string
+	ManagedEnvFile       string
+	ProbeTimeout         time.Duration
+	WebhookTimeout       time.Duration
 }
 
 func Load() (Config, error) {
@@ -55,23 +60,47 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		Host:           env("CMS_HOST", "127.0.0.1"),
-		Port:           env("CMS_PORT", "8080"),
-		DatabaseURL:    databaseURL,
-		AllowedOrigins: splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
-		N8NHealthURL:   env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),
-		N8NProjectURL:  env("CMS_N8N_PROJECT_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/projects"),
-		N8NStage2URL:   env("CMS_N8N_STAGE2_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage2"),
-		N8NStage3URL:   env("CMS_N8N_STAGE3_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage3"),
-		N8NStage4URL:   env("CMS_N8N_STAGE4_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage4"),
-		N8NStage5URL:   env("CMS_N8N_STAGE5_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage5"),
-		MediaHealthURL: env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
-		MediaPublicURL: strings.TrimRight(env("MEDIA_PUBLIC_BASE_URL", "http://127.0.0.1:8088"), "/"),
-		N8NContainer:   env("CMS_N8N_CONTAINER_NAME", "ai-short-drama-n8n-1"),
-		ManagedEnvFile: managedEnvFilePath(),
-		ProbeTimeout:   time.Duration(timeoutSeconds) * time.Second,
-		WebhookTimeout: time.Duration(webhookTimeoutSeconds) * time.Second,
+		Host:                 env("CMS_HOST", "127.0.0.1"),
+		Port:                 env("CMS_PORT", "8080"),
+		DatabaseURL:          databaseURL,
+		AllowedOrigins:       splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
+		N8NHealthURL:         env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),
+		N8NProjectURL:        env("CMS_N8N_PROJECT_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/projects"),
+		N8NStage2URL:         env("CMS_N8N_STAGE2_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage2"),
+		N8NStage3URL:         env("CMS_N8N_STAGE3_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage3"),
+		N8NStage4URL:         env("CMS_N8N_STAGE4_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage4"),
+		N8NStage5URL:         env("CMS_N8N_STAGE5_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage5"),
+		MediaHealthURL:       env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
+		MediaPublicURL:       strings.TrimRight(env("MEDIA_PUBLIC_BASE_URL", "http://127.0.0.1:8088"), "/"),
+		N8NContainer:         env("CMS_N8N_CONTAINER_NAME", "ai-short-drama-n8n-1"),
+		PostgresContainer:    env("CMS_POSTGRES_CONTAINER_NAME", "ai-short-drama-postgres-1"),
+		MediaContainer:       env("CMS_MEDIA_CONTAINER_NAME", "ai-short-drama-media-1"),
+		MediaWorkerContainer: env("CMS_MEDIA_WORKER_CONTAINER_NAME", "ai-short-drama-media-worker-1"),
+		LiteLLMContainer:     env("CMS_LITELLM_CONTAINER_NAME", "ai-short-drama-litellm-1"),
+		WorkflowDirectory:    workflowDirectoryPath(),
+		ManagedEnvFile:       managedEnvFilePath(),
+		ProbeTimeout:         time.Duration(timeoutSeconds) * time.Second,
+		WebhookTimeout:       time.Duration(webhookTimeoutSeconds) * time.Second,
 	}, nil
+}
+
+func workflowDirectoryPath() string {
+	if explicit := strings.TrimSpace(os.Getenv("CMS_WORKFLOW_DIR")); explicit != "" {
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return absolute
+		}
+		return explicit
+	}
+	candidates := []string{filepath.Join("..", "..", "workflows"), "workflows"}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			if absolute, absErr := filepath.Abs(candidate); absErr == nil {
+				return absolute
+			}
+		}
+	}
+	absolute, _ := filepath.Abs(candidates[0])
+	return absolute
 }
 
 func managedEnvFilePath() string {
