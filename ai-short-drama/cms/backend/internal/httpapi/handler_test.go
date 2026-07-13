@@ -116,3 +116,29 @@ func TestProjectFlowRoute(t *testing.T) {
 		t.Fatal("unknown project stage should be rejected")
 	}
 }
+
+func TestResolvePublicMediaURL(t *testing.T) {
+	value := func(input string) *string { return &input }
+	tests := []struct {
+		name       string
+		candidate  *string
+		publicBase string
+		want       string
+	}{
+		{"container storage path", value("/data/storage/provider-responses/frame.svg"), "https://media.example.com", "https://media.example.com/provider-responses/frame.svg"},
+		{"windows storage path", value(`D:\storage\shot-videos\shot.mp4`), "https://media.example.com/", "https://media.example.com/shot-videos/shot.mp4"},
+		{"local media url", value("http://localhost:8088/dialogue-audio/line.wav"), "https://media.example.com", "https://media.example.com/dialogue-audio/line.wav"},
+		{"external provider url", value("https://provider.example.net/output.mp4"), "https://media.example.com", "https://provider.example.net/output.mp4"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := resolvePublicMediaURL(test.publicBase, test.candidate)
+			if got == nil || *got != test.want {
+				t.Fatalf("resolvePublicMediaURL() = %v, want %q", got, test.want)
+			}
+		})
+	}
+	if got := resolvePublicMediaURL("https://media.example.com", nil); got != nil {
+		t.Fatalf("nil media candidate should remain nil, got %q", *got)
+	}
+}

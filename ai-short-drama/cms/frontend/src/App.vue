@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck } from 'lucide-vue-next'
+import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck, Images } from 'lucide-vue-next'
 
 const route = useRoute()
 const sidebarOpen = ref(false)
@@ -9,6 +9,7 @@ const navigation = [
   { label: '项目列表', to: '/projects', icon: FolderKanban, matches: ['/projects'] },
   { label: '项目详情', to: '/projects', icon: Clapperboard, matches: ['/projects/'], detailOnly: true },
   { label: '审核中心', to: '/reviews', icon: ClipboardCheck, matches: ['/reviews'] },
+  { label: '媒体资产库', to: '/media-assets', icon: Images, matches: ['/media-assets'] },
   { label: '系统诊断', to: '/diagnostics', icon: Activity, matches: ['/diagnostics'] },
   { label: 'AI 配置', to: '/ai-config', icon: Bot, matches: ['/ai-config'] },
 ]

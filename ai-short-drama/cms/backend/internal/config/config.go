@@ -22,6 +22,7 @@ type Config struct {
 	N8NStage4URL   string
 	N8NStage5URL   string
 	MediaHealthURL string
+	MediaPublicURL string
 	ProbeTimeout   time.Duration
 	WebhookTimeout time.Duration
 }
@@ -63,6 +64,7 @@ func Load() (Config, error) {
 		N8NStage4URL:   env("CMS_N8N_STAGE4_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage4"),
 		N8NStage5URL:   env("CMS_N8N_STAGE5_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage5"),
 		MediaHealthURL: env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
+		MediaPublicURL: strings.TrimRight(env("MEDIA_PUBLIC_BASE_URL", "http://127.0.0.1:8088"), "/"),
 		ProbeTimeout:   time.Duration(timeoutSeconds) * time.Second,
 		WebhookTimeout: time.Duration(webhookTimeoutSeconds) * time.Second,
 	}, nil

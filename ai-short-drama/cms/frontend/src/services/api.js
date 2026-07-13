@@ -30,6 +30,10 @@ export const api = {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/reviews?${query}`)
   },
+  getMediaAssets(params = {}) {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
+    return request(`/media-assets?${query}`)
+  },
   decideReview(reviewId, payload) {
     return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
   },

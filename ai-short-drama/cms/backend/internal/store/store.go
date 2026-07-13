@@ -136,6 +136,56 @@ type ReviewListResult struct {
 	Facets  ReviewFacets       `json:"facets"`
 }
 
+type MediaAsset struct {
+	AssetID      string    `json:"asset_id"`
+	AssetType    string    `json:"asset_type"`
+	ProjectID    string    `json:"project_id"`
+	NovelName    string    `json:"novel_name"`
+	EpisodeID    *string   `json:"episode_id,omitempty"`
+	EntityType   string    `json:"entity_type"`
+	EntityID     string    `json:"entity_id"`
+	Subtype      string    `json:"subtype"`
+	MediaKind    string    `json:"media_kind"`
+	Status       string    `json:"status"`
+	ReviewStatus string    `json:"review_status"`
+	OriginalURL  *string   `json:"original_url,omitempty"`
+	StorageURL   *string   `json:"storage_url,omitempty"`
+	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	MediaURL     *string   `json:"media_url,omitempty"`
+	PreviewURL   *string   `json:"preview_url,omitempty"`
+	Width        *int      `json:"width,omitempty"`
+	Height       *int      `json:"height,omitempty"`
+	DurationMS   *int64    `json:"duration_ms,omitempty"`
+	Provider     *string   `json:"provider,omitempty"`
+	Model        *string   `json:"model,omitempty"`
+	IsCurrent    bool      `json:"is_current"`
+	ErrorMessage *string   `json:"error_message,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type MediaAssetSummary struct {
+	Total  int `json:"total"`
+	Images int `json:"images"`
+	Videos int `json:"videos"`
+	Audio  int `json:"audio"`
+}
+
+type MediaAssetFacets struct {
+	Projects []ReviewProjectOption `json:"projects"`
+	Types    []string              `json:"types"`
+	Statuses []string              `json:"statuses"`
+}
+
+type MediaAssetListResult struct {
+	Items   []MediaAsset      `json:"items"`
+	Total   int               `json:"total"`
+	Page    int               `json:"page"`
+	Limit   int               `json:"limit"`
+	Summary MediaAssetSummary `json:"summary"`
+	Facets  MediaAssetFacets  `json:"facets"`
+}
+
 type ReviewContext struct {
 	ReviewID     string          `json:"review_id"`
 	ProjectID    string          `json:"project_id"`
@@ -240,6 +290,43 @@ type ListResult struct {
 	Limit int       `json:"limit"`
 }
 
+const mediaAssetsCTE = `WITH media_assets AS (
+	SELECT 'generated_assets'::text asset_type,ga.asset_id,ga.project_id,p.novel_name,
+		NULL::text episode_id,ga.entity_type,ga.entity_id,ga.asset_type subtype,'image'::text media_kind,
+		ga.status,ga.review_status,ga.original_url,ga.storage_url,ga.thumbnail_url,ga.width,ga.height,
+		NULL::bigint duration_ms,ga.provider,ga.model,true is_current,ga.error_message,ga.created_at,ga.updated_at
+	FROM drama.generated_assets ga JOIN drama.projects p ON p.project_id=ga.project_id
+	UNION ALL
+	SELECT 'storyboard_images',si.storyboard_image_id,si.project_id,p.novel_name,
+		si.episode_id,'shot',si.shot_id,'storyboard_frame','image',si.status,si.review_status,
+		si.image_url,si.storage_url,NULL::text,NULL::int,NULL::int,NULL::bigint,si.provider,si.model,
+		si.is_current,NULL::text,si.created_at,si.updated_at
+	FROM drama.storyboard_images si JOIN drama.projects p ON p.project_id=si.project_id
+	UNION ALL
+	SELECT 'shot_videos',sv.shot_video_id,sv.project_id,p.novel_name,
+		sv.episode_id,'shot',sv.shot_id,'shot_video','video',sv.status,sv.review_status,
+		sv.original_url,sv.storage_url,sv.thumbnail_url,sv.width,sv.height,
+		CASE WHEN sv.actual_duration_seconds IS NULL THEN NULL ELSE round(sv.actual_duration_seconds*1000)::bigint END,
+		sv.provider,sv.model,sv.is_current,NULL::text,sv.created_at,sv.updated_at
+	FROM drama.shot_videos sv JOIN drama.projects p ON p.project_id=sv.project_id
+	UNION ALL
+	SELECT 'dialogue_audio',da.dialogue_audio_id,da.project_id,p.novel_name,
+		da.episode_id,'dialogue',da.dialogue_id,da.dialogue_type,'audio',da.status,da.review_status,
+		da.original_url,da.storage_url,da.waveform_url,NULL::int,NULL::int,da.actual_duration_ms::bigint,
+		da.provider,da.model,da.is_current,NULL::text,da.created_at,da.updated_at
+	FROM drama.dialogue_audio da JOIN drama.projects p ON p.project_id=da.project_id
+	UNION ALL
+	SELECT 'episode_masters',em.master_id,em.project_id,p.novel_name,
+		em.episode_id,'episode',em.episode_id,em.master_type,'video',em.status,
+		COALESCE(fr.review_status,'pending'),NULL::text,COALESCE(NULLIF(em.storage_url,''),em.local_path),em.thumbnail_url,
+		em.width,em.height,em.duration_ms, NULL::text,NULL::text,em.is_current,NULL::text,em.created_at,em.updated_at
+	FROM drama.episode_masters em JOIN drama.projects p ON p.project_id=em.project_id
+	LEFT JOIN LATERAL (
+		SELECT review_status FROM drama.final_reviews f WHERE f.master_id=em.master_id
+		ORDER BY f.reviewed_at DESC NULLS LAST,f.created_at DESC LIMIT 1
+	) fr ON true
+) `
+
 func New(ctx context.Context, databaseURL string) (*Store, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -308,6 +395,75 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
 		items = append(items, project)
 	}
 	return ListResult{Items: items, Total: total, Page: page, Limit: limit}, rows.Err()
+}
+
+func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, reviewStatus string, page, limit int) (MediaAssetListResult, error) {
+	projectID = strings.TrimSpace(projectID)
+	assetType = strings.TrimSpace(assetType)
+	reviewStatus = strings.TrimSpace(reviewStatus)
+	where := `WHERE ($1='' OR project_id=$1)
+		AND ($2='' OR asset_type=$2)
+		AND ($3='' OR review_status=$3)`
+
+	result := MediaAssetListResult{Page: page, Limit: limit}
+	if err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT COUNT(*),
+		COUNT(*) FILTER (WHERE media_kind='image'),
+		COUNT(*) FILTER (WHERE media_kind='video'),
+		COUNT(*) FILTER (WHERE media_kind='audio')
+		FROM media_assets `+where, projectID, assetType, reviewStatus).Scan(
+		&result.Total, &result.Summary.Images, &result.Summary.Videos, &result.Summary.Audio,
+	); err != nil {
+		return MediaAssetListResult{}, err
+	}
+	result.Summary.Total = result.Total
+
+	rows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
+		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
+		thumbnail_url,width,height,duration_ms,provider,model,is_current,error_message,created_at,updated_at
+		FROM media_assets `+where+`
+		ORDER BY updated_at DESC,asset_id
+		LIMIT $4 OFFSET $5`, projectID, assetType, reviewStatus, limit, (page-1)*limit)
+	if err != nil {
+		return MediaAssetListResult{}, err
+	}
+	defer rows.Close()
+	result.Items = make([]MediaAsset, 0)
+	for rows.Next() {
+		var item MediaAsset
+		if err := rows.Scan(&item.AssetID, &item.AssetType, &item.ProjectID, &item.NovelName,
+			&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
+			&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
+			&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model, &item.IsCurrent,
+			&item.ErrorMessage, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return MediaAssetListResult{}, err
+		}
+		result.Items = append(result.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return MediaAssetListResult{}, err
+	}
+
+	projectRows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT DISTINCT project_id,novel_name
+		FROM media_assets ORDER BY novel_name,project_id`)
+	if err != nil {
+		return MediaAssetListResult{}, err
+	}
+	result.Facets.Projects = make([]ReviewProjectOption, 0)
+	for projectRows.Next() {
+		var option ReviewProjectOption
+		if err := projectRows.Scan(&option.ProjectID, &option.NovelName); err != nil {
+			projectRows.Close()
+			return MediaAssetListResult{}, err
+		}
+		result.Facets.Projects = append(result.Facets.Projects, option)
+	}
+	projectRows.Close()
+	if err := projectRows.Err(); err != nil {
+		return MediaAssetListResult{}, err
+	}
+	result.Facets.Types = []string{"generated_assets", "storyboard_images", "shot_videos", "dialogue_audio", "episode_masters"}
+	result.Facets.Statuses = []string{"pending", "approved", "rejected", "regenerating"}
+	return result, nil
 }
 
 func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail, error) {

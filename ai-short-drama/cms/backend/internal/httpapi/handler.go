@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/projects/:projectID/actions", h.advanceProject)
 	api.GET("/reviews", h.listReviews)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
+	api.GET("/media-assets", h.listMediaAssets)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	return router
@@ -233,6 +235,87 @@ func (h *Handler) listReviews(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+var mediaAssetTypes = map[string]bool{
+	"generated_assets": true, "storyboard_images": true, "shot_videos": true,
+	"dialogue_audio": true, "episode_masters": true,
+}
+
+var mediaReviewStatuses = map[string]bool{
+	"pending": true, "approved": true, "rejected": true, "regenerating": true,
+}
+
+func (h *Handler) listMediaAssets(c *gin.Context) {
+	page := positiveInt(c.DefaultQuery("page", "1"), 1)
+	limit := positiveInt(c.DefaultQuery("limit", "60"), 60)
+	if limit > 200 {
+		limit = 200
+	}
+	assetType := strings.TrimSpace(c.Query("type"))
+	reviewStatus := strings.TrimSpace(c.Query("review_status"))
+	if assetType != "" && !mediaAssetTypes[assetType] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_TYPE", "不支持的媒体资产类型")
+		return
+	}
+	if reviewStatus != "" && !mediaReviewStatuses[reviewStatus] {
+		respondError(c, http.StatusBadRequest, "INVALID_REVIEW_STATUS", "不支持的审核状态")
+		return
+	}
+
+	result, err := h.store.ListMediaAssets(c.Request.Context(), c.Query("project_id"), assetType, reviewStatus, page, limit)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_LIST_FAILED", "媒体资产读取失败")
+		return
+	}
+	for index := range result.Items {
+		item := &result.Items[index]
+		item.MediaURL = resolvePublicMediaURL(h.config.MediaPublicURL, item.StorageURL, item.OriginalURL)
+		item.PreviewURL = resolvePublicMediaURL(h.config.MediaPublicURL, item.ThumbnailURL)
+		if item.MediaKind == "image" && item.PreviewURL == nil {
+			item.PreviewURL = item.MediaURL
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func resolvePublicMediaURL(publicBase string, candidates ...*string) *string {
+	publicBase = strings.TrimRight(strings.TrimSpace(publicBase), "/")
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		raw := strings.TrimSpace(*candidate)
+		if raw == "" {
+			continue
+		}
+		normalized := strings.ReplaceAll(raw, "\\", "/")
+		for _, marker := range []string{"/data/storage/", "/storage/"} {
+			if markerIndex := strings.Index(normalized, marker); markerIndex >= 0 && publicBase != "" {
+				resolved := publicBase + "/" + strings.TrimLeft(normalized[markerIndex+len(marker):], "/")
+				return &resolved
+			}
+		}
+
+		parsed, err := url.Parse(raw)
+		if err == nil && parsed.IsAbs() {
+			host := strings.ToLower(parsed.Hostname())
+			if publicBase != "" && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+				resolved := publicBase + "/" + strings.TrimLeft(parsed.EscapedPath(), "/")
+				if parsed.RawQuery != "" {
+					resolved += "?" + parsed.RawQuery
+				}
+				return &resolved
+			}
+			return &raw
+		}
+		if publicBase != "" {
+			resolved := publicBase + "/" + strings.TrimLeft(normalized, "/")
+			return &resolved
+		}
+		return &raw
+	}
+	return nil
 }
 
 type reviewDecisionRequest struct {
