@@ -7,16 +7,14 @@ const route = useRoute()
 const sidebarOpen = ref(false)
 const navigation = [
   { label: '项目列表', to: '/projects', icon: FolderKanban, matches: ['/projects'] },
-  { label: '项目详情', to: '/projects', icon: Clapperboard, matches: ['/projects/'], detailOnly: true },
   { label: '审核中心', to: '/reviews', icon: ClipboardCheck, matches: ['/reviews'] },
   { label: '媒体资产库', to: '/media-assets', icon: Images, matches: ['/media-assets'] },
-  { label: '系统诊断', to: '/diagnostics', icon: Activity, matches: ['/diagnostics'] },
   { label: 'AI 配置', to: '/ai-config', icon: Bot, matches: ['/ai-config'] },
+  { label: '系统诊断', to: '/diagnostics', icon: Activity, matches: ['/diagnostics'] },
 ]
 
 const isActive = (item) => {
-  if (item.detailOnly) return route.path.startsWith('/projects/')
-  if (item.to === '/projects') return route.path === '/projects'
+  if (item.to === '/projects') return route.path.startsWith('/projects')
   return item.matches.some((path) => route.path.startsWith(path))
 }
 const pageTitle = computed(() => route.meta.title || '控制台')
