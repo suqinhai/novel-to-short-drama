@@ -67,14 +67,14 @@ const progress = (item) => Math.min(100, Math.round((item.generated_episode_coun
       <EmptyState v-else-if="projects.length === 0" title="没有匹配的项目" description="请调整搜索条件，或通过现有 n8n 项目入口创建项目。" />
       <div v-else class="table-wrap">
         <table>
-          <thead><tr><th>项目</th><th>生产状态</th><th>当前阶段</th><th>集数进度</th><th>目标规格</th><th>更新时间</th><th></th></tr></thead>
+          <thead><tr><th>项目 / Project ID</th><th>状态</th><th>当前阶段</th><th>集数进度</th><th>错误信息</th><th>更新时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="item in projects" :key="item.project_id">
               <td><div class="project-cell"><div class="project-cover">{{ item.novel_name.slice(0, 1) }}</div><div><strong>{{ item.novel_name }}</strong><span>{{ item.project_id }}</span></div></div></td>
               <td><StatusBadge :status="item.status" /></td>
               <td><span class="stage-text">{{ item.current_stage.replaceAll('_', ' ') }}</span><small v-if="item.pending_reviews">{{ item.pending_reviews }} 项待审核</small></td>
               <td><div class="progress-label"><span>{{ item.generated_episode_count }} / {{ item.target_episode_count }} 集</span><b>{{ progress(item) }}%</b></div><div class="progress-track"><i :style="{ width: `${progress(item)}%` }"></i></div></td>
-              <td><strong class="spec">{{ item.aspect_ratio }}</strong><span class="muted-inline">{{ Math.round(item.episode_duration_seconds / 60) }} 分钟 · {{ item.target_platform }}</span></td>
+              <td><span v-if="item.error_message" class="error-message-cell" :title="item.error_message">{{ item.error_message }}</span><span v-else class="no-error">—</span></td>
               <td><span class="date-text">{{ formatTime(item.updated_at) }}</span></td>
               <td><RouterLink class="row-action" :to="`/projects/${item.project_id}`" aria-label="查看详情"><ArrowUpRight :size="17" /></RouterLink></td>
             </tr>

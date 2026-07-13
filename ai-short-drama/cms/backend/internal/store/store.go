@@ -52,7 +52,104 @@ type ProjectCounts struct {
 
 type ProjectDetail struct {
 	Project
-	Counts ProjectCounts `json:"counts"`
+	Counts        ProjectCounts   `json:"counts"`
+	WorkflowTasks []WorkflowTask  `json:"workflow_tasks"`
+	ReviewTasks   []ReviewTask    `json:"review_tasks"`
+	Novels        []Novel         `json:"novels"`
+	StoryBibles   []StoryBible    `json:"story_bibles"`
+	Episodes      []Episode       `json:"episodes"`
+	Scripts       []EpisodeScript `json:"scripts"`
+	Storyboards   []Storyboard    `json:"storyboards"`
+}
+
+type WorkflowTask struct {
+	TaskID            string     `json:"task_id"`
+	WorkflowStage     string     `json:"workflow_stage"`
+	Action            string     `json:"action"`
+	EntityType        string     `json:"entity_type"`
+	EntityID          string     `json:"entity_id"`
+	GenerationVersion int        `json:"generation_version"`
+	Status            string     `json:"status"`
+	RetryCount        int        `json:"retry_count"`
+	MaxRetries        int        `json:"max_retries"`
+	ErrorCode         *string    `json:"error_code,omitempty"`
+	ErrorMessage      *string    `json:"error_message,omitempty"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+type ReviewTask struct {
+	ReviewID            string     `json:"review_id"`
+	Stage               string     `json:"stage"`
+	EntityType          string     `json:"entity_type"`
+	EntityID            string     `json:"entity_id"`
+	ReviewStatus        string     `json:"review_status"`
+	ReviewComment       *string    `json:"review_comment,omitempty"`
+	RejectionReason     *string    `json:"rejection_reason,omitempty"`
+	RevisionInstruction *string    `json:"revision_instruction,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ReviewedAt          *time.Time `json:"reviewed_at,omitempty"`
+}
+
+type Novel struct {
+	NovelID      string    `json:"novel_id"`
+	Name         string    `json:"name"`
+	SourceType   string    `json:"source_type"`
+	Encoding     string    `json:"encoding"`
+	TotalChars   int       `json:"total_chars"`
+	ChapterCount int       `json:"chapter_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type StoryBible struct {
+	StoryBibleID   string    `json:"story_bible_id"`
+	Version        int       `json:"version"`
+	Status         string    `json:"status"`
+	CharacterCount int       `json:"character_count"`
+	LocationCount  int       `json:"location_count"`
+	KeyEventCount  int       `json:"key_event_count"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type Episode struct {
+	EpisodeID                string    `json:"episode_id"`
+	EpisodeNumber            int       `json:"episode_number"`
+	Title                    string    `json:"title"`
+	Logline                  string    `json:"logline"`
+	EstimatedDurationSeconds int       `json:"estimated_duration_seconds"`
+	Status                   string    `json:"status"`
+	Version                  int       `json:"version"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+type EpisodeScript struct {
+	ScriptID                 string    `json:"script_id"`
+	EpisodeID                string    `json:"episode_id"`
+	Version                  int       `json:"version"`
+	Title                    string    `json:"title"`
+	EstimatedDurationSeconds int       `json:"estimated_duration_seconds"`
+	DialogueCharCount        int       `json:"dialogue_char_count"`
+	SceneCount               int       `json:"scene_count"`
+	Status                   string    `json:"status"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+type Storyboard struct {
+	StoryboardID             string    `json:"storyboard_id"`
+	EpisodeID                string    `json:"episode_id"`
+	ScriptID                 string    `json:"script_id"`
+	Version                  int       `json:"version"`
+	TotalShots               int       `json:"total_shots"`
+	EstimatedDurationSeconds int       `json:"estimated_duration_seconds"`
+	Status                   string    `json:"status"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type ListResult struct {
@@ -71,6 +168,7 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 	config.MinConns = 1
 	config.MaxConnLifetime = 30 * time.Minute
 	config.ConnConfig.RuntimeParams["search_path"] = "drama,public"
+	config.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -169,7 +267,176 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail
 		&detail.Counts.Shots, &detail.Counts.GeneratedImages, &detail.Counts.GeneratedVideos,
 		&detail.Counts.CompletedTasks, &detail.Counts.PendingReviews,
 	)
-	return detail, err
+	if err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.WorkflowTasks, err = s.workflowTasks(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.ReviewTasks, err = s.reviewTasks(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.Novels, err = s.novels(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.StoryBibles, err = s.storyBibles(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.Episodes, err = s.episodes(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.Scripts, err = s.scripts(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.Storyboards, err = s.storyboards(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	return detail, nil
+}
+
+func (s *Store) workflowTasks(ctx context.Context, projectID string) ([]WorkflowTask, error) {
+	rows, err := s.pool.Query(ctx, `SELECT task_id, workflow_stage, action, entity_type, entity_id,
+		generation_version, status, retry_count, max_retries, error_code, error_message,
+		started_at, completed_at, created_at, updated_at
+		FROM drama.workflow_tasks WHERE project_id = $1 ORDER BY updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]WorkflowTask, 0)
+	for rows.Next() {
+		var item WorkflowTask
+		if err := rows.Scan(&item.TaskID, &item.WorkflowStage, &item.Action, &item.EntityType, &item.EntityID,
+			&item.GenerationVersion, &item.Status, &item.RetryCount, &item.MaxRetries, &item.ErrorCode,
+			&item.ErrorMessage, &item.StartedAt, &item.CompletedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) reviewTasks(ctx context.Context, projectID string) ([]ReviewTask, error) {
+	rows, err := s.pool.Query(ctx, `SELECT review_id, stage, entity_type, entity_id, review_status,
+		review_comment, rejection_reason, revision_instruction, created_at, reviewed_at
+		FROM drama.review_tasks WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ReviewTask, 0)
+	for rows.Next() {
+		var item ReviewTask
+		if err := rows.Scan(&item.ReviewID, &item.Stage, &item.EntityType, &item.EntityID, &item.ReviewStatus,
+			&item.ReviewComment, &item.RejectionReason, &item.RevisionInstruction, &item.CreatedAt, &item.ReviewedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) novels(ctx context.Context, projectID string) ([]Novel, error) {
+	rows, err := s.pool.Query(ctx, `SELECT novel_id, name, source_type, encoding, total_chars, chapter_count, created_at, updated_at
+		FROM drama.novels WHERE project_id = $1 ORDER BY updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Novel, 0)
+	for rows.Next() {
+		var item Novel
+		if err := rows.Scan(&item.NovelID, &item.Name, &item.SourceType, &item.Encoding, &item.TotalChars,
+			&item.ChapterCount, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) storyBibles(ctx context.Context, projectID string) ([]StoryBible, error) {
+	rows, err := s.pool.Query(ctx, `SELECT story_bible_id, version, status,
+		COALESCE(jsonb_array_length(characters), 0), COALESCE(jsonb_array_length(locations), 0),
+		COALESCE(jsonb_array_length(key_events), 0), created_at, updated_at
+		FROM drama.story_bibles WHERE project_id = $1 ORDER BY version DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]StoryBible, 0)
+	for rows.Next() {
+		var item StoryBible
+		if err := rows.Scan(&item.StoryBibleID, &item.Version, &item.Status, &item.CharacterCount,
+			&item.LocationCount, &item.KeyEventCount, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) episodes(ctx context.Context, projectID string) ([]Episode, error) {
+	rows, err := s.pool.Query(ctx, `SELECT episode_id, episode_number, title, logline,
+		estimated_duration_seconds, status, version, created_at, updated_at
+		FROM drama.episode_outlines WHERE project_id = $1 ORDER BY episode_number, version DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Episode, 0)
+	for rows.Next() {
+		var item Episode
+		if err := rows.Scan(&item.EpisodeID, &item.EpisodeNumber, &item.Title, &item.Logline,
+			&item.EstimatedDurationSeconds, &item.Status, &item.Version, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) scripts(ctx context.Context, projectID string) ([]EpisodeScript, error) {
+	rows, err := s.pool.Query(ctx, `SELECT s.script_id, s.episode_id, s.version, s.title,
+		s.estimated_duration_seconds, s.dialogue_char_count,
+		(SELECT COUNT(*) FROM drama.script_scenes sc WHERE sc.script_id = s.script_id),
+		s.status, s.created_at, s.updated_at
+		FROM drama.episode_scripts s WHERE s.project_id = $1 ORDER BY s.updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]EpisodeScript, 0)
+	for rows.Next() {
+		var item EpisodeScript
+		if err := rows.Scan(&item.ScriptID, &item.EpisodeID, &item.Version, &item.Title,
+			&item.EstimatedDurationSeconds, &item.DialogueCharCount, &item.SceneCount,
+			&item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) storyboards(ctx context.Context, projectID string) ([]Storyboard, error) {
+	rows, err := s.pool.Query(ctx, `SELECT storyboard_id, episode_id, script_id, version, total_shots,
+		estimated_duration_seconds, status, created_at, updated_at
+		FROM drama.storyboards WHERE project_id = $1 ORDER BY updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Storyboard, 0)
+	for rows.Next() {
+		var item Storyboard
+		if err := rows.Scan(&item.StoryboardID, &item.EpisodeID, &item.ScriptID, &item.Version,
+			&item.TotalShots, &item.EstimatedDurationSeconds, &item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 type DatabaseStats struct {

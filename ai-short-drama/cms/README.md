@@ -28,4 +28,6 @@ npm run dev
 - 系统诊断
 - AI 配置（密钥不下发、配置只读）
 
-CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。
+项目详情会读取 `workflow_tasks`、`review_tasks`、`novels`、`story_bibles`、`episode_outlines`、`episode_scripts` 和 `storyboards`。
+
+CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。后端只注册 `GET` 接口，并为 PostgreSQL 连接设置 `default_transaction_read_only=on`，从接口层和数据库会话层同时阻止写入。

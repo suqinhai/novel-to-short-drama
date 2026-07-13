@@ -1,14 +1,16 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3 } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
+import DetailDataTable from '../components/DetailDataTable.vue'
 
 const route = useRoute()
 const project = ref(null)
 const loading = ref(true)
 const error = ref('')
+const activeDataTab = ref('workflow_tasks')
 const stages = [
   ['novel_import', '小说导入'], ['chunk_analysis', '文本拆解'], ['story_bible', '故事圣经'],
   ['episode_planning', '分集策划'], ['episode_script', '单集剧本'], ['storyboard', '分镜设计'],
@@ -21,6 +23,51 @@ const currentIndex = computed(() => {
   if (project.value.status === 'completed') return stages.length
   return exact
 })
+
+const formatShortDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
+const formatDuration = (value) => `${value || 0} 秒`
+const productionTabs = computed(() => {
+  if (!project.value) return []
+  return [
+    { key: 'workflow_tasks', label: '工作流任务', icon: GitBranch, items: project.value.workflow_tasks, columns: [
+      { key: 'task_id', label: 'Task ID', type: 'id' }, { key: 'workflow_stage', label: '阶段' }, { key: 'action', label: '动作' },
+      { key: 'status', label: '状态', type: 'status' }, { key: 'generation_version', label: '版本', format: (v) => `v${v}` },
+      { key: 'error_message', label: '错误信息', class: 'wide-cell' }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+    { key: 'review_tasks', label: '审核任务', icon: ClipboardCheck, items: project.value.review_tasks, columns: [
+      { key: 'review_id', label: 'Review ID', type: 'id' }, { key: 'stage', label: '阶段' }, { key: 'entity_type', label: '对象类型' },
+      { key: 'review_status', label: '审核状态', type: 'status' }, { key: 'review_comment', label: '审核意见', class: 'wide-cell' },
+      { key: 'created_at', label: '创建时间', format: formatShortDate }, { key: 'reviewed_at', label: '审核时间', format: formatShortDate },
+    ] },
+    { key: 'novels', label: '小说', icon: FileText, items: project.value.novels, columns: [
+      { key: 'novel_id', label: 'Novel ID', type: 'id' }, { key: 'name', label: '小说名' }, { key: 'source_type', label: '来源' },
+      { key: 'encoding', label: '编码' }, { key: 'total_chars', label: '总字数', format: (v) => Number(v).toLocaleString('zh-CN') },
+      { key: 'chapter_count', label: '章节数' }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+    { key: 'story_bibles', label: '故事圣经', icon: BookMarked, items: project.value.story_bibles, columns: [
+      { key: 'story_bible_id', label: 'Story Bible ID', type: 'id' }, { key: 'version', label: '版本', format: (v) => `v${v}` },
+      { key: 'status', label: '状态', type: 'status' }, { key: 'character_count', label: '角色' }, { key: 'location_count', label: '地点' },
+      { key: 'key_event_count', label: '关键事件' }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+    { key: 'episodes', label: '分集', icon: ListVideo, items: project.value.episodes, columns: [
+      { key: 'episode_number', label: '集数', format: (v) => `第 ${v} 集` }, { key: 'episode_id', label: 'Episode ID', type: 'id' },
+      { key: 'title', label: '标题' }, { key: 'status', label: '状态', type: 'status' }, { key: 'version', label: '版本', format: (v) => `v${v}` },
+      { key: 'estimated_duration_seconds', label: '预计时长', format: formatDuration }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+    { key: 'scripts', label: '剧本', icon: ScrollText, items: project.value.scripts, columns: [
+      { key: 'script_id', label: 'Script ID', type: 'id' }, { key: 'episode_id', label: 'Episode ID', type: 'id' }, { key: 'title', label: '标题' },
+      { key: 'status', label: '状态', type: 'status' }, { key: 'version', label: '版本', format: (v) => `v${v}` }, { key: 'scene_count', label: '场景数' },
+      { key: 'dialogue_char_count', label: '对白字数' }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+    { key: 'storyboards', label: '分镜', icon: PanelsTopLeft, items: project.value.storyboards, columns: [
+      { key: 'storyboard_id', label: 'Storyboard ID', type: 'id' }, { key: 'episode_id', label: 'Episode ID', type: 'id' },
+      { key: 'status', label: '状态', type: 'status' }, { key: 'version', label: '版本', format: (v) => `v${v}` },
+      { key: 'total_shots', label: '镜头数' }, { key: 'estimated_duration_seconds', label: '预计时长', format: formatDuration },
+      { key: 'updated_at', label: '更新时间', format: formatShortDate },
+    ] },
+  ]
+})
+const activeTab = computed(() => productionTabs.value.find((tab) => tab.key === activeDataTab.value) || productionTabs.value[0])
 
 async function load() {
   loading.value = true
@@ -77,6 +124,19 @@ const formatDate = (value) => new Intl.DateTimeFormat('zh-CN', { dateStyle: 'lon
           <article class="attention-card"><span>待办概览</span><strong>{{ project.counts.pending_reviews }}</strong><p>项内容等待人工审核</p><div><b>{{ project.counts.completed_tasks }}</b> 个工作流任务已完成</div></article>
         </aside>
       </div>
+
+      <article class="panel production-data-panel">
+        <div class="production-data-head">
+          <div><span>READ-ONLY DATABASE VIEW</span><h3>项目生产数据</h3></div>
+          <p>数据直接读取自 <code>drama</code> schema</p>
+        </div>
+        <div class="data-tabs">
+          <button v-for="tab in productionTabs" :key="tab.key" :class="{ active: activeDataTab === tab.key }" @click="activeDataTab = tab.key">
+            <component :is="tab.icon" :size="15" />{{ tab.label }}<i>{{ tab.items?.length || 0 }}</i>
+          </button>
+        </div>
+        <DetailDataTable v-if="activeTab" :items="activeTab.items || []" :columns="activeTab.columns" />
+      </article>
     </template>
   </section>
 </template>
