@@ -93,6 +93,61 @@ type ReviewTask struct {
 	ReviewedAt          *time.Time `json:"reviewed_at,omitempty"`
 }
 
+type ReviewCenterItem struct {
+	ReviewID            string          `json:"review_id"`
+	ProjectID           string          `json:"project_id"`
+	NovelName           string          `json:"novel_name"`
+	Stage               string          `json:"stage"`
+	EntityType          string          `json:"entity_type"`
+	EntityID            string          `json:"entity_id"`
+	ReviewStatus        string          `json:"review_status"`
+	ReviewComment       *string         `json:"review_comment,omitempty"`
+	RejectionReason     *string         `json:"rejection_reason,omitempty"`
+	RevisionInstruction *string         `json:"revision_instruction,omitempty"`
+	Metadata            json.RawMessage `json:"metadata"`
+	CreatedAt           time.Time       `json:"created_at"`
+	ReviewedAt          *time.Time      `json:"reviewed_at,omitempty"`
+}
+
+type ReviewProjectOption struct {
+	ProjectID string `json:"project_id"`
+	NovelName string `json:"novel_name"`
+}
+
+type ReviewSummary struct {
+	Total    int `json:"total"`
+	Pending  int `json:"pending"`
+	Approved int `json:"approved"`
+	Rejected int `json:"rejected"`
+}
+
+type ReviewFacets struct {
+	Projects []ReviewProjectOption `json:"projects"`
+	Stages   []string              `json:"stages"`
+	Statuses []string              `json:"statuses"`
+}
+
+type ReviewListResult struct {
+	Items   []ReviewCenterItem `json:"items"`
+	Total   int                `json:"total"`
+	Page    int                `json:"page"`
+	Limit   int                `json:"limit"`
+	Summary ReviewSummary      `json:"summary"`
+	Facets  ReviewFacets       `json:"facets"`
+}
+
+type ReviewContext struct {
+	ReviewID     string          `json:"review_id"`
+	ProjectID    string          `json:"project_id"`
+	Stage        string          `json:"stage"`
+	EntityType   string          `json:"entity_type"`
+	EntityID     string          `json:"entity_id"`
+	ReviewStatus string          `json:"review_status"`
+	Metadata     json.RawMessage `json:"metadata"`
+	EpisodeID    *string         `json:"episode_id,omitempty"`
+	TestMode     bool            `json:"test_mode"`
+}
+
 type Novel struct {
 	NovelID      string    `json:"novel_id"`
 	Name         string    `json:"name"`
@@ -334,6 +389,111 @@ func (s *Store) reviewTasks(ctx context.Context, projectID string) ([]ReviewTask
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string, page, limit int) (ReviewListResult, error) {
+	projectID = strings.TrimSpace(projectID)
+	stage = strings.TrimSpace(stage)
+	status = strings.TrimSpace(status)
+	where := `WHERE ($1 = '' OR r.project_id = $1)
+		AND ($2 = '' OR r.stage = $2)
+		AND ($3 = '' OR r.review_status = $3)`
+
+	var result ReviewListResult
+	result.Page, result.Limit = page, limit
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM drama.review_tasks r `+where, projectID, stage, status).Scan(&result.Total); err != nil {
+		return ReviewListResult{}, err
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*),
+		COUNT(*) FILTER (WHERE r.review_status='pending'),
+		COUNT(*) FILTER (WHERE r.review_status='approved'),
+		COUNT(*) FILTER (WHERE r.review_status='rejected')
+		FROM drama.review_tasks r `+where, projectID, stage, status).Scan(
+		&result.Summary.Total, &result.Summary.Pending, &result.Summary.Approved, &result.Summary.Rejected,
+	); err != nil {
+		return ReviewListResult{}, err
+	}
+
+	rows, err := s.pool.Query(ctx, `SELECT r.review_id, r.project_id, p.novel_name, r.stage, r.entity_type,
+		r.entity_id, r.review_status, r.review_comment, r.rejection_reason, r.revision_instruction,
+		COALESCE(r.metadata, '{}'::jsonb), r.created_at, r.reviewed_at
+		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id `+where+`
+		ORDER BY CASE r.review_status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at DESC
+		LIMIT $4 OFFSET $5`, projectID, stage, status, limit, (page-1)*limit)
+	if err != nil {
+		return ReviewListResult{}, err
+	}
+	defer rows.Close()
+	result.Items = make([]ReviewCenterItem, 0)
+	for rows.Next() {
+		var item ReviewCenterItem
+		if err := rows.Scan(&item.ReviewID, &item.ProjectID, &item.NovelName, &item.Stage, &item.EntityType,
+			&item.EntityID, &item.ReviewStatus, &item.ReviewComment, &item.RejectionReason,
+			&item.RevisionInstruction, &item.Metadata, &item.CreatedAt, &item.ReviewedAt); err != nil {
+			return ReviewListResult{}, err
+		}
+		result.Items = append(result.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return ReviewListResult{}, err
+	}
+
+	projectRows, err := s.pool.Query(ctx, `SELECT DISTINCT p.project_id,p.novel_name
+		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id ORDER BY p.novel_name,p.project_id`)
+	if err != nil {
+		return ReviewListResult{}, err
+	}
+	result.Facets.Projects = make([]ReviewProjectOption, 0)
+	for projectRows.Next() {
+		var option ReviewProjectOption
+		if err := projectRows.Scan(&option.ProjectID, &option.NovelName); err != nil {
+			projectRows.Close()
+			return ReviewListResult{}, err
+		}
+		result.Facets.Projects = append(result.Facets.Projects, option)
+	}
+	projectRows.Close()
+	if err := projectRows.Err(); err != nil {
+		return ReviewListResult{}, err
+	}
+
+	stageRows, err := s.pool.Query(ctx, `SELECT DISTINCT stage FROM drama.review_tasks ORDER BY stage`)
+	if err != nil {
+		return ReviewListResult{}, err
+	}
+	result.Facets.Stages = make([]string, 0)
+	for stageRows.Next() {
+		var item string
+		if err := stageRows.Scan(&item); err != nil {
+			stageRows.Close()
+			return ReviewListResult{}, err
+		}
+		result.Facets.Stages = append(result.Facets.Stages, item)
+	}
+	stageRows.Close()
+	if err := stageRows.Err(); err != nil {
+		return ReviewListResult{}, err
+	}
+	result.Facets.Statuses = []string{"pending", "approved", "rejected", "cancelled"}
+	return result, nil
+}
+
+func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewContext, error) {
+	var review ReviewContext
+	err := s.pool.QueryRow(ctx, `SELECT r.review_id,r.project_id,r.stage,r.entity_type,r.entity_id,
+		r.review_status,COALESCE(r.metadata,'{}'::jsonb),p.test_mode,
+		COALESCE(NULLIF(r.metadata->>'episode_id',''),
+			(SELECT episode_id FROM drama.shot_videos WHERE shot_video_id=r.entity_id),
+			(SELECT episode_id FROM drama.dialogue_audio WHERE dialogue_audio_id=r.entity_id),
+			(SELECT episode_id FROM drama.final_reviews WHERE final_review_id=r.entity_id),
+			(SELECT episode_id FROM drama.publication_metadata WHERE metadata_id=r.entity_id))
+		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id
+		WHERE r.review_id=$1`, reviewID).Scan(&review.ReviewID, &review.ProjectID, &review.Stage,
+		&review.EntityType, &review.EntityID, &review.ReviewStatus, &review.Metadata, &review.TestMode, &review.EpisodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReviewContext{}, ErrNotFound
+	}
+	return review, err
 }
 
 func (s *Store) novels(ctx context.Context, projectID string) ([]Novel, error) {

@@ -43,9 +43,207 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/projects", h.listProjects)
 	api.POST("/projects", h.createProject)
 	api.GET("/projects/:projectID", h.getProject)
+	api.GET("/reviews", h.listReviews)
+	api.POST("/reviews/:reviewID/decision", h.decideReview)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	return router
+}
+
+func (h *Handler) listReviews(c *gin.Context) {
+	page := positiveInt(c.DefaultQuery("page", "1"), 1)
+	limit := positiveInt(c.DefaultQuery("limit", "50"), 50)
+	if limit > 200 {
+		limit = 200
+	}
+	result, err := h.store.ListReviews(c.Request.Context(), c.Query("project_id"), c.Query("stage"), c.Query("status"), page, limit)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "REVIEW_LIST_FAILED", "审核任务读取失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+type reviewDecisionRequest struct {
+	ReviewStatus        string `json:"review_status"`
+	ReviewComment       string `json:"review_comment"`
+	RejectionReason     string `json:"rejection_reason"`
+	RevisionInstruction string `json:"revision_instruction"`
+	PromptAdjustment    string `json:"prompt_adjustment"`
+	SelectedAsPrimary   bool   `json:"selected_as_primary"`
+	LockAfterApproval   bool   `json:"lock_after_approval"`
+}
+
+func (h *Handler) decideReview(c *gin.Context) {
+	var input reviewDecisionRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "审核请求格式无效")
+		return
+	}
+	input.ReviewStatus = strings.TrimSpace(input.ReviewStatus)
+	input.ReviewComment = strings.TrimSpace(input.ReviewComment)
+	input.RejectionReason = strings.TrimSpace(input.RejectionReason)
+	input.RevisionInstruction = strings.TrimSpace(input.RevisionInstruction)
+	input.PromptAdjustment = strings.TrimSpace(input.PromptAdjustment)
+	if input.ReviewStatus != "approved" && input.ReviewStatus != "rejected" {
+		respondError(c, http.StatusBadRequest, "INVALID_REVIEW_STATUS", "审核状态只允许 approved 或 rejected")
+		return
+	}
+	if input.ReviewStatus == "rejected" && input.RejectionReason == "" {
+		respondError(c, http.StatusBadRequest, "REJECTION_REASON_REQUIRED", "拒绝审核时必须填写拒绝原因")
+		return
+	}
+
+	review, err := h.store.GetReviewContext(c.Request.Context(), c.Param("reviewID"))
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "REVIEW_NOT_FOUND", "审核任务不存在")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "REVIEW_CONTEXT_FAILED", "审核上下文读取失败")
+		return
+	}
+	webhookStage, requestedStage, webhookURL, ok := h.reviewWebhook(review.Stage, review.EntityType)
+	if !ok {
+		respondError(c, http.StatusUnprocessableEntity, "UNSUPPORTED_REVIEW_STAGE", "当前审核类型没有可用的 n8n webhook 路由")
+		return
+	}
+	if webhookStage == "stage5" && (review.EpisodeID == nil || *review.EpisodeID == "") {
+		respondError(c, http.StatusUnprocessableEntity, "EPISODE_ID_REQUIRED", "stage5 审核缺少 episode_id")
+		return
+	}
+
+	metadata := map[string]any{}
+	_ = json.Unmarshal(review.Metadata, &metadata)
+	payload := map[string]any{
+		"project_id": review.ProjectID, "action": "review", "review_id": review.ReviewID,
+		"review_status": input.ReviewStatus, "review_comment": input.ReviewComment,
+		"reviewer_comment": input.ReviewComment, "rejection_reason": input.RejectionReason,
+		"revision_instruction": input.RevisionInstruction, "prompt_adjustment": input.PromptAdjustment,
+		"selected_as_primary": input.SelectedAsPrimary, "lock_after_approval": input.LockAfterApproval,
+		"entity_type": review.EntityType, "entity_id": review.EntityID, "test_mode": review.TestMode,
+		"generation_version": metadataInt(metadata, "generation_version", metadataInt(metadata, "version", 1)),
+	}
+	if requestedStage != "" {
+		payload["stage"] = requestedStage
+	}
+	if review.EpisodeID != nil && *review.EpisodeID != "" {
+		payload["episode_id"] = *review.EpisodeID
+	}
+	for _, key := range []string{"shot_id", "dialogue_id", "master_id", "qc_report_id", "metadata_id"} {
+		if value, exists := metadata[key]; exists {
+			payload[key] = value
+		}
+	}
+
+	n8nResponse, statusCode, err := h.postJSON(c.Request.Context(), webhookURL, payload)
+	if err != nil {
+		respondError(c, http.StatusBadGateway, "N8N_UNAVAILABLE", "n8n 审核 webhook 调用失败："+err.Error())
+		return
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "N8N_REVIEW_FAILED", "message": fmt.Sprintf("n8n %s webhook 返回 HTTP %d", webhookStage, statusCode), "response": n8nResponse,
+		}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"review_id": review.ReviewID, "project_id": review.ProjectID, "webhook_stage": webhookStage,
+		"n8n_response": n8nResponse,
+	}})
+}
+
+func (h *Handler) reviewWebhook(stage, entityType string) (webhookStage, requestedStage, webhookURL string, ok bool) {
+	webhookStage, requestedStage, ok = reviewWebhookRoute(stage, entityType)
+	if !ok {
+		return "", "", "", false
+	}
+	switch webhookStage {
+	case "stage2":
+		webhookURL = h.config.N8NStage2URL
+	case "stage3":
+		webhookURL = h.config.N8NStage3URL
+	case "stage4":
+		webhookURL = h.config.N8NStage4URL
+	case "stage5":
+		webhookURL = h.config.N8NStage5URL
+	}
+	return webhookStage, requestedStage, webhookURL, webhookURL != ""
+}
+
+func reviewWebhookRoute(stage, entityType string) (webhookStage, requestedStage string, ok bool) {
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	entityType = strings.ToLower(strings.TrimSpace(entityType))
+	switch {
+	case matchesAny(stage, entityType, "story_bible", "season_outline", "season", "episode_script", "storyboard"):
+		return "stage2", "", true
+	case matchesAny(stage, entityType, "visual_asset", "generated_asset", "storyboard_image"):
+		return "stage3", "", true
+	case matchesAny(stage, entityType, "shot_video", "video"):
+		return "stage4", "image_to_video", true
+	case matchesAny(stage, entityType, "dialogue_audio", "voice_profile", "audio"):
+		return "stage4", "voice_audio", true
+	case matchesAny(stage, entityType, "final", "final_review", "publication", "publication_metadata"):
+		return "stage5", "", true
+	default:
+		return "", "", false
+	}
+}
+
+func matchesAny(stage, entityType string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if stage == candidate || entityType == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataInt(metadata map[string]any, key string, fallback int) int {
+	value, ok := metadata[key]
+	if !ok {
+		return fallback
+	}
+	switch number := value.(type) {
+	case float64:
+		if number > 0 {
+			return int(number)
+		}
+	case string:
+		if parsed, err := strconv.Atoi(number); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func (h *Handler) postJSON(ctx context.Context, url string, payload any) (any, int, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := h.webhookClient.Do(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
+	if err != nil {
+		return nil, response.StatusCode, err
+	}
+	var decoded any
+	if len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, &decoded); err != nil {
+			decoded = string(responseBody)
+		}
+	}
+	return decoded, response.StatusCode, nil
 }
 
 type createProjectRequest struct {

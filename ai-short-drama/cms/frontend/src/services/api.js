@@ -23,6 +23,13 @@ export const api = {
   createProject(payload) {
     return request('/projects', { method: 'POST', body: JSON.stringify(payload) })
   },
+  getReviews(params = {}) {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
+    return request(`/reviews?${query}`)
+  },
+  decideReview(reviewId, payload) {
+    return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
+  },
   getDiagnostics() {
     return request('/diagnostics')
   },

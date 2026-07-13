@@ -4,6 +4,7 @@ import ProjectDetailView from '../views/ProjectDetailView.vue'
 import NewProjectView from '../views/NewProjectView.vue'
 import DiagnosticsView from '../views/DiagnosticsView.vue'
 import AIConfigView from '../views/AIConfigView.vue'
+import ReviewsView from '../views/ReviewsView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -12,6 +13,7 @@ const router = createRouter({
     { path: '/projects', name: 'projects', component: ProjectsView, meta: { title: '项目列表', eyebrow: 'PRODUCTION OVERVIEW' } },
     { path: '/projects/new', name: 'project-new', component: NewProjectView, meta: { title: '新建项目', eyebrow: 'CREATE PRODUCTION' } },
     { path: '/projects/:projectId', name: 'project-detail', component: ProjectDetailView, meta: { title: '项目详情', eyebrow: 'PROJECT WORKSPACE' } },
+    { path: '/reviews', name: 'reviews', component: ReviewsView, meta: { title: '审核中心', eyebrow: 'REVIEW OPERATIONS' } },
     { path: '/diagnostics', name: 'diagnostics', component: DiagnosticsView, meta: { title: '系统诊断', eyebrow: 'SYSTEM HEALTH' } },
     { path: '/ai-config', name: 'ai-config', component: AIConfigView, meta: { title: 'AI 配置', eyebrow: 'MODEL & PROVIDER' } },
   ],

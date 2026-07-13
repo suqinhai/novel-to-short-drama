@@ -67,3 +67,27 @@ func TestCreateProjectRejectsMissingNovelText(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestReviewWebhookRoute(t *testing.T) {
+	tests := []struct {
+		stage, entity, wantWebhook, wantTarget string
+	}{
+		{"story_bible", "story_bible", "stage2", ""},
+		{"season_outline", "season", "stage2", ""},
+		{"visual_asset", "generated_asset", "stage3", ""},
+		{"storyboard_image", "storyboard_image", "stage3", ""},
+		{"shot_video", "shot_video", "stage4", "image_to_video"},
+		{"dialogue_audio", "dialogue_audio", "stage4", "voice_audio"},
+		{"final_review", "final_review", "stage5", ""},
+		{"publication_metadata", "publication_metadata", "stage5", ""},
+	}
+	for _, test := range tests {
+		webhook, target, ok := reviewWebhookRoute(test.stage, test.entity)
+		if !ok || webhook != test.wantWebhook || target != test.wantTarget {
+			t.Fatalf("route %s/%s = %s/%s/%v, want %s/%s", test.stage, test.entity, webhook, target, ok, test.wantWebhook, test.wantTarget)
+		}
+	}
+	if _, _, ok := reviewWebhookRoute("unknown", "unknown"); ok {
+		t.Fatal("unknown review route should be rejected")
+	}
+}

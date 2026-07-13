@@ -17,6 +17,10 @@ type Config struct {
 	AllowedOrigins []string
 	N8NHealthURL   string
 	N8NProjectURL  string
+	N8NStage2URL   string
+	N8NStage3URL   string
+	N8NStage4URL   string
+	N8NStage5URL   string
 	MediaHealthURL string
 	ProbeTimeout   time.Duration
 	WebhookTimeout time.Duration
@@ -54,6 +58,10 @@ func Load() (Config, error) {
 		AllowedOrigins: splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		N8NHealthURL:   env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),
 		N8NProjectURL:  env("CMS_N8N_PROJECT_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/projects"),
+		N8NStage2URL:   env("CMS_N8N_STAGE2_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage2"),
+		N8NStage3URL:   env("CMS_N8N_STAGE3_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage3"),
+		N8NStage4URL:   env("CMS_N8N_STAGE4_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage4"),
+		N8NStage5URL:   env("CMS_N8N_STAGE5_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage5"),
 		MediaHealthURL: env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
 		ProbeTimeout:   time.Duration(timeoutSeconds) * time.Second,
 		WebhookTimeout: time.Duration(webhookTimeoutSeconds) * time.Second,

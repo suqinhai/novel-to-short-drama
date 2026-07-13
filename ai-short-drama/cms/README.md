@@ -26,6 +26,7 @@ npm run dev
 - 项目列表
 - 新建项目（粘贴 `novel_text`，通过 n8n webhook 创建）
 - 项目详情
+- 审核中心（项目/阶段/状态筛选，通过 n8n 执行 approved/rejected）
 - 系统诊断
 - AI 配置（密钥不下发、配置只读）
 
@@ -33,4 +34,9 @@ npm run dev
 
 CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。所有数据库访问均为查询，并为 PostgreSQL 连接设置 `default_transaction_read_only=on`，从数据库会话层阻止 CMS 直接写入。
 
-新建项目是唯一的业务提交接口：`POST /api/v1/projects` 只负责校验请求并转发到 `CMS_N8N_PROJECT_WEBHOOK_URL`，CMS 自身不执行数据库写入。n8n 返回后，前端跳转到项目详情并显示该次 webhook 结果。
+业务提交接口只负责校验和转发，CMS 自身不执行数据库写入：
+
+- `POST /api/v1/projects` 转发到 `CMS_N8N_PROJECT_WEBHOOK_URL`。
+- `POST /api/v1/reviews/:reviewID/decision` 根据审核类型转发到 stage2、stage3、stage4 或 stage5 webhook。
+
+n8n 返回后，前端展示该次 webhook 结果。审核中心通过 `GET /api/v1/reviews` 只读查询 `drama.review_tasks`。
