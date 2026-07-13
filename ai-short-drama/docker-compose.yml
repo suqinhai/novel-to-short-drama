@@ -94,7 +94,7 @@ services:
       TZ: ${TZ:-Asia/Taipei}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs,path
-      LITELLM_BASE_URL: http://litellm:4000
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
       TEXT_ANALYSIS_MODEL: ${TEXT_ANALYSIS_MODEL:-glm-5.2}
       STORY_BIBLE_MODEL: ${STORY_BIBLE_MODEL:-glm-5.2}

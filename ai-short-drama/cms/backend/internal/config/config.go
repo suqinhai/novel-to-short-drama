@@ -23,6 +23,8 @@ type Config struct {
 	N8NStage5URL   string
 	MediaHealthURL string
 	MediaPublicURL string
+	N8NContainer   string
+	ManagedEnvFile string
 	ProbeTimeout   time.Duration
 	WebhookTimeout time.Duration
 }
@@ -65,9 +67,33 @@ func Load() (Config, error) {
 		N8NStage5URL:   env("CMS_N8N_STAGE5_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/stage5"),
 		MediaHealthURL: env("CMS_MEDIA_HEALTH_URL", "http://127.0.0.1:8088/healthz"),
 		MediaPublicURL: strings.TrimRight(env("MEDIA_PUBLIC_BASE_URL", "http://127.0.0.1:8088"), "/"),
+		N8NContainer:   env("CMS_N8N_CONTAINER_NAME", "ai-short-drama-n8n-1"),
+		ManagedEnvFile: managedEnvFilePath(),
 		ProbeTimeout:   time.Duration(timeoutSeconds) * time.Second,
 		WebhookTimeout: time.Duration(webhookTimeoutSeconds) * time.Second,
 	}, nil
+}
+
+func managedEnvFilePath() string {
+	if explicit := strings.TrimSpace(os.Getenv("CMS_MANAGED_ENV_FILE")); explicit != "" {
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return absolute
+		}
+		return explicit
+	}
+	candidates := []string{
+		filepath.Join("..", "config", "cms-managed.env"),
+		filepath.Join("cms", "config", "cms-managed.env"),
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(filepath.Dir(candidate)); err == nil && info.IsDir() {
+			if absolute, absErr := filepath.Abs(candidate); absErr == nil {
+				return absolute
+			}
+		}
+	}
+	absolute, _ := filepath.Abs(candidates[0])
+	return absolute
 }
 
 func loadEnvironmentFiles() {

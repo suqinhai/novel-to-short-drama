@@ -1,4 +1,5 @@
 .env
+cms/config/cms-managed.env
 *.dump
 *.backup
 storage/novels/*

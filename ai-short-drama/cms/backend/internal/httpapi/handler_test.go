@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -140,5 +141,25 @@ func TestResolvePublicMediaURL(t *testing.T) {
 	}
 	if got := resolvePublicMediaURL("https://media.example.com", nil); got != nil {
 		t.Fatalf("nil media candidate should remain nil, got %q", *got)
+	}
+}
+
+func TestUpdateAIConfigDoesNotEchoSecrets(t *testing.T) {
+	handler := New(nil, config.Config{ManagedEnvFile: filepath.Join(t.TempDir(), "cms-managed.env")})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/ai-config", strings.NewReader(`{
+		"values":{"MOCK_MODE":"false","IMAGE_MODEL":"image-model-v2"},
+		"secrets":{"IMAGE_API_KEY":"test-secret-must-not-be-returned"}
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.Router().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "test-secret-must-not-be-returned") {
+		t.Fatal("AI configuration response exposed a secret")
+	}
+	if !strings.Contains(recorder.Body.String(), `"saved_secret_count":1`) || !strings.Contains(recorder.Body.String(), `"restart_required":true`) {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
 	}
 }

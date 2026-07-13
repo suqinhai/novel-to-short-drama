@@ -43,4 +43,7 @@ export const api = {
   getAIConfig() {
     return request('/ai-config')
   },
+  updateAIConfig(payload) {
+    return request('/ai-config', { method: 'PUT', body: JSON.stringify(payload) })
+  },
 }

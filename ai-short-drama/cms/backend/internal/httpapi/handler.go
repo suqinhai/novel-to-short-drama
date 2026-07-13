@@ -9,29 +9,31 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"short-drama-cms/backend/internal/aiconfig"
 	"short-drama-cms/backend/internal/config"
 	"short-drama-cms/backend/internal/store"
 )
 
 type Handler struct {
-	store         *store.Store
-	config        config.Config
-	client        *http.Client
-	webhookClient *http.Client
+	store           *store.Store
+	config          config.Config
+	client          *http.Client
+	webhookClient   *http.Client
+	aiConfigManager *aiconfig.Manager
 }
 
 func New(store *store.Store, cfg config.Config) *Handler {
 	return &Handler{
 		store: store, config: cfg,
-		client:        &http.Client{Timeout: cfg.ProbeTimeout},
-		webhookClient: &http.Client{Timeout: cfg.WebhookTimeout},
+		client:          &http.Client{Timeout: cfg.ProbeTimeout},
+		webhookClient:   &http.Client{Timeout: cfg.WebhookTimeout},
+		aiConfigManager: aiconfig.New(cfg.ManagedEnvFile, cfg.N8NContainer),
 	}
 }
 
@@ -50,6 +52,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/media-assets", h.listMediaAssets)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
+	api.PUT("/ai-config", h.updateAIConfig)
 	return router
 }
 
@@ -692,28 +695,43 @@ func (h *Handler) probe(name, url string) componentStatus {
 }
 
 func (h *Handler) aiConfig(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"text_models": []gin.H{
-			{"stage": "小说分析", "env_key": "TEXT_ANALYSIS_MODEL", "model": env("TEXT_ANALYSIS_MODEL", "未配置")},
-			{"stage": "故事圣经", "env_key": "STORY_BIBLE_MODEL", "model": env("STORY_BIBLE_MODEL", "未配置")},
-			{"stage": "分集策划", "env_key": "EPISODE_PLANNING_MODEL", "model": env("EPISODE_PLANNING_MODEL", "未配置")},
-			{"stage": "剧本创作", "env_key": "SCRIPT_WRITING_MODEL", "model": env("SCRIPT_WRITING_MODEL", "未配置")},
-			{"stage": "分镜设计", "env_key": "STORYBOARD_MODEL", "model": env("STORYBOARD_MODEL", "未配置")},
-		},
-		"providers": []gin.H{
-			provider("图片生成", "IMAGE_PROVIDER", "IMAGE_MODEL", "IMAGE_API_KEY", "mock"),
-			provider("视频生成", "VIDEO_PROVIDER", "VIDEO_MODEL", "VIDEO_API_KEY", "mock"),
-			provider("语音合成", "TTS_PROVIDER", "TTS_MODEL", "TTS_API_KEY", "mock"),
-			provider("发布渠道", "PUBLISH_PROVIDER", "PUBLISH_PLATFORM", "PUBLISH_API_KEY", "manual_package"),
-		},
-		"source": "环境变量（只读）", "secrets_exposed": false,
-	}})
+	snapshot, err := h.aiConfigManager.Snapshot(c.Request.Context())
+	if err != nil {
+		respondError(c, http.StatusServiceUnavailable, "N8N_CONFIG_UNAVAILABLE", "n8n 容器配置读取失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": snapshot})
 }
 
-func provider(name, providerKey, modelKey, secretKey, fallback string) gin.H {
-	secret := strings.TrimSpace(os.Getenv(secretKey))
-	configured := secret != "" && !strings.Contains(strings.ToLower(secret), "replace_me") && !strings.Contains(strings.ToLower(secret), "change_me")
-	return gin.H{"name": name, "provider": env(providerKey, fallback), "model": env(modelKey, "未配置"), "credential_configured": configured}
+type aiConfigUpdateRequest struct {
+	Values  map[string]string `json:"values"`
+	Secrets map[string]string `json:"secrets"`
+}
+
+func (h *Handler) updateAIConfig(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 128<<10)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	var input aiConfigUpdateRequest
+	if err := decoder.Decode(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_AI_CONFIG", "AI 配置请求格式无效")
+		return
+	}
+	result, err := h.aiConfigManager.Save(input.Values, input.Secrets)
+	if errors.Is(err, aiconfig.ErrInvalidInput) {
+		respondError(c, http.StatusBadRequest, "INVALID_AI_CONFIG", "配置包含未知字段或无效值")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "AI_CONFIG_SAVE_FAILED", "CMS 托管配置文件写入失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"saved_field_count": result.SavedFieldCount, "saved_secret_count": result.SavedSecretCount,
+		"restart_required": true,
+		"restart_command":  "$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }; docker compose --env-file $baseEnv --env-file cms/config/cms-managed.env up -d --force-recreate --no-deps n8n",
+		"message":          "配置已安全写入；重建 n8n 容器后生效。",
+	}})
 }
 
 func (h *Handler) cors() gin.HandlerFunc {
@@ -727,7 +745,7 @@ func (h *Handler) cors() gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -743,13 +761,6 @@ func positiveInt(raw string, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-func env(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func respondError(c *gin.Context, status int, code, message string) {
