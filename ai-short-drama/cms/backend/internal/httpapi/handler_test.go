@@ -91,3 +91,28 @@ func TestReviewWebhookRoute(t *testing.T) {
 		t.Fatal("unknown review route should be rejected")
 	}
 }
+
+func TestProjectFlowRoute(t *testing.T) {
+	tests := []struct {
+		stage, wantWebhook, wantTarget string
+	}{
+		{"novel_import", "projects", ""},
+		{"story_bible_approved", "stage2", ""},
+		{"storyboard_approved", "stage3", ""},
+		{"visual_asset_review", "stage3", ""},
+		{"storyboard_images_approved", "stage4", ""},
+		{"video_processing", "stage4", "image_to_video"},
+		{"audio_processing", "stage4", "voice_audio"},
+		{"stage_4_completed", "stage5", ""},
+		{"waiting_final_review", "stage5", ""},
+	}
+	for _, test := range tests {
+		webhook, target, ok := projectFlowRoute(test.stage)
+		if !ok || webhook != test.wantWebhook || target != test.wantTarget {
+			t.Fatalf("route %s = %s/%s/%v, want %s/%s", test.stage, webhook, target, ok, test.wantWebhook, test.wantTarget)
+		}
+	}
+	if _, _, ok := projectFlowRoute("unknown_stage"); ok {
+		t.Fatal("unknown project stage should be rejected")
+	}
+}

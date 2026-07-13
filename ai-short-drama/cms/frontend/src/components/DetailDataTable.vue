@@ -6,6 +6,7 @@ defineProps({
   items: { type: Array, default: () => [] },
   columns: { type: Array, default: () => [] },
 })
+const emit = defineEmits(['row-action'])
 
 function cellValue(item, column) {
   const value = item[column.key]
@@ -22,7 +23,8 @@ function cellValue(item, column) {
       <tbody>
         <tr v-for="(item, index) in items" :key="item.task_id || item.review_id || item.novel_id || item.story_bible_id || item.episode_id || item.script_id || item.storyboard_id || index">
           <td v-for="column in columns" :key="column.key" :class="column.class">
-            <StatusBadge v-if="column.type === 'status'" :status="item[column.key]" />
+            <button v-if="column.type === 'action' && (!column.visible || column.visible(item))" class="detail-row-action" :disabled="column.disabled?.(item)" @click="emit('row-action', { item, column })">{{ column.labelFor?.(item) || '操作' }}</button>
+            <StatusBadge v-else-if="column.type === 'status'" :status="item[column.key]" />
             <code v-else-if="column.type === 'id'" :title="String(cellValue(item, column))">{{ cellValue(item, column) }}</code>
             <span v-else :title="String(cellValue(item, column))">{{ cellValue(item, column) }}</span>
           </td>

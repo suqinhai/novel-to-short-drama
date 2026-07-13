@@ -43,11 +43,182 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/projects", h.listProjects)
 	api.POST("/projects", h.createProject)
 	api.GET("/projects/:projectID", h.getProject)
+	api.POST("/projects/:projectID/actions", h.advanceProject)
 	api.GET("/reviews", h.listReviews)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	return router
+}
+
+type projectActionRequest struct {
+	Action string `json:"action"`
+	TaskID string `json:"task_id"`
+}
+
+func (h *Handler) advanceProject(c *gin.Context) {
+	var input projectActionRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "流程操作请求格式无效")
+		return
+	}
+	input.Action = strings.ToLower(strings.TrimSpace(input.Action))
+	input.TaskID = strings.TrimSpace(input.TaskID)
+	if input.Action != "resume" && input.Action != "retry" {
+		respondError(c, http.StatusBadRequest, "INVALID_ACTION", "流程操作只允许 resume 或 retry")
+		return
+	}
+	if input.Action == "retry" && input.TaskID == "" {
+		respondError(c, http.StatusBadRequest, "TASK_ID_REQUIRED", "重试失败任务时必须提供 task_id")
+		return
+	}
+
+	actionContext, err := h.store.GetFlowActionContext(c.Request.Context(), c.Param("projectID"), input.TaskID)
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "PROJECT_OR_TASK_NOT_FOUND", "项目或任务不存在")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "FLOW_CONTEXT_FAILED", "流程上下文读取失败")
+		return
+	}
+	if input.Action == "retry" && (actionContext.Task == nil || actionContext.Task.Status != "failed") {
+		respondError(c, http.StatusConflict, "TASK_NOT_FAILED", "只有失败任务可以重试")
+		return
+	}
+
+	webhookStage, requestedStage, webhookURL, ok := h.projectFlowWebhook(actionContext.CurrentStage)
+	if !ok {
+		respondError(c, http.StatusUnprocessableEntity, "UNSUPPORTED_PROJECT_STAGE", "当前项目阶段不支持 Resume/Retry")
+		return
+	}
+	if webhookStage == "stage5" && (actionContext.EpisodeID == nil || *actionContext.EpisodeID == "") {
+		respondError(c, http.StatusUnprocessableEntity, "EPISODE_ID_REQUIRED", "stage5 流程推进缺少 episode_id")
+		return
+	}
+
+	payload := map[string]any{}
+	mergeJSONMap(payload, actionContext.OriginalInput)
+	if actionContext.Task != nil {
+		mergeJSONMap(payload, actionContext.Task.InputData)
+	}
+	payload["project_id"] = actionContext.ProjectID
+	payload["action"] = input.Action
+	payload["test_mode"] = actionContext.TestMode
+	if actionContext.Task != nil {
+		payload["task_id"] = actionContext.Task.TaskID
+		payload["entity_type"] = actionContext.Task.EntityType
+		payload["entity_id"] = actionContext.Task.EntityID
+		payload["generation_version"] = actionContext.Task.GenerationVersion
+	}
+	if _, exists := payload["generation_version"]; !exists {
+		payload["generation_version"] = 1
+	}
+	if actionContext.EpisodeID != nil && *actionContext.EpisodeID != "" {
+		payload["episode_id"] = *actionContext.EpisodeID
+	}
+	if requestedStage != "" {
+		payload["stage"] = requestedStage
+	} else if webhookStage != "projects" {
+		delete(payload, "stage")
+	}
+	if webhookStage == "projects" {
+		originalPayload, _ := payload["payload"].(map[string]any)
+		if originalPayload == nil {
+			originalPayload = map[string]any{}
+		}
+		originalPayload["novel_name"] = actionContext.NovelName
+		originalPayload["target_episode_count"] = actionContext.TargetEpisodeCount
+		originalPayload["episode_duration_seconds"] = actionContext.EpisodeDurationSeconds
+		originalPayload["visual_style"] = actionContext.VisualStyle
+		originalPayload["aspect_ratio"] = actionContext.AspectRatio
+		originalPayload["target_platform"] = actionContext.TargetPlatform
+		originalPayload["test_mode"] = actionContext.TestMode
+		payload["payload"] = originalPayload
+	}
+
+	n8nResponse, statusCode, err := h.postJSON(c.Request.Context(), webhookURL, payload)
+	if err != nil {
+		respondError(c, http.StatusBadGateway, "N8N_UNAVAILABLE", "n8n 流程 webhook 调用失败："+err.Error())
+		return
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "N8N_FLOW_ACTION_FAILED", "message": fmt.Sprintf("n8n %s webhook 返回 HTTP %d", webhookStage, statusCode), "response": n8nResponse,
+		}})
+		return
+	}
+	latestProject, err := h.store.GetProject(c.Request.Context(), actionContext.ProjectID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "PROJECT_REFRESH_FAILED", "n8n 已返回，但最新项目状态读取失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"action": input.Action, "task_id": input.TaskID, "webhook_stage": webhookStage,
+		"n8n_response": n8nResponse, "project": latestProject,
+	}})
+}
+
+func (h *Handler) projectFlowWebhook(currentStage string) (webhookStage, requestedStage, webhookURL string, ok bool) {
+	webhookStage, requestedStage, ok = projectFlowRoute(currentStage)
+	if !ok {
+		return "", "", "", false
+	}
+	switch webhookStage {
+	case "projects":
+		webhookURL = h.config.N8NProjectURL
+	case "stage2":
+		webhookURL = h.config.N8NStage2URL
+	case "stage3":
+		webhookURL = h.config.N8NStage3URL
+	case "stage4":
+		webhookURL = h.config.N8NStage4URL
+	case "stage5":
+		webhookURL = h.config.N8NStage5URL
+	}
+	return webhookStage, requestedStage, webhookURL, webhookURL != ""
+}
+
+func projectFlowRoute(currentStage string) (webhookStage, requestedStage string, ok bool) {
+	stage := strings.ToLower(strings.TrimSpace(currentStage))
+	switch stage {
+	case "created", "novel_import", "chunk_analysis", "story_bible":
+		return "projects", "", true
+	case "review", "story_bible_approved", "season_outline_review", "season_outline_approved",
+		"episode_script_review", "episode_script_approved", "storyboard_review":
+		return "stage2", "", true
+	case "storyboard_approved", "stage_2_completed", "visual_assets", "visual_asset_review",
+		"visual_assets_locked", "storyboard_images", "storyboard_image_review", "stage_3_failed":
+		return "stage3", "", true
+	case "storyboard_images_approved", "stage_3_completed", "stage_4_failed":
+		return "stage4", "", true
+	case "image_to_video", "video_tasks_submitted", "video_processing", "shot_videos_generated",
+		"shot_video_review", "shot_videos_approved":
+		return "stage4", "image_to_video", true
+	case "voice_audio", "voice_profiles_created", "voice_profile_review", "voice_profiles_locked",
+		"tts_processing", "dialogue_audio_generated", "audio_processing", "audio_review", "audio_ready", "audio_plan_completed":
+		return "stage4", "voice_audio", true
+	case "stage_4_completed", "preparing_timeline", "edit_timeline_ready", "rendering", "preview_rendered",
+		"final_rendered", "waiting_qc", "qc_completed", "waiting_final_review", "final_review_approved",
+		"preparing_publication", "waiting_publication_metadata_review", "publication_metadata_approved",
+		"publication_submitted", "stage_5_completed", "stage_5_failed", "published":
+		return "stage5", "", true
+	default:
+		return "", "", false
+	}
+}
+
+func mergeJSONMap(target map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var source map[string]any
+	if json.Unmarshal(raw, &source) != nil {
+		return
+	}
+	for key, value := range source {
+		target[key] = value
+	}
 }
 
 func (h *Handler) listReviews(c *gin.Context) {

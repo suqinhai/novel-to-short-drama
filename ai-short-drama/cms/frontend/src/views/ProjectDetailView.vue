@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
@@ -12,6 +12,10 @@ const loading = ref(true)
 const error = ref('')
 const activeDataTab = ref('workflow_tasks')
 const createResult = ref(null)
+const flowResult = ref(null)
+const flowError = ref('')
+const flowLoading = ref(false)
+const retryingTaskId = ref('')
 const stages = [
   ['novel_import', '小说导入'], ['chunk_analysis', '文本拆解'], ['story_bible', '故事圣经'],
   ['episode_planning', '分集策划'], ['episode_script', '单集剧本'], ['storyboard', '分镜设计'],
@@ -34,6 +38,7 @@ const productionTabs = computed(() => {
       { key: 'task_id', label: 'Task ID', type: 'id' }, { key: 'workflow_stage', label: '阶段' }, { key: 'action', label: '动作' },
       { key: 'status', label: '状态', type: 'status' }, { key: 'generation_version', label: '版本', format: (v) => `v${v}` },
       { key: 'error_message', label: '错误信息', class: 'wide-cell' }, { key: 'updated_at', label: '更新时间', format: formatShortDate },
+      { key: 'retry_action', label: '操作', type: 'action', visible: (item) => item.status === 'failed', disabled: (item) => flowLoading.value || retryingTaskId.value === item.task_id, labelFor: (item) => retryingTaskId.value === item.task_id ? '重试中…' : 'Retry' },
     ] },
     { key: 'review_tasks', label: '审核任务', icon: ClipboardCheck, items: project.value.review_tasks, columns: [
       { key: 'review_id', label: 'Review ID', type: 'id' }, { key: 'stage', label: '阶段' }, { key: 'entity_type', label: '对象类型' },
@@ -70,6 +75,28 @@ const productionTabs = computed(() => {
 })
 const activeTab = computed(() => productionTabs.value.find((tab) => tab.key === activeDataTab.value) || productionTabs.value[0])
 
+async function runFlowAction(action, taskId = '') {
+  if (flowLoading.value) return
+  flowLoading.value = true
+  retryingTaskId.value = taskId
+  flowError.value = ''
+  flowResult.value = null
+  try {
+    const response = await api.runProjectAction(project.value.project_id, { action, task_id: taskId || undefined })
+    flowResult.value = response
+    project.value = response.project
+  } catch (err) {
+    flowError.value = err.message
+  } finally {
+    flowLoading.value = false
+    retryingTaskId.value = ''
+  }
+}
+
+function handleTableAction({ item, column }) {
+  if (column.key === 'retry_action' && item.status === 'failed') runFlowAction('retry', item.task_id)
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -99,12 +126,18 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
     <template v-else-if="project">
       <div class="detail-hero">
         <div class="detail-title"><div class="project-cover large">{{ project.novel_name.slice(0, 1) }}</div><div><div class="title-line"><h2>{{ project.novel_name }}</h2><StatusBadge :status="project.status" /></div><p>{{ project.project_id }} · 创建于 {{ formatDate(project.created_at) }}</p></div></div>
-        <button class="button button-secondary" @click="load"><RefreshCw :size="16" />刷新详情</button>
+        <div class="detail-actions"><button class="button button-secondary" :disabled="flowLoading" @click="load"><RefreshCw :size="16" />刷新详情</button><button class="button button-primary" :disabled="flowLoading" @click="runFlowAction('resume')"><LoaderCircle v-if="flowLoading && !retryingTaskId" :size="16" class="spin" /><Play v-else :size="16" />{{ flowLoading && !retryingTaskId ? '推进中…' : 'Resume 流程' }}</button></div>
       </div>
 
       <article v-if="createResult" class="creation-result-card">
         <div class="creation-result-head"><div class="creation-success-icon"><CircleCheckBig :size="21" /></div><div><span>N8N WEBHOOK RESPONSE</span><h3>项目已提交，返回结果如下</h3></div><Webhook :size="20" /></div>
         <pre>{{ createResultText }}</pre>
+      </article>
+
+      <div v-if="flowError" class="error-banner large flow-error"><AlertCircle :size="17" />{{ flowError }}<button @click="flowError = ''">关闭</button></div>
+      <article v-if="flowResult" class="flow-result-card" :class="{ failed: flowResult.n8n_response?.success === false }">
+        <div class="flow-result-head"><div class="flow-result-icon"><RotateCcw :size="20" /></div><div><span>N8N {{ flowResult.webhook_stage }} · {{ flowResult.action }}</span><h3>流程调用已返回</h3></div><div class="latest-state"><span>最新状态</span><strong>{{ flowResult.project.current_stage.replaceAll('_', ' ') }}</strong><StatusBadge :status="flowResult.project.status" /></div></div>
+        <pre>{{ JSON.stringify(flowResult.n8n_response, null, 2) }}</pre>
       </article>
 
       <div class="detail-grid">
@@ -150,7 +183,7 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
             <component :is="tab.icon" :size="15" />{{ tab.label }}<i>{{ tab.items?.length || 0 }}</i>
           </button>
         </div>
-        <DetailDataTable v-if="activeTab" :items="activeTab.items || []" :columns="activeTab.columns" />
+        <DetailDataTable v-if="activeTab" :items="activeTab.items || []" :columns="activeTab.columns" @row-action="handleTableAction" />
       </article>
     </template>
   </section>

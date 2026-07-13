@@ -23,6 +23,9 @@ export const api = {
   createProject(payload) {
     return request('/projects', { method: 'POST', body: JSON.stringify(payload) })
   },
+  runProjectAction(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/actions`, { method: 'POST', body: JSON.stringify(payload) })
+  },
   getReviews(params = {}) {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/reviews?${query}`)

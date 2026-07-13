@@ -148,6 +148,32 @@ type ReviewContext struct {
 	TestMode     bool            `json:"test_mode"`
 }
 
+type FailedTaskContext struct {
+	TaskID            string          `json:"task_id"`
+	WorkflowStage     string          `json:"workflow_stage"`
+	EntityType        string          `json:"entity_type"`
+	EntityID          string          `json:"entity_id"`
+	GenerationVersion int             `json:"generation_version"`
+	Status            string          `json:"status"`
+	InputData         json.RawMessage `json:"input_data"`
+}
+
+type FlowActionContext struct {
+	ProjectID              string             `json:"project_id"`
+	NovelName              string             `json:"novel_name"`
+	TargetEpisodeCount     int                `json:"target_episode_count"`
+	EpisodeDurationSeconds int                `json:"episode_duration_seconds"`
+	VisualStyle            string             `json:"visual_style"`
+	AspectRatio            string             `json:"aspect_ratio"`
+	TargetPlatform         string             `json:"target_platform"`
+	CurrentStage           string             `json:"current_stage"`
+	Status                 string             `json:"status"`
+	TestMode               bool               `json:"test_mode"`
+	EpisodeID              *string            `json:"episode_id,omitempty"`
+	OriginalInput          json.RawMessage    `json:"original_input"`
+	Task                   *FailedTaskContext `json:"task,omitempty"`
+}
+
 type Novel struct {
 	NovelID      string    `json:"novel_id"`
 	Name         string    `json:"name"`
@@ -494,6 +520,45 @@ func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewCo
 		return ReviewContext{}, ErrNotFound
 	}
 	return review, err
+}
+
+func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID string) (FlowActionContext, error) {
+	var action FlowActionContext
+	err := s.pool.QueryRow(ctx, `SELECT p.project_id,p.novel_name,p.target_episode_count,
+		p.episode_duration_seconds,p.visual_style,p.aspect_ratio,p.target_platform,p.current_stage,
+		p.status,p.test_mode,
+		(SELECT episode_id FROM drama.episode_outlines e WHERE e.project_id=p.project_id
+		 ORDER BY CASE e.status WHEN 'approved' THEN 0 ELSE 1 END,e.episode_number,e.version DESC LIMIT 1),
+		COALESCE((SELECT input_data FROM drama.workflow_tasks w WHERE w.project_id=p.project_id
+		 AND w.workflow_stage='orchestrator' ORDER BY w.created_at DESC LIMIT 1),'{}'::jsonb)
+		FROM drama.projects p WHERE p.project_id=$1`, projectID).Scan(
+		&action.ProjectID, &action.NovelName, &action.TargetEpisodeCount, &action.EpisodeDurationSeconds,
+		&action.VisualStyle, &action.AspectRatio, &action.TargetPlatform, &action.CurrentStage,
+		&action.Status, &action.TestMode, &action.EpisodeID, &action.OriginalInput,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FlowActionContext{}, ErrNotFound
+	}
+	if err != nil {
+		return FlowActionContext{}, err
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return action, nil
+	}
+	var task FailedTaskContext
+	err = s.pool.QueryRow(ctx, `SELECT task_id,workflow_stage,entity_type,entity_id,generation_version,status,
+		COALESCE(input_data,'{}'::jsonb) FROM drama.workflow_tasks WHERE project_id=$1 AND task_id=$2`, projectID, taskID).Scan(
+		&task.TaskID, &task.WorkflowStage, &task.EntityType, &task.EntityID,
+		&task.GenerationVersion, &task.Status, &task.InputData,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FlowActionContext{}, ErrNotFound
+	}
+	if err != nil {
+		return FlowActionContext{}, err
+	}
+	action.Task = &task
+	return action, nil
 }
 
 func (s *Store) novels(ctx context.Context, projectID string) ([]Novel, error) {
