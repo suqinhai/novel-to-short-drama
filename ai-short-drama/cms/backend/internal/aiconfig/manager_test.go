@@ -47,6 +47,8 @@ func TestManagerSaveRejectsUnknownAndInjectedValues(t *testing.T) {
 	}{
 		{values: map[string]string{"POSTGRES_PASSWORD": "forbidden"}},
 		{values: map[string]string{"MOCK_MODE": "yes"}},
+		{values: map[string]string{"AI_CONNECTION_MODE": "unsupported"}},
+		{values: map[string]string{"TEXT_API_SOURCE": "subscription"}},
 		{values: map[string]string{"IMAGE_MODEL": "model\nINJECTED=value"}},
 		{secrets: map[string]string{"IMAGE_API_KEY": ""}},
 		{secrets: map[string]string{"UNKNOWN_API_KEY": "secret"}},
@@ -55,6 +57,31 @@ func TestManagerSaveRejectsUnknownAndInjectedValues(t *testing.T) {
 		if _, err := manager.Save(test.values, test.secrets); err != ErrInvalidInput {
 			t.Fatalf("expected ErrInvalidInput, got %v", err)
 		}
+	}
+}
+
+func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cms-managed.env")
+	manager := New(path, "unused")
+	_, err := manager.Save(map[string]string{
+		"AI_CONNECTION_MODE": "hybrid",
+		"TEXT_API_SOURCE":    "gateway",
+		"IMAGE_API_SOURCE":   "native",
+		"VIDEO_API_SOURCE":   "custom",
+		"TTS_API_SOURCE":     "native",
+		"IMAGE_PROVIDER":     "generic_openai_images",
+		"VIDEO_PROVIDER":     "generic_async_video",
+		"TTS_PROVIDER":       "generic_sync_tts",
+	}, nil)
+	if err != nil {
+		t.Fatalf("save connection plan: %v", err)
+	}
+	values, _, err := readEnvFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["AI_CONNECTION_MODE"] != "hybrid" || values["TEXT_API_SOURCE"] != "gateway" {
+		t.Fatalf("connection plan did not round-trip: %+v", values)
 	}
 }
 

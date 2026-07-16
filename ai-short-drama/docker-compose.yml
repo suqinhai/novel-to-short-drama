@@ -94,6 +94,11 @@ services:
       TZ: ${TZ:-Asia/Taipei}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs,path
+      AI_CONNECTION_MODE: ${AI_CONNECTION_MODE:-hybrid}
+      TEXT_API_SOURCE: ${TEXT_API_SOURCE:-gateway}
+      IMAGE_API_SOURCE: ${IMAGE_API_SOURCE:-native}
+      VIDEO_API_SOURCE: ${VIDEO_API_SOURCE:-native}
+      TTS_API_SOURCE: ${TTS_API_SOURCE:-native}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
       TEXT_ANALYSIS_MODEL: ${TEXT_ANALYSIS_MODEL:-glm-5.2}

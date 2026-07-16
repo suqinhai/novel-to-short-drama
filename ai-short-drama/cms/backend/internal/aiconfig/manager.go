@@ -19,11 +19,13 @@ import (
 var ErrInvalidInput = errors.New("invalid AI configuration input")
 
 type FieldSpec struct {
-	Key        string `json:"key"`
-	Label      string `json:"label"`
-	Category   string `json:"category"`
-	Kind       string `json:"kind"`
-	AllowEmpty bool   `json:"allow_empty"`
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Category    string   `json:"category"`
+	Kind        string   `json:"kind"`
+	AllowEmpty  bool     `json:"allow_empty"`
+	Options     []string `json:"options,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 
 type SecretSpec struct {
@@ -32,8 +34,13 @@ type SecretSpec struct {
 }
 
 var FieldSpecs = []FieldSpec{
+	{Key: "AI_CONNECTION_MODE", Label: "AI 接入方案", Category: "接入方案", Kind: "select", Options: []string{"native", "custom", "gateway", "hybrid"}},
+	{Key: "TEXT_API_SOURCE", Label: "文本接口来源", Category: "接入方案", Kind: "select", Options: []string{"native", "custom", "gateway"}},
+	{Key: "IMAGE_API_SOURCE", Label: "图片接口来源", Category: "接入方案", Kind: "select", Options: []string{"native", "custom", "gateway"}},
+	{Key: "VIDEO_API_SOURCE", Label: "视频接口来源", Category: "接入方案", Kind: "select", Options: []string{"native", "custom", "gateway"}},
+	{Key: "TTS_API_SOURCE", Label: "语音接口来源", Category: "接入方案", Kind: "select", Options: []string{"native", "custom", "gateway"}},
 	{Key: "MOCK_MODE", Label: "Mock 模式", Category: "运行模式", Kind: "boolean"},
-	{Key: "LITELLM_BASE_URL", Label: "LiteLLM 地址", Category: "运行模式", Kind: "url"},
+	{Key: "LITELLM_BASE_URL", Label: "文本 API Base URL", Category: "运行模式", Kind: "url", Description: "兼容旧变量名；系统会追加 /v1/chat/completions。"},
 	{Key: "TEXT_ANALYSIS_MODEL", Label: "小说分析模型", Category: "文本与质检模型", Kind: "text"},
 	{Key: "STORY_BIBLE_MODEL", Label: "故事圣经模型", Category: "文本与质检模型", Kind: "text"},
 	{Key: "EPISODE_PLANNING_MODEL", Label: "分集策划模型", Category: "文本与质检模型", Kind: "text"},
@@ -42,16 +49,16 @@ var FieldSpecs = []FieldSpec{
 	{Key: "VISUAL_PROMPT_MODEL", Label: "视觉提示词模型", Category: "文本与质检模型", Kind: "text"},
 	{Key: "QC_TEXT_MODEL", Label: "质检文本模型", Category: "文本与质检模型", Kind: "text"},
 	{Key: "QC_VISION_MODEL", Label: "质检视觉模型", Category: "文本与质检模型", Kind: "text", AllowEmpty: true},
-	{Key: "IMAGE_PROVIDER", Label: "图片供应商", Category: "图片生成", Kind: "text"},
+	{Key: "IMAGE_PROVIDER", Label: "图片供应商", Category: "图片生成", Kind: "select", Options: []string{"mock", "generic_openai_images", "generic_async_image"}},
 	{Key: "IMAGE_MODEL", Label: "图片模型", Category: "图片生成", Kind: "text"},
 	{Key: "IMAGE_API_BASE_URL", Label: "图片 API 地址", Category: "图片生成", Kind: "url"},
-	{Key: "VIDEO_PROVIDER", Label: "视频供应商", Category: "视频生成", Kind: "text"},
+	{Key: "VIDEO_PROVIDER", Label: "视频供应商", Category: "视频生成", Kind: "select", Options: []string{"mock", "generic_sync_video", "generic_async_video"}},
 	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "text"},
 	{Key: "VIDEO_API_BASE_URL", Label: "视频 API 地址", Category: "视频生成", Kind: "url"},
-	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "text"},
+	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "generic_sync_tts", "generic_async_tts"}},
 	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "text"},
 	{Key: "TTS_API_BASE_URL", Label: "语音 API 地址", Category: "语音合成", Kind: "url"},
-	{Key: "PUBLISH_PROVIDER", Label: "发布供应商", Category: "发布", Kind: "text"},
+	{Key: "PUBLISH_PROVIDER", Label: "发布供应商", Category: "发布", Kind: "select", Options: []string{"manual_package", "generic_sync_publish", "generic_async_publish"}},
 	{Key: "ALLOW_REAL_PUBLISH", Label: "允许真实发布", Category: "发布", Kind: "boolean"},
 }
 
@@ -229,6 +236,17 @@ func validateFieldValue(spec FieldSpec, value string) error {
 		}
 		parsed, err := url.ParseRequestURI(trimmed)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return ErrInvalidInput
+		}
+	case "select":
+		valid := false
+		for _, option := range spec.Options {
+			if trimmed == option {
+				valid = true
+				break
+			}
+		}
+		if !valid {
 			return ErrInvalidInput
 		}
 	default:

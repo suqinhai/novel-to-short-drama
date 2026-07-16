@@ -1,6 +1,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { AlertTriangle, Bot, Container, FileCog, KeyRound, RefreshCw, RotateCcw, Save, ShieldCheck } from 'lucide-vue-next'
+import {
+  AlertTriangle, Bot, Boxes, Building2, Cable, Container, FileCog, Globe2,
+  Image, KeyRound, Mic2, Network, RefreshCw, RotateCcw, Save, ShieldCheck, Video, Waypoints,
+} from 'lucide-vue-next'
 import { api } from '../services/api'
 
 const data = ref(null)
@@ -12,9 +15,63 @@ const drafts = reactive({})
 const baseline = reactive({})
 const secretDrafts = reactive({})
 
+const sourceLabels = { native: '原生直连', custom: '自定义接口', gateway: '统一网关' }
+const sourceIcons = { native: Building2, custom: Cable, gateway: Network }
+const defaultPlan = {
+  AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
+  VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native',
+}
+const connectionModes = [
+  {
+    id: 'hybrid', title: '混合路由', icon: Waypoints, recommended: true,
+    description: '文本走统一网关，图片、视频和语音走原生授权接口，兼顾统一管理与媒体协议兼容。',
+    sources: { TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native', VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native' },
+  },
+  {
+    id: 'native', title: '全部原生直连', icon: Building2,
+    description: '每类能力直接连接供应商接口，链路最短；供应商协议必须已有对应适配器。',
+    sources: { TEXT_API_SOURCE: 'native', IMAGE_API_SOURCE: 'native', VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native' },
+  },
+  {
+    id: 'custom', title: '全部自定义接口', icon: Cable,
+    description: '分别填写文本、图片、视频和 TTS 的自定义地址，适合已有内部代理或供应商聚合层。',
+    sources: { TEXT_API_SOURCE: 'custom', IMAGE_API_SOURCE: 'custom', VIDEO_API_SOURCE: 'custom', TTS_API_SOURCE: 'custom' },
+  },
+  {
+    id: 'gateway', title: '兼容网关优先', icon: Network,
+    description: '文本和图片使用 OpenAI 兼容网关；视频与 TTS 保留自定义适配协议，避免错误复用同一地址。',
+    sources: { TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'gateway', VIDEO_API_SOURCE: 'custom', TTS_API_SOURCE: 'custom' },
+  },
+]
+const capabilities = [
+  {
+    id: 'text', title: '文本生成', icon: Bot, sourceKey: 'TEXT_API_SOURCE', baseKey: 'LITELLM_BASE_URL', secretKey: 'LITELLM_API_KEY',
+    endpoint: 'POST {Base URL}/v1/chat/completions', note: '用于小说分析、故事圣经、剧本、分镜和文本质检。Base URL 不要重复填写 /v1。',
+  },
+  {
+    id: 'image', title: '图片生成', icon: Image, sourceKey: 'IMAGE_API_SOURCE', baseKey: 'IMAGE_API_BASE_URL', secretKey: 'IMAGE_API_KEY',
+    endpoint: 'POST {Base URL}/v1/images/generations', note: 'OpenAI 兼容同步接口需返回图片 URL；异步接口请选择 generic_async_image。',
+  },
+  {
+    id: 'video', title: '视频生成', icon: Video, sourceKey: 'VIDEO_API_SOURCE', baseKey: 'VIDEO_API_BASE_URL', secretKey: 'VIDEO_API_KEY',
+    endpoint: 'POST /generate · GET /tasks/{id}', note: '当前使用异步视频适配协议，不等同于普通 OpenAI 文本网关；原生供应商需要相应适配器。',
+  },
+  {
+    id: 'tts', title: '语音合成', icon: Mic2, sourceKey: 'TTS_API_SOURCE', baseKey: 'TTS_API_BASE_URL', secretKey: 'TTS_API_KEY',
+    endpoint: 'POST {Base URL}/tts', note: '同步接口必须返回可下载的音频 URL，不能只返回 Base64 或二进制响应。',
+  },
+]
+const routedFieldKeys = new Set([
+  'AI_CONNECTION_MODE', ...capabilities.flatMap((item) => [item.sourceKey, item.baseKey]),
+])
+const routedSecretKeys = new Set(capabilities.map((item) => item.secretKey))
+
+const fieldsByKey = computed(() => Object.fromEntries((data.value?.fields || []).map((field) => [field.key, field])))
+const secretsByKey = computed(() => Object.fromEntries((data.value?.secrets || []).map((secret) => [secret.key, secret])))
 const categories = computed(() => {
   const groups = []
   for (const field of data.value?.fields || []) {
+    if (routedFieldKeys.has(field.key)) continue
     let group = groups.find((item) => item.name === field.category)
     if (!group) {
       group = { name: field.category, fields: [] }
@@ -24,6 +81,7 @@ const categories = computed(() => {
   }
   return groups
 })
+const advancedSecrets = computed(() => (data.value?.secrets || []).filter((secret) => !routedSecretKeys.has(secret.key)))
 const changedValues = computed(() => Object.fromEntries(
   Object.keys(drafts).filter((key) => drafts[key] !== baseline[key]).map((key) => [key, drafts[key]]),
 ))
@@ -34,8 +92,12 @@ const changeCount = computed(() => Object.keys(changedValues.value).length + Obj
 
 function hydrate(response) {
   data.value = response
+  for (const key of Object.keys(drafts)) delete drafts[key]
+  for (const key of Object.keys(baseline)) delete baseline[key]
+  for (const key of Object.keys(secretDrafts)) delete secretDrafts[key]
   for (const field of response.fields || []) {
-    const value = field.has_managed_override ? field.managed_value : field.current_value
+    let value = field.has_managed_override ? field.managed_value : field.current_value
+    if (!value && defaultPlan[field.key]) value = defaultPlan[field.key]
     drafts[field.key] = value
     baseline[field.key] = value
   }
@@ -48,6 +110,11 @@ async function load() {
   try { hydrate(await api.getAIConfig()) }
   catch (err) { error.value = err.message }
   finally { loading.value = false }
+}
+
+function applyMode(mode) {
+  drafts.AI_CONNECTION_MODE = mode.id
+  for (const [key, value] of Object.entries(mode.sources)) drafts[key] = value
 }
 
 function resetDrafts() {
@@ -71,18 +138,19 @@ async function save() {
   }
 }
 
-const displayCurrent = (field) => field.current_value || '未配置'
+const displayCurrent = (field) => field?.current_value || '未配置'
+const sourceIcon = (source) => sourceIcons[source] || Globe2
 onMounted(load)
 </script>
 
 <template>
   <section class="view-stack ai-config-view">
     <div class="hero-row">
-      <div><h2>AI 配置管理</h2><p>读取 n8n 容器当前环境，并安全管理下次重建时生效的模型与 Provider 覆盖配置。</p></div>
+      <div><h2>AI 接口与模型配置</h2><p>选择原生接口、自定义接口或统一网关，并按能力配置安全独立的访问地址与密钥。</p></div>
       <div class="hero-actions ai-config-actions"><button class="button button-secondary" :disabled="loading || saving" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button><button class="button button-primary" :disabled="!changeCount || saving" @click="save"><Save :size="16" />{{ saving ? '安全写入中…' : `保存配置${changeCount ? ` (${changeCount})` : ''}` }}</button></div>
     </div>
 
-    <div class="config-notice managed-config-notice" :class="{ pending: data?.pending_restart }"><ShieldCheck :size="20" /><div><strong>{{ data?.pending_restart ? '存在待生效配置' : '密钥保护已启用' }}</strong><p>API Key 只允许覆盖写入，页面和接口永不返回明文；配置不会写入数据库或请求日志。</p></div><span>{{ data?.managed_file || 'cms-managed.env' }}</span></div>
+    <div class="config-notice managed-config-notice" :class="{ pending: data?.pending_restart }"><ShieldCheck :size="20" /><div><strong>{{ data?.pending_restart ? '存在待生效配置' : '密钥保护已启用' }}</strong><p>密钥只允许覆盖写入，页面和接口永不返回明文；不同能力可使用不同供应商和 Token。</p></div><span>{{ data?.managed_file || 'cms-managed.env' }}</span></div>
 
     <div v-if="result" class="config-save-result"><AlertTriangle :size="20" /><div><strong>{{ result.message }}</strong><span>普通 restart 不会重新加载环境变量，请使用以下命令重建 n8n：</span><code>{{ result.restart_command }}</code></div></div>
     <div v-else-if="data?.pending_restart" class="config-save-result pending"><AlertTriangle :size="20" /><div><strong>CMS 托管文件与当前容器环境不同</strong><span>需要重建 n8n 容器后才会使用待生效值。</span><code>{{ data.restart_command }}</code></div></div>
@@ -96,24 +164,50 @@ onMounted(load)
         <div><ShieldCheck :size="19" /><span>密钥响应</span><strong>{{ data.secrets_exposed ? '风险：已暴露' : '已脱敏' }}</strong><code>boolean status only</code></div>
       </article>
 
+      <article class="panel padded connection-plan-panel">
+        <div class="section-title"><div><span>CONNECTION STRATEGY</span><h3>选择接入方案</h3></div><div class="section-icon"><Boxes :size="19" /></div></div>
+        <p class="plan-intro">方案只负责组织路由，不会覆盖已填写的 URL、模型或密钥。选择后仍可逐项调整。</p>
+        <div class="connection-plan-grid">
+          <button v-for="mode in connectionModes" :key="mode.id" type="button" class="connection-plan-card" :class="{ active: drafts.AI_CONNECTION_MODE === mode.id }" @click="applyMode(mode)">
+            <span class="plan-icon"><component :is="mode.icon" :size="20" /></span>
+            <span class="plan-copy"><strong>{{ mode.title }}<i v-if="mode.recommended">推荐</i></strong><small>{{ mode.description }}</small></span>
+            <span class="plan-radio"><i></i></span>
+          </button>
+        </div>
+      </article>
+
+      <article class="panel padded capability-routing-panel">
+        <div class="section-title"><div><span>CAPABILITY ROUTING</span><h3>按能力配置接口</h3></div><div class="section-icon"><Network :size="19" /></div></div>
+        <div class="capability-route-grid">
+          <section v-for="capability in capabilities" :key="capability.id" class="capability-route-card">
+            <div class="capability-route-head"><span><component :is="capability.icon" :size="19" /></span><div><strong>{{ capability.title }}</strong><small>{{ capability.endpoint }}</small></div></div>
+            <label><span>接口来源</span><div class="source-select-wrap"><component :is="sourceIcon(drafts[capability.sourceKey])" :size="15" /><select v-model="drafts[capability.sourceKey]" class="select-control"><option value="native">{{ sourceLabels.native }}</option><option value="custom">{{ sourceLabels.custom }}</option><option value="gateway">{{ sourceLabels.gateway }}</option></select></div></label>
+            <label><span>Base URL <i v-if="fieldsByKey[capability.baseKey]?.has_managed_override">待重启覆盖</i></span><input v-model="drafts[capability.baseKey]" type="url" placeholder="https://api.example.com" spellcheck="false" /><small>当前容器：{{ displayCurrent(fieldsByKey[capability.baseKey]) }}</small></label>
+            <label><span>API Key <i v-if="secretsByKey[capability.secretKey]?.managed_override_configured">托管文件已填写</i></span><input v-model="secretDrafts[capability.secretKey]" type="password" autocomplete="new-password" :placeholder="secretsByKey[capability.secretKey]?.configured ? '已配置；留空不修改' : '输入新的 API Key'" spellcheck="false" /><small :class="{ configured: secretsByKey[capability.secretKey]?.configured }">当前容器：{{ secretsByKey[capability.secretKey]?.configured ? '已配置' : '未配置' }}</small></label>
+            <p><AlertTriangle :size="13" />{{ capability.note }}</p>
+          </section>
+        </div>
+      </article>
+
       <article v-for="group in categories" :key="group.name" class="panel padded ai-config-group">
-        <div class="section-title"><div><span>CMS MANAGED ENV</span><h3>{{ group.name }}</h3></div><div class="section-icon"><Bot :size="19" /></div></div>
+        <div class="section-title"><div><span>MODELS & PROVIDERS</span><h3>{{ group.name }}</h3></div><div class="section-icon"><Bot :size="19" /></div></div>
         <div class="config-field-grid">
           <label v-for="field in group.fields" :key="field.key" class="config-edit-field" :class="{ dangerous: field.key === 'ALLOW_REAL_PUBLISH' }">
             <span class="config-field-head"><strong>{{ field.label }}</strong><i v-if="field.has_managed_override">待重启覆盖</i></span>
             <code>{{ field.key }}</code>
             <select v-if="field.kind === 'boolean'" v-model="drafts[field.key]" class="select-control"><option value="true">true</option><option value="false">false</option></select>
+            <select v-else-if="field.kind === 'select'" v-model="drafts[field.key]" class="select-control"><option v-for="option in field.options" :key="option" :value="option">{{ option }}</option></select>
             <input v-else v-model="drafts[field.key]" :type="field.kind === 'url' ? 'url' : 'text'" :placeholder="field.allow_empty ? '留空表示禁用' : '请输入配置值'" spellcheck="false" />
-            <small>当前容器：<b>{{ displayCurrent(field) }}</b></small>
+            <small>{{ field.description || '当前容器：' }}<b v-if="!field.description">{{ displayCurrent(field) }}</b></small>
           </label>
         </div>
       </article>
 
-      <article class="panel padded secret-config-panel">
-        <div class="section-title"><div><span>WRITE ONLY CREDENTIALS</span><h3>敏感 API Key</h3></div><div class="section-icon"><KeyRound :size="19" /></div></div>
-        <p class="secret-intro">输入框始终为空。填写后只会覆盖写入 CMS 托管 env 文件，保存响应及再次读取均不会包含密钥内容。</p>
+      <article v-if="advancedSecrets.length" class="panel padded secret-config-panel">
+        <div class="section-title"><div><span>ADVANCED CREDENTIALS</span><h3>其他敏感配置</h3></div><div class="section-icon"><KeyRound :size="19" /></div></div>
+        <p class="secret-intro">这些密钥用于 LiteLLM 上游或发布接口。输入框始终为空，填写后只覆盖托管配置。</p>
         <div class="secret-field-grid">
-          <label v-for="secret in data.secrets" :key="secret.key" class="secret-edit-field">
+          <label v-for="secret in advancedSecrets" :key="secret.key" class="secret-edit-field">
             <div><strong>{{ secret.label }}</strong><span :class="{ configured: secret.configured }">当前容器：{{ secret.configured ? '已配置' : '未配置' }}</span><span v-if="secret.managed_override_configured" class="pending-secret">托管文件：已填写，待重启</span></div>
             <code>{{ secret.key }}</code>
             <input v-model="secretDrafts[secret.key]" type="password" autocomplete="new-password" placeholder="留空不修改；输入新值将覆盖" spellcheck="false" />
