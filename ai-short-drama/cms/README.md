@@ -2,6 +2,24 @@
 
 当前版本提供 Vue + Vite 前端和 Go Gin 后端骨架，并以只读方式连接现有 `short_drama` PostgreSQL 数据库。
 
+## Docker Compose 启动（推荐）
+
+CMS 前后端已包含在项目根目录的 `docker-compose.yml` 中。使用项目实际的 env 文件启动全部服务：
+
+```powershell
+cd ai-short-drama
+$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }
+$envFiles = @('--env-file', $baseEnv)
+if (Test-Path 'cms/config/cms-managed.env') { $envFiles += @('--env-file', 'cms/config/cms-managed.env') }
+docker compose @envFiles up -d --build
+```
+
+- CMS 前端：http://127.0.0.1:5173
+- CMS 后端：http://127.0.0.1:8888
+- 健康检查：http://127.0.0.1:8888/healthz
+
+可通过 `CMS_WEB_PORT` 修改前端宿主端口，通过 `CMS_PORT` 修改后端宿主端口。容器内部后端固定监听 `8888`。
+
 ## 本地开发
 
 后端默认读取 `ai-short-drama/.env`，若不存在则读取现有 `.env.example`；也可以通过 `CMS_ENV_FILE` 或 `DATABASE_URL` 指定连接。
@@ -18,8 +36,8 @@ npm run dev
 ```
 
 - 前端：http://127.0.0.1:5173
-- 后端：http://127.0.0.1:8080
-- 健康检查：http://127.0.0.1:8080/healthz
+- 后端：http://127.0.0.1:8888
+- 健康检查：http://127.0.0.1:8888/healthz
 
 ## 已有页面
 

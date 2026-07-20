@@ -61,7 +61,7 @@ func Load() (Config, error) {
 
 	return Config{
 		Host:                 env("CMS_HOST", "127.0.0.1"),
-		Port:                 env("CMS_PORT", "8080"),
+		Port:                 env("CMS_PORT", "8888"),
 		DatabaseURL:          databaseURL,
 		AllowedOrigins:       splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		N8NHealthURL:         env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),

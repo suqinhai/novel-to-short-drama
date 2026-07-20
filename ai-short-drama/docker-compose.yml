@@ -50,6 +50,70 @@ services:
       timeout: 3s
       retries: 10
 
+  cms-api:
+    build:
+      context: ./cms/backend
+      dockerfile: Dockerfile
+    image: ai-short-drama-cms-api:latest
+    restart: unless-stopped
+    ports:
+      - "${CMS_PORT:-8888}:8888"
+    environment:
+      CMS_HOST: 0.0.0.0
+      CMS_PORT: 8888
+      CMS_ALLOWED_ORIGINS: ${CMS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      CMS_N8N_HEALTH_URL: http://n8n:5678/healthz
+      CMS_N8N_PROJECT_WEBHOOK_URL: http://n8n:5678/webhook/ai-short-drama/projects
+      CMS_N8N_STAGE2_WEBHOOK_URL: http://n8n:5678/webhook/ai-short-drama/stage2
+      CMS_N8N_STAGE3_WEBHOOK_URL: http://n8n:5678/webhook/ai-short-drama/stage3
+      CMS_N8N_STAGE4_WEBHOOK_URL: http://n8n:5678/webhook/ai-short-drama/stage4
+      CMS_N8N_STAGE5_WEBHOOK_URL: http://n8n:5678/webhook/ai-short-drama/stage5
+      CMS_N8N_WEBHOOK_TIMEOUT_SECONDS: ${CMS_N8N_WEBHOOK_TIMEOUT_SECONDS:-900}
+      CMS_MEDIA_HEALTH_URL: http://media/healthz
+      CMS_WORKFLOW_DIR: /app/workflows
+      CMS_MANAGED_ENV_FILE: /app/config/cms-managed.env
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DRAMA_DB: ${DRAMA_DB:-short_drama}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-http://localhost:8088}
+      TZ: ${TZ:-Asia/Taipei}
+    volumes:
+      - ./workflows:/app/workflows:ro
+      - ./cms/config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+      media:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8888/healthz >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  cms-web:
+    build:
+      context: ./cms/frontend
+      dockerfile: Dockerfile
+    image: ai-short-drama-cms-web:latest
+    restart: unless-stopped
+    ports:
+      - "${CMS_WEB_PORT:-5173}:80"
+    depends_on:
+      cms-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/ >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   litellm:
     image: ghcr.io/berriai/litellm:v1.74.9-stable
     restart: unless-stopped
