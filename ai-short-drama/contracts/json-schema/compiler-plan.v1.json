@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-short-drama.local/contracts/compiler-plan.v1.json",
+  "title": "Adaptation Compiler Plan V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "compiler_run_id", "episodes", "diagnostics", "validation"],
+  "properties": {
+    "schema_version": {"const": "compiler-plan.v1"},
+    "compiler_run_id": {"$ref": "#/$defs/id"},
+    "episodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/episode"}
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/diagnostic"}
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hard_rules_satisfied", "event_references_valid", "timeline_valid", "causality_valid", "foreshadowing_valid", "duration_valid"],
+      "properties": {
+        "hard_rules_satisfied": {"type": "boolean"},
+        "event_references_valid": {"type": "boolean"},
+        "timeline_valid": {"type": "boolean"},
+        "causality_valid": {"type": "boolean"},
+        "foreshadowing_valid": {"type": "boolean"},
+        "duration_valid": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_revision_id", "sequence_number", "usage_mode", "rule_ids"],
+      "properties": {
+        "event_revision_id": {"$ref": "#/$defs/id"},
+        "sequence_number": {"type": "integer", "minimum": 1},
+        "usage_mode": {"enum": ["preserve", "merge", "transform", "reference"]},
+        "merge_group_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+        "rule_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "episode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["episode_number", "title", "logline", "estimated_duration_seconds", "opening_hook", "ending_hook", "event_assignments"],
+      "properties": {
+        "episode_number": {"type": "integer", "minimum": 1},
+        "title": {"type": "string", "minLength": 1, "maxLength": 500},
+        "logline": {"type": "string", "maxLength": 4000},
+        "estimated_duration_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
+        "opening_hook": {"type": "string", "maxLength": 4000},
+        "ending_hook": {"type": "string", "maxLength": 4000},
+        "continuity_in": {"type": "array", "items": {"type": "string", "maxLength": 2000}},
+        "continuity_out": {"type": "array", "items": {"type": "string", "maxLength": 2000}},
+        "event_assignments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/assignment"}}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": {"enum": ["info", "warning", "error", "blocking"]},
+        "code": {"type": "string", "minLength": 1, "maxLength": 200},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "entity_type": {"type": ["string", "null"], "maxLength": 200},
+        "entity_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+        "details": {"type": "object"}
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "contract_version": "1.0",
+  "operation_id": "op_test_001",
+  "trace_id": "trace_test_001",
+  "idempotency_key": "short",
+  "action": "unknown",
+  "generation_version": 0,
+  "payload": {}
+}

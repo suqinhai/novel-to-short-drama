@@ -1,0 +1,9 @@
+{
+  "contract_version": "2.0",
+  "operation_id": "op_test_001",
+  "trace_id": "trace_test_001",
+  "claim_token": "not-a-uuid",
+  "lease_owner": "",
+  "action": "publish",
+  "payload": {}
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "compiler-plan.v1",
+  "compiler_run_id": "compiler_test_001",
+  "episodes": [
+    {
+      "episode_number": 1,
+      "title": "异常开端",
+      "logline": "林夏发现异常并决定调查。",
+      "estimated_duration_seconds": 90,
+      "opening_hook": "门在无人触碰时打开。",
+      "ending_hook": "门后留下她的名字。",
+      "continuity_in": [],
+      "continuity_out": ["调查继续"],
+      "event_assignments": [
+        {
+          "event_revision_id": "event_revision_test_001",
+          "sequence_number": 1,
+          "usage_mode": "preserve",
+          "merge_group_id": null,
+          "rule_ids": ["rule_test_001"]
+        }
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "validation": {
+    "hard_rules_satisfied": true,
+    "event_references_valid": true,
+    "timeline_valid": true,
+    "causality_valid": true,
+    "foreshadowing_valid": true,
+    "duration_valid": true
+  }
+}

@@ -19,6 +19,8 @@ services:
       - ./database/03-visual-assets-images.sql:/opt/drama/03-visual-assets-images.sql:ro
       - ./database/04-video-audio.sql:/opt/drama/04-video-audio.sql:ro
       - ./database/05-edit-qc-publish.sql:/opt/drama/05-edit-qc-publish.sql:ro
+      - ./database/06-narrative-ir-foundation.sql:/opt/drama/06-narrative-ir-foundation.sql:ro
+      - ./database/06-verify-narrative-foundation.sql:/opt/drama/06-verify-narrative-foundation.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

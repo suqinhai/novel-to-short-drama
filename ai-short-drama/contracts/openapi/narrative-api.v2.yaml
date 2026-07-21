@@ -1,0 +1,958 @@
+openapi: 3.1.0
+info:
+  title: AI Short Drama Narrative API
+  version: 2.0.0-phase1
+  description: >-
+    Frozen Phase 1 public contract for the source library, Narrative IR,
+    Adaptation Spec, compiler operations and lineage. Phase 1 defines storage
+    and contracts only; handlers are implemented in later phases. Existing
+    /api/v1 endpoints remain unchanged.
+servers:
+  - url: /api/v2
+security:
+  - bearerAuth: []
+tags:
+  - name: SourceWorks
+    description: Reusable source-library works independent of adaptation projects.
+  - name: SourceVersions
+    description: Immutable published source snapshots and chapter revisions.
+  - name: AdaptationProjects
+    description: Project bindings, adaptation specifications and compiler inputs.
+  - name: Operations
+    description: Retryable asynchronous operations and worker lease protocol.
+  - name: Lineage
+    description: Artifact provenance, dependency and impact views.
+paths:
+  /source-works:
+    get:
+      tags: [SourceWorks]
+      operationId: listSourceWorks
+      summary: List source works
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          schema: {type: string, maxLength: 200}
+      responses:
+        '200':
+          description: Source works
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceWorkListResponse'
+    post:
+      tags: [SourceWorks]
+      operationId: createSourceWork
+      summary: Create a source work
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSourceWorkRequest'
+      responses:
+        '201':
+          description: Created source work
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceWorkResponse'
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-works/{work_id}:
+    get:
+      tags: [SourceWorks]
+      operationId: getSourceWork
+      summary: Get a source work
+      parameters:
+        - $ref: '#/components/parameters/WorkID'
+      responses:
+        '200':
+          description: Source work
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceWorkResponse'
+        '404': {$ref: '#/components/responses/NotFound'}
+  /source-works/{work_id}/versions:
+    get:
+      tags: [SourceVersions]
+      operationId: listSourceVersions
+      summary: List source versions
+      parameters:
+        - $ref: '#/components/parameters/WorkID'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/SourceVersion'}
+    post:
+      tags: [SourceVersions]
+      operationId: createSourceVersion
+      summary: Create a draft source version
+      parameters:
+        - $ref: '#/components/parameters/WorkID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSourceVersionRequest'
+      responses:
+        '201':
+          description: Draft version created
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {$ref: '#/components/schemas/SourceVersion'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-versions/{source_version_id}:
+    get:
+      tags: [SourceVersions]
+      operationId: getSourceVersion
+      summary: Get a source version
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+      responses:
+        '200':
+          description: Version detail
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {$ref: '#/components/schemas/SourceVersion'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /source-versions/{source_version_id}/imports:
+    post:
+      tags: [SourceVersions]
+      operationId: startSourceImport
+      summary: Start a retryable source import
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartImportRequest'
+      responses:
+        '202':
+          description: Import accepted
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-versions/{source_version_id}/chapters:
+    get:
+      tags: [SourceVersions]
+      operationId: listVersionChapters
+      summary: List ordered version chapters
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+      responses:
+        '200':
+          description: Ordered chapters
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/ChapterRevision'}
+    post:
+      tags: [SourceVersions]
+      operationId: addChapter
+      summary: Add one chapter to a draft version
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChapterInput'}
+      responses:
+        '202':
+          description: Chapter command accepted
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-versions/{source_version_id}/chapters:batch:
+    post:
+      tags: [SourceVersions]
+      operationId: addChaptersBatch
+      summary: Add chapters to a draft version in batch
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items: {$ref: '#/components/schemas/ChapterInput'}
+      responses:
+        '202':
+          description: Batch accepted
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+  /source-versions/{source_version_id}/chapters/{chapter_id}:
+    patch:
+      tags: [SourceVersions]
+      operationId: reviseChapter
+      summary: Add a chapter revision to a draft version
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/ChapterID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, content]
+              properties:
+                title: {type: string, minLength: 1, maxLength: 1000}
+                content: {type: string, minLength: 1}
+      responses:
+        '202':
+          description: Revision accepted
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-versions/{source_version_id}:publish:
+    post:
+      tags: [SourceVersions]
+      operationId: publishSourceVersion
+      summary: Publish and seal a source version
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '202':
+          description: Publish accepted
+          headers:
+            ETag: {$ref: '#/components/headers/ResourceETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /source-versions/{source_version_id}/ir-runs:
+    post:
+      tags: [SourceVersions]
+      operationId: startNarrativeIRRun
+      summary: Start bounded Narrative IR extraction
+      x-implementation-phase: 3
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version, extractor_version]
+              properties:
+                schema_version: {type: string, const: narrative-extraction.v1}
+                extractor_version: {type: string, minLength: 1, maxLength: 200}
+                chapter_ids:
+                  type: array
+                  uniqueItems: true
+                  items: {$ref: '#/components/schemas/ID'}
+      responses:
+        '202':
+          description: IR extraction accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+  /adaptation-projects:
+    post:
+      tags: [AdaptationProjects]
+      operationId: createAdaptationProject
+      summary: Create an adaptation project from an existing source version
+      x-implementation-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAdaptationProjectRequest'
+      responses:
+        '202':
+          description: Project creation accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/specs:
+    get:
+      tags: [AdaptationProjects]
+      operationId: listAdaptationSpecs
+      summary: List adaptation specification versions
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Spec summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {type: array, items: {$ref: '#/components/schemas/AdaptationSpecSummary'}}
+    post:
+      tags: [AdaptationProjects]
+      operationId: createAdaptationSpecVersion
+      summary: Create and validate an adaptation specification version
+      x-implementation-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../json-schema/adaptation-spec.v1.json
+      responses:
+        '202':
+          description: Spec command accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+  /adaptation-projects/{project_id}/compiler-runs:
+    post:
+      tags: [AdaptationProjects]
+      operationId: startCompilerRun
+      summary: Compile a validated adaptation plan
+      x-implementation-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [adaptation_spec_version_id, ir_revision_id, compiler_version]
+              properties:
+                adaptation_spec_version_id: {$ref: '#/components/schemas/ID'}
+                ir_revision_id: {$ref: '#/components/schemas/ID'}
+                compiler_version: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '202':
+          description: Compiler run accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+  /adaptation-projects/{project_id}/impact:
+    get:
+      tags: [Lineage]
+      operationId: getProjectImpact
+      summary: Preview project impact for a source-version change
+      x-implementation-phase: 5
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: to_source_version_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      responses:
+        '200':
+          description: Read-only impact preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImpactResponse'}
+  /operations/{operation_id}:
+    get:
+      tags: [Operations]
+      operationId: getOperation
+      summary: Get asynchronous operation state
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      responses:
+        '200':
+          description: Operation state and checkpoint
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /operations:claim:
+    post:
+      tags: [Operations]
+      operationId: claimOperation
+      summary: Atomically claim the next worker operation
+      x-internal-worker-operation: true
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClaimOperationRequest'}
+      responses:
+        '200':
+          description: Atomically claimed operation; claim_token must be used for heartbeat and completion.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClaimedOperationResponse'}
+        '204': {description: No claimable operation}
+  /operations/{operation_id}:heartbeat:
+    post:
+      tags: [Operations]
+      operationId: heartbeatOperation
+      summary: Extend a current operation lease
+      x-internal-worker-operation: true
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/ClaimToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lease_seconds]
+              properties:
+                lease_seconds: {type: integer, minimum: 1, maximum: 3600}
+      responses:
+        '200':
+          description: Lease extended only when the claim token is current and unexpired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /operations/{operation_id}:checkpoint:
+    post:
+      tags: [Operations]
+      operationId: checkpointOperation
+      summary: Commit a token-fenced operation checkpoint
+      x-internal-worker-operation: true
+      description: >-
+        The handler calls assert_operation_claim and writes checkpoint/domain rows
+        in one database transaction. A stale or expired token returns 409.
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/ClaimToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CheckpointOperationRequest'}
+      responses:
+        '200':
+          description: Checkpoint committed under the current lease.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /operations/{operation_id}:finish:
+    post:
+      tags: [Operations]
+      operationId: finishOperation
+      summary: Commit a token-fenced terminal operation result
+      x-internal-worker-operation: true
+      description: >-
+        The terminal operation transition and all domain-result publication must
+        occur in the same transaction after assert_operation_claim locks the row.
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/ClaimToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FinishOperationRequest'}
+      responses:
+        '200':
+          description: Terminal result committed under the current lease.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /artifacts/{artifact_id}/lineage:
+    get:
+      tags: [Lineage]
+      operationId: getArtifactLineage
+      summary: Get artifact provenance and dependencies
+      x-implementation-phase: 5
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: direction
+          in: query
+          schema: {type: string, enum: [upstream, downstream, both], default: both}
+        - name: max_depth
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 50, default: 10}
+      responses:
+        '200':
+          description: Artifact lineage graph
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LineageResponse'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  headers:
+    ResourceETag:
+      description: Quoted integer resource_revision after the accepted mutation.
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Stable request identifier. On /operations:claim it is persisted as
+        claim_request_id, so a lost response can be retried without claiming a
+        second operation.
+      schema: {type: string, minLength: 8, maxLength: 512}
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: >-
+        Quoted source_versions.resource_revision, for example "3". Every
+        accepted command transaction reserves and increments the revision before
+        returning 202, and returns the new value as ETag. Worker failure never
+        decrements it; a mismatch returns 409 without enqueueing or writing.
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+    ClaimToken:
+      name: X-Operation-Claim-Token
+      in: header
+      required: true
+      schema: {type: string, format: uuid}
+    Page:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    WorkID:
+      name: work_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+    SourceVersionID:
+      name: source_version_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+    ChapterID:
+      name: chapter_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+    ProjectID:
+      name: project_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Conflict:
+      description: Idempotency, immutable resource or revision conflict
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+  schemas:
+    ID:
+      type: string
+      minLength: 1
+      maxLength: 255
+      pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'
+    Timestamp:
+      type: string
+      format: date-time
+    CreateSourceWorkRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 1000}
+        author: {type: [string, 'null'], maxLength: 500}
+        metadata: {type: object}
+    SourceWork:
+      type: object
+      additionalProperties: false
+      required: [work_id, title, status, resource_revision, created_at, updated_at]
+      properties:
+        work_id: {$ref: '#/components/schemas/ID'}
+        title: {type: string}
+        author: {type: [string, 'null']}
+        status: {type: string, enum: [active, archived]}
+        resource_revision: {type: integer, minimum: 1}
+        metadata: {type: object}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+    SourceWorkResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data: {$ref: '#/components/schemas/SourceWork'}
+    SourceWorkListResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data, page]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data: {type: array, items: {$ref: '#/components/schemas/SourceWork'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [number, limit, total]
+      properties:
+        number: {type: integer, minimum: 1}
+        limit: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
+    CreateSourceVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [normalization_version]
+      properties:
+        parent_source_version_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
+        normalization_version: {type: string, minLength: 1, maxLength: 200}
+        metadata: {type: object}
+    SourceVersion:
+      type: object
+      additionalProperties: false
+      required: [source_version_id, work_id, version_number, status, version_hash, normalization_version, chapter_count, total_chars, resource_revision]
+      properties:
+        source_version_id: {$ref: '#/components/schemas/ID'}
+        work_id: {$ref: '#/components/schemas/ID'}
+        version_number: {type: integer, minimum: 1}
+        parent_source_version_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
+        status: {type: string, enum: [draft, published, superseded, failed]}
+        version_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        normalization_version: {type: string}
+        chapter_count: {type: integer, minimum: 0}
+        total_chars: {type: integer, minimum: 0}
+        resource_revision: {type: integer, minimum: 1}
+    StartImportRequest:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: {type: string, enum: [whole_book, single_chapter, batch_chapters, revision]}
+        text: {type: string, minLength: 1}
+        storage_ref: {type: string, minLength: 1, maxLength: 2048}
+        items: {type: array, maxItems: 1000, items: {$ref: '#/components/schemas/ChapterInput'}}
+      oneOf:
+        - required: [text]
+        - required: [storage_ref]
+        - required: [items]
+    ChapterInput:
+      type: object
+      additionalProperties: false
+      required: [client_item_key, ordinal, title, content]
+      properties:
+        client_item_key: {type: string, minLength: 1, maxLength: 255}
+        chapter_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
+        ordinal: {type: integer, minimum: 1}
+        title: {type: string, minLength: 1, maxLength: 1000}
+        content: {type: string, minLength: 1}
+    ChapterRevision:
+      type: object
+      additionalProperties: false
+      required: [chapter_id, chapter_revision_id, ordinal, revision_number, title, content_hash, char_count]
+      properties:
+        chapter_id: {$ref: '#/components/schemas/ID'}
+        chapter_revision_id: {$ref: '#/components/schemas/ID'}
+        ordinal: {type: integer, minimum: 1}
+        revision_number: {type: integer, minimum: 1}
+        title: {type: string}
+        content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        char_count: {type: integer, minimum: 0}
+    CreateAdaptationProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, adaptation_spec]
+      properties:
+        display_name: {type: string, minLength: 1, maxLength: 1000}
+        adaptation_spec:
+          $ref: ../json-schema/adaptation-spec.v1.json
+    AdaptationSpecSummary:
+      type: object
+      additionalProperties: false
+      required: [adaptation_spec_id, adaptation_spec_version_id, version_number, status, source_version_id, resource_revision]
+      properties:
+        adaptation_spec_id: {$ref: '#/components/schemas/ID'}
+        adaptation_spec_version_id: {$ref: '#/components/schemas/ID'}
+        version_number: {type: integer, minimum: 1}
+        status: {type: string, enum: [draft, active, superseded, rejected]}
+        source_version_id: {$ref: '#/components/schemas/ID'}
+        ir_revision_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
+        resource_revision: {type: integer, minimum: 1}
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, trace_id, operation_type, target_type, target_id, status, checkpoint, retry_count, max_retries, created_at, updated_at]
+      properties:
+        operation_id: {$ref: '#/components/schemas/ID'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        operation_type: {type: string, enum: [source_import, ir_extraction, spec_validation, adaptation_compile, invalidation_scan]}
+        target_type: {type: string, enum: [source_version, ir_revision, adaptation_spec_version, project, artifact]}
+        target_id: {$ref: '#/components/schemas/ID'}
+        status: {type: string, enum: [pending, running, validating, completed, partially_failed, failed, cancelled, needs_review]}
+        checkpoint: {$ref: '#/components/schemas/OperationCheckpoint'}
+        retry_count: {type: integer, minimum: 0}
+        max_retries: {type: integer, minimum: 0}
+        claim_token: {type: string, format: uuid, description: Returned only by the claim endpoint.}
+        lease_owner: {type: string, minLength: 1, maxLength: 255, description: Returned only by the claim endpoint.}
+        lease_expires_at: {anyOf: [{$ref: '#/components/schemas/Timestamp'}, {type: 'null'}]}
+        result_ref: {anyOf: [{$ref: '#/components/schemas/ResultReference'}, {type: 'null'}]}
+        error: {anyOf: [{$ref: '#/components/schemas/Error'}, {type: 'null'}]}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+    OperationCheckpoint:
+      type: object
+      additionalProperties: false
+      required: [stage]
+      properties:
+        stage: {type: string, minLength: 1, maxLength: 200}
+        cursor: {type: [string, 'null'], maxLength: 1000}
+        completed_items: {type: integer, minimum: 0}
+        total_items: {type: integer, minimum: 0}
+    ResultReference:
+      type: object
+      additionalProperties: false
+      required: [resource_type, resource_id]
+      properties:
+        resource_type: {type: string, enum: [source_version, ir_revision, adaptation_spec_version, adaptation_plan, invalidation_task]}
+        resource_id: {$ref: '#/components/schemas/ID'}
+    ClaimOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id, lease_seconds]
+      properties:
+        worker_id: {type: string, minLength: 1, maxLength: 255}
+        operation_types:
+          type: array
+          uniqueItems: true
+          maxItems: 5
+          items: {type: string, enum: [source_import, ir_extraction, spec_validation, adaptation_compile, invalidation_scan]}
+        lease_seconds: {type: integer, minimum: 1, maximum: 3600}
+    CheckpointOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [status, checkpoint]
+      properties:
+        status: {type: string, enum: [running, validating]}
+        checkpoint: {$ref: '#/components/schemas/OperationCheckpoint'}
+    FinishOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [final_status]
+      description: >-
+        completed requires result_ref; failed/partially_failed require error.
+        The service enforces this business invariant before finish_operation.
+      properties:
+        final_status: {type: string, enum: [completed, partially_failed, failed, cancelled, needs_review]}
+        result_ref: {anyOf: [{$ref: '#/components/schemas/ResultReference'}, {type: 'null'}]}
+        error: {anyOf: [{$ref: '#/components/schemas/Error'}, {type: 'null'}]}
+    ClaimedOperation:
+      allOf:
+        - $ref: '#/components/schemas/Operation'
+        - type: object
+          required: [claim_token, lease_owner, lease_expires_at]
+          properties:
+            claim_token: {type: string, format: uuid}
+            lease_owner: {type: string, minLength: 1, maxLength: 255}
+    OperationResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data: {$ref: '#/components/schemas/Operation'}
+    ClaimedOperationResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data: {$ref: '#/components/schemas/ClaimedOperation'}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code: {type: string, minLength: 1, maxLength: 200}
+        message: {type: string, minLength: 1, maxLength: 4000}
+        retryable: {type: boolean}
+        details:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [field, reason]
+            properties:
+              field: {type: string, minLength: 1, maxLength: 500}
+              reason: {type: string, minLength: 1, maxLength: 1000}
+              rule_code: {type: string, maxLength: 200}
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, error]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        error: {$ref: '#/components/schemas/Error'}
+    ArtifactSummary:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, artifact_type, native_entity_id, revision_number, content_hash, validity_status]
+      properties:
+        artifact_id: {$ref: '#/components/schemas/ID'}
+        artifact_type: {type: string, minLength: 1, maxLength: 200}
+        project_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
+        native_entity_id: {$ref: '#/components/schemas/ID'}
+        revision_number: {type: integer, minimum: 1}
+        content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        validity_status: {type: string, enum: [valid, stale, rebuilding, superseded, failed, needs_review]}
+    ArtifactDependency:
+      type: object
+      additionalProperties: false
+      required: [artifact_dependency_id, upstream_artifact_id, downstream_artifact_id, dependency_type, observed_upstream_hash, invalidates_on]
+      properties:
+        artifact_dependency_id: {$ref: '#/components/schemas/ID'}
+        upstream_artifact_id: {$ref: '#/components/schemas/ID'}
+        downstream_artifact_id: {$ref: '#/components/schemas/ID'}
+        dependency_type: {type: string, minLength: 1, maxLength: 200}
+        observed_upstream_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        invalidates_on:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [content_changed, removed, relocated, rule_changed, dependency_changed]}
+    LineageResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data:
+          type: object
+          additionalProperties: false
+          required: [artifacts, dependencies]
+          properties:
+            artifacts: {type: array, items: {$ref: '#/components/schemas/ArtifactSummary'}}
+            dependencies: {type: array, items: {$ref: '#/components/schemas/ArtifactDependency'}}
+    ImpactResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data:
+          type: object
+          additionalProperties: false
+          required: [source_change_set_id, changed_facts, affected_artifacts, needs_review]
+          properties:
+            source_change_set_id: {$ref: '#/components/schemas/ID'}
+            changed_facts: {type: array, items: {$ref: '#/components/schemas/ID'}}
+            affected_artifacts: {type: array, items: {$ref: '#/components/schemas/ID'}}
+            needs_review: {type: array, items: {$ref: '#/components/schemas/ID'}}

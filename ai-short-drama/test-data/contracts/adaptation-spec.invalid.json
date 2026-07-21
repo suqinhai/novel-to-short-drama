@@ -1,0 +1,18 @@
+{
+  "schema_version": "adaptation-spec.v1",
+  "source_version_id": "sv_test_001",
+  "scope": {"mode": "union", "chapter_ids": [], "story_arc_revision_ids": []},
+  "platform": "抖音",
+  "audience_profile": {},
+  "target_episode_count": 0,
+  "episode_duration_seconds": 90,
+  "rules": [
+    {
+      "rule_type": "invent_anything",
+      "enforcement": "hard",
+      "target_type": "event",
+      "priority": 100,
+      "parameters": {}
+    }
+  ]
+}

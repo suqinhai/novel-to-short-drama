@@ -1,0 +1,94 @@
+{
+  "schema_version": "narrative-extraction.v1",
+  "entities": [
+    {
+      "local_id": "entity_hero",
+      "entity_type": "character",
+      "canonical_name": "林夏",
+      "aliases": ["小夏"],
+      "attributes": {"identity": "记者"},
+      "source": {
+        "source_version_id": "sv_test_001",
+        "chapter_id": "ch_test_001",
+        "chapter_revision_id": "cr_test_001",
+        "start_utf8_byte": 0,
+        "end_utf8_byte": 6,
+        "start_codepoint": 0,
+        "end_codepoint": 2,
+        "quote": "林夏",
+        "quote_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "confidence": 0.99
+      }
+    }
+  ],
+  "facts": [
+    {
+      "local_id": "event_001",
+      "fact_kind": "event",
+      "statement": "林夏发现门被打开。",
+      "source": {
+        "source_version_id": "sv_test_001",
+        "chapter_id": "ch_test_001",
+        "chapter_revision_id": "cr_test_001",
+        "start_utf8_byte": 0,
+        "end_utf8_byte": 30,
+        "start_codepoint": 0,
+        "end_codepoint": 10,
+        "quote": "林夏发现门被打开。",
+        "quote_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "confidence": 0.96
+      },
+      "supporting_sources": [],
+      "event": {
+        "event_type": "discovery",
+        "summary": "林夏发现异常。",
+        "narrative_order": 1,
+        "temporal_expression": "当晚",
+        "location_entity_local_id": null,
+        "importance": 0.8,
+        "participants": [
+          {
+            "entity_local_id": "entity_hero",
+            "role": "observer",
+            "state": {},
+            "source": {
+              "source_version_id": "sv_test_001",
+              "chapter_id": "ch_test_001",
+              "chapter_revision_id": "cr_test_001",
+              "start_utf8_byte": 0,
+              "end_utf8_byte": 6,
+              "start_codepoint": 0,
+              "end_codepoint": 2,
+              "quote": "林夏",
+              "quote_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "confidence": 0.99
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "event_relations": [],
+  "story_arcs": [
+    {
+      "local_id": "arc_001",
+      "title": "调查开始",
+      "summary": "异常推动调查。",
+      "arc_type": "main",
+      "event_local_ids": ["event_001"],
+      "source": {
+        "source_version_id": "sv_test_001",
+        "chapter_id": "ch_test_001",
+        "chapter_revision_id": "cr_test_001",
+        "start_utf8_byte": 0,
+        "end_utf8_byte": 30,
+        "start_codepoint": 0,
+        "end_codepoint": 10,
+        "quote": "林夏发现门被打开。",
+        "quote_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "confidence": 0.9
+      },
+      "confidence": 0.9
+    }
+  ]
+}

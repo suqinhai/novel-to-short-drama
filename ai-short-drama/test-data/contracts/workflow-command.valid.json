@@ -1,0 +1,11 @@
+{
+  "contract_version": "2.0",
+  "operation_id": "op_test_001",
+  "trace_id": "trace_test_001",
+  "idempotency_key": "test:source-import:001",
+  "operation_type": "source_import",
+  "action": "run",
+  "generation_version": 1,
+  "source_version_id": "sv_test_001",
+  "payload": {"import_mode": "single_chapter"}
+}

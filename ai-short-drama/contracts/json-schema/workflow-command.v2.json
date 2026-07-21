@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-short-drama.local/contracts/workflow-command.v2.json",
+  "title": "Workflow Command V2",
+  "description": "User/orchestrator intent envelope. It never carries a worker lease; workers must use worker-execution.v1 after claiming an operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "operation_id",
+    "trace_id",
+    "idempotency_key",
+    "operation_type",
+    "action",
+    "generation_version",
+    "payload"
+  ],
+  "properties": {
+    "contract_version": {"const": "2.0"},
+    "operation_id": {"$ref": "#/$defs/id"},
+    "trace_id": {"$ref": "#/$defs/id"},
+    "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 512},
+    "operation_type": {"enum": ["source_import", "ir_extraction", "spec_validation", "adaptation_compile", "invalidation_scan"]},
+    "action": {
+      "enum": ["run", "retry", "resume", "regenerate", "validate", "publish", "rebase"]
+    },
+    "generation_version": {"type": "integer", "minimum": 1},
+    "project_id": {"$ref": "#/$defs/id"},
+    "work_id": {"$ref": "#/$defs/id"},
+    "source_version_id": {"$ref": "#/$defs/id"},
+    "ir_revision_id": {"$ref": "#/$defs/id"},
+    "adaptation_spec_version_id": {"$ref": "#/$defs/id"},
+    "expected_revision": {"type": "integer", "minimum": 1},
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    }
+  }
+}

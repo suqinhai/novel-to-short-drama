@@ -1,0 +1,18 @@
+{
+  "schema_version": "narrative-extraction.v1",
+  "entities": [],
+  "facts": [
+    {
+      "local_id": "event_without_source",
+      "fact_kind": "event",
+      "statement": "没有原文出处的事件",
+      "event": {
+        "event_type": "invalid",
+        "summary": "invalid",
+        "narrative_order": 1,
+        "participants": []
+      }
+    }
+  ],
+  "story_arcs": []
+}

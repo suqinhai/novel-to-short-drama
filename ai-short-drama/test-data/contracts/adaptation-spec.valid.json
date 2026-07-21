@@ -1,0 +1,25 @@
+{
+  "schema_version": "adaptation-spec.v1",
+  "source_version_id": "sv_test_001",
+  "ir_revision_id": "ir_test_001",
+  "scope": {
+    "mode": "union",
+    "chapter_ids": ["ch_test_001"],
+    "story_arc_revision_ids": ["sar_test_001"]
+  },
+  "platform": "抖音",
+  "audience_profile": {"age_band": "18-35"},
+  "target_episode_count": 12,
+  "episode_duration_seconds": 90,
+  "rules": [
+    {
+      "rule_type": "must_preserve",
+      "enforcement": "hard",
+      "target_type": "event",
+      "target_id": "event_test_001",
+      "priority": 100,
+      "parameters": {},
+      "rationale": "主线事件"
+    }
+  ]
+}

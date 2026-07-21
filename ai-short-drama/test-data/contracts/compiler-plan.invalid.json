@@ -1,0 +1,9 @@
+{
+  "schema_version": "compiler-plan.v1",
+  "compiler_run_id": "compiler_test_001",
+  "episodes": [],
+  "diagnostics": [],
+  "validation": {
+    "hard_rules_satisfied": true
+  }
+}
