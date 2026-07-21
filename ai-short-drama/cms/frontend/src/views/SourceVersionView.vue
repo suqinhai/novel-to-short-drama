@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { AlertTriangle, ArrowLeft, BookPlus, CheckCircle2, FileStack, PencilLine, RefreshCw, Send, Upload } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, FileStack, FlaskConical, History, PencilLine, RefreshCw, Send, Upload } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
@@ -10,12 +10,19 @@ const route = useRoute()
 const version = ref(null)
 const work = ref(null)
 const chapters = ref([])
+const irRevisions = ref([])
+const chapterRevisions = ref([])
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
 const notice = ref('')
 const activeMode = ref('whole')
 const operation = ref(null)
+const historyChapterId = ref('')
+const historyLoading = ref(false)
+const historyError = ref('')
+const irTestAcknowledged = ref(false)
+const irRun = reactive({ extractor_version: 'cms-manual-test-v1', chapter_ids: [] })
 const commandKeys = new Map()
 const wholeText = ref('')
 const single = reactive({ title: '', content: '', ordinal: 1 })
@@ -52,11 +59,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [versionResponse, chapterResponse] = await Promise.all([
-      narrativeApi.getVersion(route.params.versionId), narrativeApi.listChapters(route.params.versionId),
+    const [versionResponse, chapterResponse, irResponse] = await Promise.all([
+      narrativeApi.getVersion(route.params.versionId), narrativeApi.listChapters(route.params.versionId), narrativeApi.listIRRevisions(route.params.versionId),
     ])
     version.value = versionResponse.data
     chapters.value = chapterResponse.data
+    irRevisions.value = irResponse.data
     single.ordinal = nextOrdinal.value
     if (!work.value || work.value.work_id !== version.value.work_id) {
       work.value = (await narrativeApi.getWork(version.value.work_id)).data
@@ -117,8 +125,46 @@ async function publishVersion() {
   await execute('publish-version', {}, (key) => narrativeApi.publishVersion(route.params.versionId, key))
 }
 
-function operationFinished() {
-  load()
+async function startTestIR() {
+  if (version.value?.status !== 'published' || !irTestAcknowledged.value || !irRun.extractor_version.trim()) return
+  const payload = {
+    schema_version: 'narrative-extraction.v1',
+    extractor_version: irRun.extractor_version.trim(),
+    chapter_ids: [...irRun.chapter_ids],
+  }
+  const key = getCommandKey('manual-test-ir', payload)
+  submitting.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const response = await narrativeApi.startIRRun(route.params.versionId, payload, key.value)
+    commandKeys.delete(key.signature)
+    operation.value = response.data
+    notice.value = '测试模式 Narrative IR 提取已排队；模型只会按工作流窗口读取章节片段。'
+  } catch (err) {
+    error.value = err.isConflict ? `${err.message} 请确认版本已发布、章节范围属于当前版本且没有冲突任务。` : err.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function showChapterHistory(chapterId) {
+  historyChapterId.value = chapterId
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    chapterRevisions.value = (await narrativeApi.listChapterRevisions(chapterId)).data
+  } catch (err) {
+    chapterRevisions.value = []
+    historyError.value = err.message
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function operationFinished() {
+  await load()
+  if (historyChapterId.value) await showChapterHistory(historyChapterId.value)
 }
 
 watch(() => revision.chapter_id, (chapterId) => {
@@ -183,10 +229,30 @@ onMounted(load)
         </form>
       </article>
 
+      <article class="panel narrative-ir-panel">
+        <div class="production-data-head"><div><span>NARRATIVE IR</span><h3>叙事中间层提取</h3></div><p>{{ irRevisions.length }} 个修订</p></div>
+        <form v-if="version.status === 'published'" class="ir-test-form" @submit.prevent="startTestIR">
+          <div class="contract-notice warning"><FlaskConical :size="17" /><div><strong>手工测试模式</strong><span>仅用于验证已发布版本的 IR 提取。空章节范围表示完整版本；非空范围仅处理明确选中的章节。请求不会额外发送 <code>test_mode</code> 字段。</span></div></div>
+          <label class="field"><span>Extractor 版本 <i>*</i></span><input v-model="irRun.extractor_version" maxlength="200" required /></label>
+          <div class="ir-chapter-scope"><strong>测试章节范围</strong><span>已选 {{ irRun.chapter_ids.length }} 章；不选则提取完整版本</span><div><label v-for="chapter in chapters" :key="chapter.chapter_id"><input v-model="irRun.chapter_ids" type="checkbox" :value="chapter.chapter_id" /><span>{{ chapter.ordinal }} · {{ chapter.title }}</span></label></div></div>
+          <label class="test-ack"><input v-model="irTestAcknowledged" type="checkbox" /><span>我确认这是测试提取操作，会创建可审计的 IR operation。</span></label>
+          <button class="button button-primary" :disabled="submitting || !irTestAcknowledged || !irRun.extractor_version.trim()"><BrainCircuit :size="16" />{{ submitting ? '提交中…' : '启动测试 IR' }}</button>
+        </form>
+        <div v-if="!irRevisions.length" class="compact-empty">当前版本还没有 Narrative IR 修订。</div>
+        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ item.revision_scope }}<template v-if="item.changed_chapter_ids?.length"> · {{ item.changed_chapter_ids.length }} 个变更章节</template></small></div><StatusBadge :status="item.status" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
+      </article>
+
       <article class="panel chapter-list-panel">
         <div class="production-data-head"><div><span>ORDERED SNAPSHOT</span><h3>版本章节</h3></div><p>{{ chapters.length }} 章</p></div>
         <div v-if="!chapters.length" class="compact-empty">当前版本尚无章节。</div>
-        <div v-else class="table-wrap"><table><thead><tr><th>序号</th><th>标题</th><th>修订</th><th>字符数</th><th>内容哈希</th><th>Chapter ID</th></tr></thead><tbody><tr v-for="chapter in chapters" :key="chapter.chapter_revision_id"><td><b>{{ chapter.ordinal }}</b></td><td>{{ chapter.title }}</td><td>r{{ chapter.revision_number }}</td><td>{{ Number(chapter.char_count).toLocaleString('zh-CN') }}</td><td><code class="hash-code">{{ chapter.content_hash }}</code></td><td><code>{{ chapter.chapter_id }}</code></td></tr></tbody></table></div>
+        <div v-else class="table-wrap"><table><thead><tr><th>序号</th><th>标题</th><th>修订</th><th>字符数</th><th>内容哈希</th><th>Chapter ID</th><th></th></tr></thead><tbody><tr v-for="chapter in chapters" :key="chapter.chapter_revision_id"><td><b>{{ chapter.ordinal }}</b></td><td>{{ chapter.title }}</td><td>r{{ chapter.revision_number }}</td><td>{{ Number(chapter.char_count).toLocaleString('zh-CN') }}</td><td><code class="hash-code">{{ chapter.content_hash }}</code></td><td><code>{{ chapter.chapter_id }}</code></td><td><button class="row-action" aria-label="查看修订历史" @click="showChapterHistory(chapter.chapter_id)"><History :size="16" /></button></td></tr></tbody></table></div>
+      </article>
+
+      <article v-if="historyChapterId" class="panel chapter-history-panel">
+        <div class="production-data-head"><div><span>IMMUTABLE HISTORY</span><h3>章节修订历史</h3></div><code>{{ historyChapterId }}</code></div>
+        <div v-if="historyLoading" class="compact-empty">正在读取修订历史……</div>
+        <div v-else-if="historyError" class="error-banner">{{ historyError }} <button @click="showChapterHistory(historyChapterId)">重试</button></div>
+        <div v-else class="revision-history-list"><article v-for="item in chapterRevisions" :key="item.chapter_revision_id"><b>r{{ item.revision_number }}</b><div><strong>{{ item.title }}</strong><code>{{ item.chapter_revision_id }}</code></div><span>{{ Number(item.char_count).toLocaleString('zh-CN') }} 字符</span><code class="hash-code">{{ item.content_hash }}</code><time>{{ new Date(item.created_at).toLocaleString('zh-CN') }}</time></article></div>
       </article>
     </template>
   </section>

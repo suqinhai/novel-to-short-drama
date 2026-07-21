@@ -65,6 +65,39 @@ type ChapterRevision struct {
 	CharCount         int    `json:"char_count"`
 }
 
+type ChapterRevisionHistoryItem struct {
+	ChapterID         string    `json:"chapter_id"`
+	ChapterRevisionID string    `json:"chapter_revision_id"`
+	RevisionNumber    int       `json:"revision_number"`
+	Title             string    `json:"title"`
+	ContentHash       string    `json:"content_hash"`
+	CharCount         int       `json:"char_count"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+type NarrativeIRRevisionSummary struct {
+	IRRevisionID      string          `json:"ir_revision_id"`
+	SourceVersionID   string          `json:"source_version_id"`
+	RevisionNumber    int             `json:"revision_number"`
+	Status            string          `json:"status"`
+	RevisionScope     string          `json:"revision_scope"`
+	ExtractorVersion  string          `json:"extractor_version"`
+	ChangedChapterIDs json.RawMessage `json:"changed_chapter_ids"`
+	ValidationSummary json.RawMessage `json:"validation_summary"`
+	CreatedAt         time.Time       `json:"created_at"`
+	PublishedAt       *time.Time      `json:"published_at"`
+}
+
+type StoryArcSummary struct {
+	StoryArcRevisionID string  `json:"story_arc_revision_id"`
+	IRRevisionID       string  `json:"ir_revision_id"`
+	ChapterID          string  `json:"chapter_id"`
+	Title              string  `json:"title"`
+	Summary            string  `json:"summary"`
+	ArcType            string  `json:"arc_type"`
+	Confidence         float64 `json:"confidence"`
+}
+
 type ImportInput struct {
 	Mode       string
 	Text       string
@@ -128,6 +161,39 @@ type AdaptationSpecSummary struct {
 	SourceVersionID         string  `json:"source_version_id"`
 	IRRevisionID            *string `json:"ir_revision_id"`
 	ResourceRevision        int     `json:"resource_revision"`
+}
+
+type AdaptationScopeInput struct {
+	Mode                string
+	ChapterIDs          []string
+	StoryArcRevisionIDs []string
+}
+
+type AdaptationRuleInput struct {
+	RuleType    string
+	Enforcement string
+	TargetType  string
+	TargetID    *string
+	Priority    int
+	Parameters  json.RawMessage
+	Rationale   string
+}
+
+type AdaptationSpecInput struct {
+	SchemaVersion          string
+	SourceVersionID        string
+	IRRevisionID           string
+	Scope                  AdaptationScopeInput
+	Platform               string
+	AudienceProfile        json.RawMessage
+	TargetEpisodeCount     int
+	EpisodeDurationSeconds int
+	Rules                  []AdaptationRuleInput
+}
+
+type CreateAdaptationProjectInput struct {
+	DisplayName    string
+	AdaptationSpec AdaptationSpecInput
 }
 
 type ImpactChange struct {

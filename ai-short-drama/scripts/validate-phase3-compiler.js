@@ -67,6 +67,19 @@ const nodeNames = workflow.nodes.map((node) => node.name);
 for (const name of ['Claim and Load Frozen Compiler Inputs', 'Run Nine-stage Constraint Compiler', 'Validate compiler-plan.v2 and Business Audit', 'Checkpoint Validated Reviewable Plan', 'Atomic Publish Reviewable Episode Plan']) {
   assert(nodeNames.includes(name), `workflow node ${name} missing`);
 }
+const publishSQL = workflow.nodes.find((node) => node.name === 'Atomic Publish Reviewable Episode Plan')?.parameters?.query || '';
+const hasEffectivePublishGuard = (sql) =>
+  /guard AS MATERIALIZED \(SELECT 1 AS ok FROM payload CROSS JOIN run_row run CROSS JOIN spec_row spec WHERE/.test(sql) &&
+  /FROM payload CROSS JOIN run_row run JOIN guard ON guard\.ok=1 RETURNING \*\)/.test(sql) &&
+  !/1\s*\/\s*CASE\s+WHEN/i.test(sql);
+assert(hasEffectivePublishGuard(publishSQL), 'publish guard must be a materialized WHERE gate explicitly joined by inserted_plan');
+assert(!hasEffectivePublishGuard(publishSQL.replace('JOIN guard ON guard.ok=1', 'CROSS JOIN guard')), 'negative guard fixture must detect an unreferenced guard value');
+for (const gatedWrite of [
+  'JOIN inserted_plan published ON published.compiler_run_id=run.compiler_run_id',
+  'JOIN inserted_plan published ON published.adaptation_spec_version_id=spec.adaptation_spec_version_id',
+]) {
+  assert(publishSQL.includes(gatedWrite), `publish side write is not gated by inserted_plan: ${gatedWrite}`);
+}
 const workflowText = JSON.stringify(workflow);
 for (const marker of ['assert_operation_claim', 'compiler_checkpoints', 'artifact_dependencies', 'artifact_source_evidence', 'finish_operation']) {
   assert(workflowText.includes(marker), `atomic compiler persistence marker ${marker} missing`);

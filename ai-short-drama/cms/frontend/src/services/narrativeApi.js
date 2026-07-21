@@ -107,6 +107,15 @@ export const narrativeApi = {
   listChapters(sourceVersionId) {
     return request(`/source-versions/${id(sourceVersionId)}/chapters`)
   },
+  listChapterRevisions(chapterId) {
+    return request(`/source-chapters/${id(chapterId)}/revisions`)
+  },
+  listIRRevisions(sourceVersionId) {
+    return request(`/source-versions/${id(sourceVersionId)}/ir-revisions`)
+  },
+  listStoryArcs(irRevisionId) {
+    return request(`/narrative-ir-revisions/${id(irRevisionId)}/story-arcs`)
+  },
   startImport(sourceVersionId, payload, idempotencyKey) {
     return command(`/source-versions/${id(sourceVersionId)}/imports`, {
       body: payload, idempotencyKey, versionResource: sourceVersionId,
@@ -132,6 +141,9 @@ export const narrativeApi = {
       idempotencyKey, versionResource: sourceVersionId,
     })
   },
+  startIRRun(sourceVersionId, payload, idempotencyKey) {
+    return command(`/source-versions/${id(sourceVersionId)}/ir-runs`, { body: payload, idempotencyKey })
+  },
   getOperation(operationId) {
     return request(`/operations/${id(operationId)}`)
   },
@@ -152,6 +164,12 @@ export const narrativeApi = {
   },
   createAdaptationSpec(projectId, payload, idempotencyKey) {
     return command(`/adaptation-projects/${id(projectId)}/specs`, { body: payload, idempotencyKey })
+  },
+  startCompilerRun(projectId, payload, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/compiler-runs`, { body: payload, idempotencyKey })
+  },
+  getAdaptationPlan(adaptationPlanId) {
+    return request(`/adaptation-plans/${id(adaptationPlanId)}`)
   },
   getCachedVersionETag(sourceVersionId) {
     return cachedETag('source-version', sourceVersionId)

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCircle2, CircleAlert, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { narrativeApi } from '../services/narrativeApi'
+import { createTerminalNotifier, isTerminalOperation } from '../services/operationTerminal'
 
 const props = defineProps({ operation: { type: Object, default: null } })
 const emit = defineEmits(['terminal'])
@@ -9,9 +10,9 @@ const current = ref(props.operation)
 const error = ref('')
 const polling = ref(false)
 let timer = 0
-const terminalStatuses = new Set(['completed', 'partially_failed', 'failed', 'cancelled', 'needs_review'])
-const terminal = computed(() => current.value && terminalStatuses.has(current.value.status))
+const terminal = computed(() => isTerminalOperation(current.value))
 const successful = computed(() => current.value?.status === 'completed')
+const notifyTerminal = createTerminalNotifier((operation) => emit('terminal', operation))
 
 function stop() {
   window.clearTimeout(timer)
@@ -28,7 +29,7 @@ async function refresh() {
     current.value = response.data
     if (terminal.value) {
       stop()
-      emit('terminal', current.value)
+      notifyTerminal(current.value)
     } else {
       timer = window.setTimeout(refresh, 2000)
     }
@@ -41,7 +42,8 @@ async function refresh() {
 watch(() => props.operation, (value) => {
   stop()
   current.value = value
-  if (value?.operation_id && !terminalStatuses.has(value.status)) refresh()
+  if (isTerminalOperation(value)) notifyTerminal(value)
+  else if (value?.operation_id) refresh()
 }, { immediate: true })
 onBeforeUnmount(stop)
 </script>

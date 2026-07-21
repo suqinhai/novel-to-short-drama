@@ -1,4 +1,5 @@
 {
+  "id": "wf_chapter_impact_analysis",
   "name": "02c - Chapter Revision Impact Analysis",
   "nodes": [
     {
@@ -32,7 +33,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT operation_id,claim_token::text FROM drama.claim_operation($1::text,$2::text,ARRAY['invalidation_scan']::text[],$3::integer);",
+        "query": "WITH recovery AS MATERIALIZED (SELECT count(*) recovered FROM drama.recover_expired_operations(100)) SELECT claimed.operation_id,claimed.claim_token::text FROM recovery CROSS JOIN LATERAL drama.claim_operation($1::text,$2::text,ARRAY['invalidation_scan']::text[],$3::integer) claimed;",
         "options": {
           "queryReplacement": "={{ [$json.worker_id,$json.claim_request_id,$json.lease_seconds] }}"
         }

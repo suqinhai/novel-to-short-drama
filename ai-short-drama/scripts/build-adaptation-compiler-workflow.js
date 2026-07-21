@@ -45,8 +45,11 @@ if(failures.length){
 value.schema_valid=failures.length===0;
 return [{json:value}];`;
 
-const claimAndLoadSQL = `WITH claimed AS (
-  SELECT * FROM drama.claim_operation($1::text,$2::text,ARRAY['adaptation_compile']::text[],$3::integer)
+const claimAndLoadSQL = `WITH recovery AS MATERIALIZED (
+  SELECT count(*) recovered FROM drama.recover_expired_operations(100)
+), claimed AS (
+  SELECT claimed.* FROM recovery CROSS JOIN LATERAL
+    drama.claim_operation($1::text,$2::text,ARRAY['adaptation_compile']::text[],$3::integer) claimed
 ), run_update AS (
   UPDATE drama.compiler_runs run SET status='running',lease_owner=claimed.lease_owner,
     lease_expires_at=claimed.lease_expires_at,started_at=COALESCE(run.started_at,CURRENT_TIMESTAMP)
@@ -118,7 +121,7 @@ spec_row AS (SELECT spec.* FROM drama.adaptation_spec_versions spec JOIN run_row
 plan_events AS (SELECT (episode->>'episode_number')::integer episode_number,assignment,
   assignment->>'event_revision_id' event_revision_id FROM payload CROSS JOIN LATERAL jsonb_array_elements(plan->'episodes') episode
   CROSS JOIN LATERAL jsonb_array_elements(episode->'event_assignments') assignment),
-guard AS (SELECT 1/CASE WHEN
+guard AS MATERIALIZED (SELECT 1 AS ok FROM payload CROSS JOIN run_row run CROSS JOIN spec_row spec WHERE
   payload.plan->>'schema_version'='compiler-plan.v2' AND payload.plan->>'compiler_run_id'=run.compiler_run_id
   AND jsonb_array_length(payload.plan->'episodes')=spec.target_episode_count
   AND (payload.plan->'validation'->>'hard_rules_satisfied')::boolean
@@ -170,14 +173,13 @@ guard AS (SELECT 1/CASE WHEN
     CROSS JOIN LATERAL jsonb_array_elements(episode->'added_adaptation_content') addition
     CROSS JOIN LATERAL jsonb_array_elements_text(addition->'rule_ids') rule_id
     WHERE NOT EXISTS (SELECT 1 FROM drama.adaptation_rules rule WHERE rule.adaptation_rule_id=rule_id
-      AND rule.adaptation_spec_version_id=spec.adaptation_spec_version_id AND rule.rule_type='transform_required'))
-  THEN 1 ELSE 0 END AS ok FROM payload,run_row run,spec_row spec),
+      AND rule.adaptation_spec_version_id=spec.adaptation_spec_version_id AND rule.rule_type='transform_required'))),
 inserted_plan AS (INSERT INTO drama.adaptation_plans(adaptation_plan_id,compiler_run_id,project_id,adaptation_spec_version_id,
   version_number,status,is_current,content_hash,quality_report)
   SELECT 'ap_'||replace(gen_random_uuid()::text,'-',''),run.compiler_run_id,run.project_id,run.adaptation_spec_version_id,
     COALESCE((SELECT max(version_number)+1 FROM drama.adaptation_plans WHERE project_id=run.project_id),1),
     'waiting_review',false,payload.output_hash,jsonb_build_object('validation',payload.plan->'validation','diagnostics',payload.plan->'diagnostics')
-  FROM payload,run_row run,guard RETURNING *),
+  FROM payload CROSS JOIN run_row run JOIN guard ON guard.ok=1 RETURNING *),
 inserted_episodes AS (INSERT INTO drama.adaptation_episode_plans(adaptation_episode_plan_id,adaptation_plan_id,episode_number,title,
   logline,estimated_duration_seconds,opening_hook,ending_hook,continuity_in,continuity_out,validation_report,content_hash,
   source_event_ids,source_chapter_ids,added_adaptation_content,merged_content,deviation_notes)
@@ -198,16 +200,19 @@ inserted_diagnostics AS (INSERT INTO drama.compiler_diagnostics(compiler_diagnos
   entity_type,entity_id,message,details)
   SELECT 'cd_'||replace(gen_random_uuid()::text,'-',''),run.compiler_run_id,item->>'severity',item->>'code',
     NULLIF(item->>'entity_type',''),NULLIF(item->>'entity_id',''),item->>'message',COALESCE(item->'details','{}'::jsonb)
-  FROM payload JOIN run_row run ON true CROSS JOIN LATERAL jsonb_array_elements(payload.plan->'diagnostics') item RETURNING compiler_run_id),
+  FROM payload JOIN run_row run ON true JOIN inserted_plan published ON published.compiler_run_id=run.compiler_run_id
+  CROSS JOIN LATERAL jsonb_array_elements(payload.plan->'diagnostics') item RETURNING compiler_run_id),
 source_artifact AS (INSERT INTO drama.artifacts(artifact_id,artifact_type,native_entity_id,revision_number,content_hash,idempotency_key,metadata)
   SELECT 'art_source_'||run.source_version_id,'source_version',run.source_version_id,source.version_number,source.version_hash,
     'compiler-source-artifact:'||run.source_version_id,jsonb_build_object('work_id',run.work_id)
-  FROM run_row run JOIN drama.source_versions source ON source.source_version_id=run.source_version_id
+  FROM run_row run JOIN inserted_plan published ON published.compiler_run_id=run.compiler_run_id
+  JOIN drama.source_versions source ON source.source_version_id=run.source_version_id
   ON CONFLICT(idempotency_key) DO UPDATE SET updated_at=CURRENT_TIMESTAMP RETURNING *),
 spec_artifact AS (INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,idempotency_key,metadata)
   SELECT 'art_spec_'||spec.adaptation_spec_version_id,'adaptation_spec_version',spec.project_id,spec.adaptation_spec_version_id,
     spec.version_number,spec.content_hash,'compiler-spec-artifact:'||spec.adaptation_spec_version_id,jsonb_build_object('ir_revision_id',spec.ir_revision_id)
-  FROM spec_row spec ON CONFLICT(idempotency_key) DO UPDATE SET updated_at=CURRENT_TIMESTAMP RETURNING *),
+  FROM spec_row spec JOIN inserted_plan published ON published.adaptation_spec_version_id=spec.adaptation_spec_version_id
+  ON CONFLICT(idempotency_key) DO UPDATE SET updated_at=CURRENT_TIMESTAMP RETURNING *),
 plan_artifact AS (INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,
   validity_status,is_current,idempotency_key,metadata)
   SELECT 'art_plan_'||plan.adaptation_plan_id,'adaptation_plan',plan.project_id,plan.adaptation_plan_id,plan.version_number,
@@ -266,9 +271,11 @@ const postgresNode = (id, name, query, position, replacements, onError) => ({
 const codeNode = (id, name, jsCode, position) => ({parameters: {jsCode}, id, name, type: 'n8n-nodes-base.code', typeVersion: 2, position});
 
 const workflow = {
+  id: 'wf_adaptation_compiler',
   name: '04a - Constraint Adaptation Compiler',
   nodes: [
     {parameters: {}, id: '04a-trigger', name: 'Sub-workflow Trigger', type: 'n8n-nodes-base.executeWorkflowTrigger', typeVersion: 1.1, position: [-1260, 0]},
+    {parameters: {rule: {interval: [{field: 'minutes', minutesInterval: 1}]}}, id: '04a-schedule', name: 'Pending Compiler Poll', type: 'n8n-nodes-base.scheduleTrigger', typeVersion: 1.2, position: [-1260, 160]},
     codeNode('04a-normalize', 'Normalize Compiler Worker Request', `const crypto=require('crypto');const source=$json||{};return [{json:{worker_id:String(source.worker_id||'n8n-adaptation-compiler').slice(0,200),claim_request_id:String(source.claim_request_id||('compiler-claim-'+crypto.randomUUID())).slice(0,255),lease_seconds:Math.min(3600,Math.max(30,Number(source.lease_seconds||300)))}}];`, [-1040, 0]),
     postgresNode('04a-load', 'Claim and Load Frozen Compiler Inputs', claimAndLoadSQL, [-800, 0], '={{ [$json.worker_id,$json.claim_request_id,$json.lease_seconds] }}'),
     codeNode('04a-compile', 'Run Nine-stage Constraint Compiler', compilerCode, [-540, 0]),
@@ -283,6 +290,7 @@ const workflow = {
   ],
   connections: {
     'Sub-workflow Trigger': {main: [[{node: 'Normalize Compiler Worker Request', type: 'main', index: 0}]]},
+    'Pending Compiler Poll': {main: [[{node: 'Normalize Compiler Worker Request', type: 'main', index: 0}]]},
     'Normalize Compiler Worker Request': {main: [[{node: 'Claim and Load Frozen Compiler Inputs', type: 'main', index: 0}]]},
     'Claim and Load Frozen Compiler Inputs': {main: [[{node: 'Run Nine-stage Constraint Compiler', type: 'main', index: 0}]]},
     'Run Nine-stage Constraint Compiler': {main: [[{node: 'Validate compiler-plan.v2 and Business Audit', type: 'main', index: 0}]]},

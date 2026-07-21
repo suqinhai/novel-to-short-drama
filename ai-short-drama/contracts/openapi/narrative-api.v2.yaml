@@ -249,6 +249,27 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OperationResponse'}
+  /source-chapters/{chapter_id}/revisions:
+    get:
+      tags: [SourceVersions]
+      operationId: listChapterRevisions
+      summary: List immutable revision history for one logical chapter
+      parameters:
+        - $ref: '#/components/parameters/ChapterID'
+      responses:
+        '200':
+          description: Revision history, newest first, without full chapter bodies
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {type: array, items: {$ref: '#/components/schemas/ChapterRevisionHistoryItem'}}
+        '404': {$ref: '#/components/responses/NotFound'}
   /source-versions/{source_version_id}/chapters/{chapter_id}:
     patch:
       tags: [SourceVersions]
@@ -327,6 +348,49 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OperationResponse'}
+  /source-versions/{source_version_id}/ir-revisions:
+    get:
+      tags: [SourceVersions]
+      operationId: listNarrativeIRRevisions
+      summary: List Narrative IR extraction status for a source version
+      parameters:
+        - $ref: '#/components/parameters/SourceVersionID'
+      responses:
+        '200':
+          description: IR revision summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {type: array, items: {$ref: '#/components/schemas/NarrativeIRRevisionSummary'}}
+  /narrative-ir-revisions/{ir_revision_id}/story-arcs:
+    get:
+      tags: [SourceVersions]
+      operationId: listNarrativeIRStoryArcs
+      summary: List reviewable story arcs from a published IR revision
+      parameters:
+        - name: ir_revision_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      responses:
+        '200':
+          description: Story arcs with exact source chapter identity
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data: {type: array, items: {$ref: '#/components/schemas/StoryArcSummary'}}
   /adaptation-projects:
     post:
       tags: [AdaptationProjects]
@@ -826,6 +890,45 @@ components:
         title: {type: string}
         content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
         char_count: {type: integer, minimum: 0}
+    ChapterRevisionHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [chapter_id, chapter_revision_id, revision_number, title, content_hash, char_count, created_at]
+      properties:
+        chapter_id: {$ref: '#/components/schemas/ID'}
+        chapter_revision_id: {$ref: '#/components/schemas/ID'}
+        revision_number: {type: integer, minimum: 1}
+        title: {type: string}
+        content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        char_count: {type: integer, minimum: 0}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+    NarrativeIRRevisionSummary:
+      type: object
+      additionalProperties: false
+      required: [ir_revision_id, source_version_id, revision_number, status, revision_scope, extractor_version, created_at]
+      properties:
+        ir_revision_id: {$ref: '#/components/schemas/ID'}
+        source_version_id: {$ref: '#/components/schemas/ID'}
+        revision_number: {type: integer, minimum: 1}
+        status: {type: string, enum: [staging, validating, published, rejected, superseded]}
+        revision_scope: {type: string, enum: [full, incremental]}
+        extractor_version: {type: string}
+        changed_chapter_ids: {type: array, items: {$ref: '#/components/schemas/ID'}}
+        validation_summary: {type: object}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        published_at: {anyOf: [{$ref: '#/components/schemas/Timestamp'}, {type: 'null'}]}
+    StoryArcSummary:
+      type: object
+      additionalProperties: false
+      required: [story_arc_revision_id, ir_revision_id, chapter_id, title, arc_type, confidence]
+      properties:
+        story_arc_revision_id: {$ref: '#/components/schemas/ID'}
+        ir_revision_id: {$ref: '#/components/schemas/ID'}
+        chapter_id: {$ref: '#/components/schemas/ID'}
+        title: {type: string}
+        summary: {type: string}
+        arc_type: {type: string}
+        confidence: {type: number, minimum: 0, maximum: 1}
     CreateAdaptationProjectRequest:
       type: object
       additionalProperties: false

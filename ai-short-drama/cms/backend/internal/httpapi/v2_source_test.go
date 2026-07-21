@@ -15,9 +15,11 @@ import (
 )
 
 type fakeSourceV2 struct {
-	applyCalls   int
-	publishCalls int
-	lastImport   store.ImportInput
+	applyCalls          int
+	publishCalls        int
+	adaptationSpecCalls int
+	lastImport          store.ImportInput
+	lastAdaptationSpec  store.AdaptationSpecInput
 }
 
 func (f *fakeSourceV2) ListSourceWorks(context.Context, string, int, int) (store.SourceWorkList, error) {
@@ -40,6 +42,15 @@ func (f *fakeSourceV2) GetSourceVersion(context.Context, string) (store.SourceVe
 }
 func (f *fakeSourceV2) ListVersionChapters(context.Context, string) ([]store.ChapterRevision, error) {
 	return nil, nil
+}
+func (f *fakeSourceV2) ListChapterRevisions(context.Context, string) ([]store.ChapterRevisionHistoryItem, error) {
+	return []store.ChapterRevisionHistoryItem{}, nil
+}
+func (f *fakeSourceV2) ListNarrativeIRRevisions(context.Context, string) ([]store.NarrativeIRRevisionSummary, error) {
+	return []store.NarrativeIRRevisionSummary{}, nil
+}
+func (f *fakeSourceV2) ListStoryArcs(context.Context, string) ([]store.StoryArcSummary, error) {
+	return []store.StoryArcSummary{}, nil
 }
 func (f *fakeSourceV2) ApplyImport(_ context.Context, _ string, _ int, _ string, input store.ImportInput) (store.Operation, int, error) {
 	f.applyCalls++
@@ -81,6 +92,25 @@ func (f *fakeSourceV2) CreateRegenerationRequest(_ context.Context, projectID, c
 }
 func (f *fakeSourceV2) GetOperation(context.Context, string) (store.Operation, error) {
 	return completedTestOperation(), nil
+}
+func (f *fakeSourceV2) CreateAdaptationProject(context.Context, string, store.CreateAdaptationProjectInput) (store.Operation, error) {
+	return adaptationTestOperation("project", "project_test"), nil
+}
+func (f *fakeSourceV2) ListAdaptationSpecs(context.Context, string) ([]store.AdaptationSpecSummary, error) {
+	return []store.AdaptationSpecSummary{{AdaptationSpecID: "as_test", AdaptationSpecVersionID: "asv_test", VersionNumber: 1,
+		Status: "active", SourceVersionID: "sv_test", ResourceRevision: 1}}, nil
+}
+func (f *fakeSourceV2) CreateAdaptationSpecVersion(_ context.Context, _ string, _ string, input store.AdaptationSpecInput) (store.Operation, error) {
+	f.adaptationSpecCalls++
+	f.lastAdaptationSpec = input
+	return adaptationTestOperation("adaptation_spec_version", "asv_test"), nil
+}
+
+func adaptationTestOperation(targetType, targetID string) store.Operation {
+	now := time.Now().UTC()
+	return store.Operation{OperationID: "op_spec_test", TraceID: "tr_spec_test", OperationType: "spec_validation",
+		TargetType: targetType, TargetID: targetID, Status: "completed", Checkpoint: store.OperationCheckpoint{Stage: "finished"},
+		ResultRef: &store.ResultReference{ResourceType: "adaptation_spec_version", ResourceID: "asv_test"}, CreatedAt: now, UpdatedAt: now}
 }
 
 func completedTestOperation() store.Operation {
@@ -188,6 +218,49 @@ func TestIRRunReturnsPendingIRRevisionTarget(t *testing.T) {
 	}
 	if body.Data.Status != "pending" || body.Data.TargetType != "ir_revision" || body.Data.TargetID != "ir_test" {
 		t.Fatalf("IR run must target a staging IR revision: %#v", body.Data)
+	}
+}
+
+func TestCreateAdaptationProjectValidatesAndDispatchesFrozenSpec(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-projects", bytes.NewBufferString(`{
+		"display_name":"Adaptation","adaptation_spec":{"schema_version":"adaptation-spec.v1",
+		"source_version_id":"sv_test","ir_revision_id":"ir_test","scope":{"mode":"chapters_only",
+		"chapter_ids":["ch_test"],"story_arc_revision_ids":[]},"platform":"douyin","audience_profile":{},
+		"target_episode_count":12,"episode_duration_seconds":120,"rules":[{"rule_type":"must_preserve",
+		"enforcement":"hard","target_type":"chapter","target_id":"ch_test","priority":100,"parameters":{}}]}}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "adaptation-project-key")
+	newSourceV2TestRouter(&fakeSourceV2{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Data store.Operation `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.Data.OperationType != "spec_validation" ||
+		body.Data.TargetType != "project" || body.Data.Status != "completed" {
+		t.Fatalf("unexpected operation response: %#v err=%v", body.Data, err)
+	}
+}
+
+func TestAdaptationSpecAllowsStoreToResolveCurrentPublishedFullIR(t *testing.T) {
+	fake := &fakeSourceV2{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-projects/project_test/specs", bytes.NewBufferString(`{
+		"schema_version":"adaptation-spec.v1","source_version_id":"sv_test","scope":{"mode":"chapters_only",
+		"chapter_ids":["ch_test"],"story_arc_revision_ids":[]},"platform":"douyin","audience_profile":{},
+		"target_episode_count":12,"episode_duration_seconds":120,"rules":[{"rule_type":"must_preserve",
+		"enforcement":"hard","target_type":"chapter","target_id":"ch_test","priority":100,"parameters":{}}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "adaptation-spec-key")
+	newSourceV2TestRouter(fake).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || fake.adaptationSpecCalls != 1 {
+		t.Fatalf("spec without explicit IR must reach store resolution: status=%d calls=%d body=%s",
+			recorder.Code, fake.adaptationSpecCalls, recorder.Body.String())
+	}
+	if fake.lastAdaptationSpec.IRRevisionID != "" {
+		t.Fatalf("handler must preserve omitted IR for transactional store resolution: %#v", fake.lastAdaptationSpec)
 	}
 }
 

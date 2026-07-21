@@ -1,4 +1,5 @@
 {
+  "id": "wf_narrative_ir_extract",
   "name": "02a Narrative IR 有界提取",
   "nodes": [
     {
@@ -6,11 +7,15 @@
       "id": "02a-trigger", "name": "Sub-workflow Trigger", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1, "position": [-1500,0]
     },
     {
-      "parameters": {"jsCode":"const crypto=require('crypto');const i=$json,p=i.payload||{};if(!i.worker_id||!i.claim_request_id)throw new Error('INVALID_INPUT: worker_id and claim_request_id are required');const lease=Math.max(60,Math.min(3600,Number(i.lease_seconds||900)));return [{json:{worker_id:String(i.worker_id),claim_request_id:String(i.claim_request_id),lease_seconds:lease,test_mode:Boolean(i.test_mode),extractor_version:String(p.extractor_version||'phase2-ir-extractor-v1'),trace_id:String(p.trace_id||`trace_${crypto.randomUUID()}`)}}];"},
+      "parameters": {"rule":{"interval":[{"field":"minutes","minutesInterval":1}]}},
+      "id": "02a-schedule", "name": "Pending IR Poll", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2, "position": [-1500,160]
+    },
+    {
+      "parameters": {"jsCode":"const crypto=require('crypto');const i=$json,p=i.payload||{};const lease=Math.max(60,Math.min(3600,Number(i.lease_seconds||900)));return [{json:{worker_id:String(i.worker_id||'n8n-narrative-ir').slice(0,200),claim_request_id:String(i.claim_request_id||('ir-claim-'+crypto.randomUUID())).slice(0,255),lease_seconds:lease,test_mode:Boolean(i.test_mode),extractor_version:String(p.extractor_version||'phase2-ir-extractor-v1'),trace_id:String(p.trace_id||`trace_${crypto.randomUUID()}`)}}];"},
       "id": "02a-normalize", "name": "Normalize Worker Request", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [-1280,0]
     },
     {
-      "parameters": {"operation":"executeQuery","query":"SELECT * FROM drama.claim_operation($1::text,$2::text,ARRAY['ir_extraction']::text[],$3::integer);","options":{"queryReplacement":"={{ [$json.worker_id,$json.claim_request_id,$json.lease_seconds] }}"}},
+      "parameters": {"operation":"executeQuery","query":"WITH recovery AS MATERIALIZED (SELECT count(*) recovered FROM drama.recover_expired_operations(100)) SELECT claimed.* FROM recovery CROSS JOIN LATERAL drama.claim_operation($1::text,$2::text,ARRAY['ir_extraction']::text[],$3::integer) claimed;","options":{"queryReplacement":"={{ [$json.worker_id,$json.claim_request_id,$json.lease_seconds] }}"}},
       "id": "02a-claim", "name": "Claim IR Operation", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6, "position": [-1060,0],
       "credentials":{"postgres":{"id":"REPLACE_WITH_POSTGRES_CREDENTIAL_ID","name":"Short Drama PostgreSQL"}}
     },
@@ -32,13 +37,21 @@
       "id": "02a-has-window", "name": "Has Source Window?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [-180,0]
     },
     {
+      "parameters": {"conditions":{"options":{"typeValidation":"strict"},"conditions":[{"leftValue":"={{ $('Verify Claimed Operation').first().json.test_mode }}","rightValue":true,"operator":{"type":"boolean","operation":"equals"}}],"combinator":"and"}},
+      "id": "02a-test-mode", "name": "Use Mock Provider?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [20,80]
+    },
+    {
+      "parameters": {"jsCode":"const crypto=require('crypto'),b=$('Build Codepoint-bounded Slice').item.json,w=b.window,q=w.content,key=w.window_key.replace(/[^A-Za-z0-9]/g,'_'),hash=crypto.createHash('sha256').update(q).digest('hex'),source={source_version_id:b.source_version_id,chapter_id:w.chapter_id,chapter_revision_id:w.chapter_revision_id,start_utf8_byte:w.start_utf8_byte,end_utf8_byte:w.end_utf8_byte,start_codepoint:w.start_codepoint,end_codepoint:w.end_codepoint,quote:q,quote_hash:hash,confidence:1},entity=`entity_${key}`,event=`event_${key}`;const extraction={schema_version:'narrative-extraction.v1',entities:[{local_id:entity,entity_type:'character',canonical_name:`Mock角色${w.ordinal}`,aliases:[],attributes:{mock:true},source}],facts:[{local_id:event,fact_kind:'event',statement:`Mock事件 ${key}`,source,supporting_sources:[],event:{event_type:'mock',summary:`Mock事件 ${key}`,narrative_order:w.start_codepoint+1,temporal_expression:null,location_entity_local_id:null,importance:0.5,participants:[{entity_local_id:entity,role:'protagonist',state:{mock:true},source}]}},{local_id:`state_${key}`,fact_kind:'character_state',statement:`Mock人物状态 ${key}`,source,supporting_sources:[],character_state:{character_entity_local_id:entity,dimension:'mock_state',before:{value:'before'},after:{value:'after'},trigger_event_local_id:event,sequence_number:w.start_codepoint+1}},{local_id:`timeline_${key}`,fact_kind:'timeline',statement:`Mock时间线 ${key}`,source,supporting_sources:[],timeline:{event_local_id:event,subject_entity_local_id:entity,temporal_expression:`chapter-${w.ordinal}`,normalized_time:{ordinal:w.ordinal},timeline_order:w.start_codepoint+1,certainty:'exact'}},{local_id:`foreshadow_${key}`,fact_kind:'foreshadowing',statement:`Mock伏笔 ${key}`,source,supporting_sources:[],foreshadowing:{thread_local_id:`thread_${w.chapter_id}`,event_local_id:event,stage:'planted',occurrence_order:w.start_codepoint+1}}],event_relations:[],story_arcs:[{local_id:`arc_${key}`,title:`Mock故事弧 ${w.ordinal}`,summary:'Mock Provider 可追溯故事弧',arc_type:'main',event_local_ids:[event],confidence:1,source}]};return [{json:{choices:[{message:{content:JSON.stringify(extraction)}}]}}];"},
+      "id": "02a-mock", "name": "Mock Narrative Extraction Provider", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [220,-20]
+    },
+    {
       "parameters": {"method":"POST","url":"={{ $env.LITELLM_BASE_URL + '/v1/chat/completions' }}","sendHeaders":true,"headerParameters":{"parameters":[{"name":"Authorization","value":"={{ 'Bearer ' + $env.LITELLM_API_KEY }}"},{"name":"Content-Type","value":"application/json"}]},"sendBody":true,"specifyBody":"json","jsonBody":"={{ {model:$env.TEXT_ANALYSIS_MODEL||'glm-5.2',temperature:0,max_tokens:Number($env.MODEL_MAX_TOKENS||8192),response_format:{type:'json_schema',json_schema:{name:'narrative_extraction_v1',strict:true,schema:{type:'object',additionalProperties:false,required:['schema_version','entities','facts','event_relations','story_arcs'],properties:{schema_version:{const:'narrative-extraction.v1'},entities:{type:'array',maxItems:500},facts:{type:'array',maxItems:2000},event_relations:{type:'array',maxItems:5000},story_arcs:{type:'array',maxItems:200}}}}},messages:[{role:'system',content:'Extract Narrative IR from exactly one bounded chapter slice. Output narrative-extraction.v1 JSON only. Every entity/fact/relation/arc and participant must carry exact source_version_id, chapter_id, chapter_revision_id, absolute UTF-8 byte and codepoint offsets, verbatim quote, SHA-256 quote_hash, and confidence. Do not infer unsupported facts. Do not output provider metadata.'},{role:'user',content:JSON.stringify({source_version_id:$json.source_version_id,chapter_id:$json.window.chapter_id,chapter_revision_id:$json.window.chapter_revision_id,chapter_ordinal:$json.window.ordinal,slice_start_codepoint:$json.window.start_codepoint,slice_start_utf8_byte:$json.window.start_utf8_byte,chapter_title:$json.window.title,bounded_text:$json.window.content})}]} }}","options":{"timeout":"={{ Number($env.MODEL_TIMEOUT_MS||120000) }}","response":{"response":{"neverError":false,"responseFormat":"json"}}}},
-      "id": "02a-model", "name": "Call Narrative Extraction Model", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [40,80], "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000,
+      "id": "02a-model", "name": "Call Narrative Extraction Model", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [220,160], "retryOnFail": true, "maxTries": 3, "waitBetweenTries": 2000,
       "onError":"continueErrorOutput"
     },
     {
       "parameters": {"jsCode":"const base=$('Build Codepoint-bounded Slice').item.json;let value=$json.choices?.[0]?.message?.content;if(typeof value!=='string')throw new Error('MODEL_INVALID_JSON: missing message content');value=value.replace(/^```(?:json)?\\s*/i,'').replace(/```$/,'').trim();const extraction=JSON.parse(value);return [{json:{...base,extraction}}];"},
-      "id": "02a-parse", "name": "Parse Model JSON", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [260,80], "onError":"continueErrorOutput"
+      "id": "02a-parse", "name": "Parse Model JSON", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [440,80], "onError":"continueErrorOutput"
     },
     {
       "parameters": {"jsCode":"const x=$json,o=x.extraction,errors=[];const obj=v=>v&&typeof v==='object'&&!Array.isArray(v),arr=Array.isArray,str=v=>typeof v==='string'&&v.length>0,num=v=>typeof v==='number'&&Number.isFinite(v),keys=(v,allowed,p)=>{for(const k of Object.keys(v))if(!allowed.includes(k))errors.push(`${p}: additional ${k}`)};if(!obj(o))errors.push('$: object required');else{keys(o,['schema_version','entities','facts','event_relations','story_arcs'],'$');if(o.schema_version!=='narrative-extraction.v1')errors.push('$.schema_version');for(const k of ['entities','facts','event_relations','story_arcs'])if(!arr(o[k]))errors.push(`$.${k}: array required`);if((o.entities||[]).length>500||(o.facts||[]).length>2000||(o.event_relations||[]).length>5000||(o.story_arcs||[]).length>200)errors.push('$: maxItems');}const source=(s,p)=>{if(!obj(s))return errors.push(`${p}: source object required`);for(const k of ['source_version_id','chapter_id','chapter_revision_id','quote','quote_hash'])if(!str(s[k]))errors.push(`${p}.${k}`);for(const k of ['start_utf8_byte','end_utf8_byte','start_codepoint','end_codepoint','confidence'])if(!num(s[k]))errors.push(`${p}.${k}`);if(!/^[0-9a-f]{64}$/.test(s.quote_hash||'')||s.confidence<0||s.confidence>1)errors.push(`${p}: hash/confidence`)};for(const [i,e] of (o?.entities||[]).entries()){if(!obj(e)||!str(e.local_id)||!['character','location','organization','object','concept'].includes(e.entity_type)||!str(e.canonical_name)||!arr(e.aliases))errors.push(`$.entities[${i}]`);source(e.source,`$.entities[${i}].source`)}for(const [i,f] of (o?.facts||[]).entries()){if(!obj(f)||!str(f.local_id)||!['event','character_state','timeline','foreshadowing','world_rule','relationship'].includes(f.fact_kind)||!str(f.statement))errors.push(`$.facts[${i}]`);source(f.source,`$.facts[${i}].source`);for(const [j,s] of (f.supporting_sources||[]).entries())source(s,`$.facts[${i}].supporting_sources[${j}]`);const detail={event:'event',character_state:'character_state',timeline:'timeline',foreshadowing:'foreshadowing',world_rule:'details',relationship:'details'}[f.fact_kind];if(!obj(f[detail]))errors.push(`$.facts[${i}].${detail}`);if(f.event&&!arr(f.event.participants))errors.push(`$.facts[${i}].event.participants`);for(const [j,p] of (f.event?.participants||[]).entries()){if(!str(p.entity_local_id)||!str(p.role))errors.push(`participant ${i}/${j}`);source(p.source,`participant ${i}/${j}.source`)}}for(const [i,r] of (o?.event_relations||[]).entries()){if(!str(r.from_event_local_id)||!str(r.to_event_local_id)||!['before','after','causes','enables','blocks','contradicts','parallel'].includes(r.relation_type)||!num(r.confidence))errors.push(`$.event_relations[${i}]`);source(r.source,`$.event_relations[${i}].source`)}for(const [i,a] of (o?.story_arcs||[]).entries()){if(!str(a.local_id)||!str(a.title)||!arr(a.event_local_ids)||!a.event_local_ids.length||!num(a.confidence))errors.push(`$.story_arcs[${i}]`);source(a.source,`$.story_arcs[${i}].source`)}if(errors.length)throw new Error('JSON_SCHEMA_INVALID: '+errors.slice(0,12).join('; '));return [{json:x}];"},
@@ -49,7 +62,7 @@
       "id": "02a-business", "name": "Business Validate Provenance and References", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [700,80], "onError":"continueErrorOutput"
     },
     {
-      "parameters": {"operation":"executeQuery","query":"SELECT cp.* FROM drama.operations current_op CROSS JOIN LATERAL drama.checkpoint_operation($1::text,$2::uuid,CASE WHEN $8::boolean THEN 'validating' ELSE 'running' END,$3,$4,jsonb_set(current_op.checkpoint_data,'{windows}',coalesce((SELECT jsonb_agg(item) FROM jsonb_array_elements(coalesce(current_op.checkpoint_data->'windows','[]'::jsonb)) item WHERE item->>'window_key'<>$5),'[]'::jsonb)||$6::jsonb,true)||jsonb_build_object('schema_version','narrative-extraction.v1','last_window_hash',$7::text,'extraction_complete',$8::boolean,'selected_chapter_ids',$9::jsonb)) cp WHERE current_op.operation_id=$1 AND current_op.claim_token=$2::uuid;","options":{"queryReplacement":"={{ [$json.operation_id,$json.claim_token,$json.ready_for_reconcile?'ready_for_reconcile':'window_validated',$json.next_cursor,$json.window.window_key,JSON.stringify([$json.validated_window]),$json.validated_window.output_hash,$json.ready_for_reconcile,JSON.stringify($json.selected_chapter_ids)] }}"}},
+      "parameters": {"operation":"executeQuery","query":"WITH heartbeat AS (SELECT * FROM drama.heartbeat_operation($1::text,$2::uuid,$10::integer)), current_op AS (SELECT operation.* FROM drama.operations operation JOIN heartbeat ON heartbeat.operation_id=operation.operation_id) SELECT cp.* FROM current_op CROSS JOIN LATERAL drama.checkpoint_operation($1::text,$2::uuid,CASE WHEN $8::boolean THEN 'validating' ELSE 'running' END,$3,$4,jsonb_set(current_op.checkpoint_data,'{windows}',coalesce((SELECT jsonb_agg(item) FROM jsonb_array_elements(coalesce(current_op.checkpoint_data->'windows','[]'::jsonb)) item WHERE item->>'window_key'<>$5),'[]'::jsonb)||$6::jsonb,true)||jsonb_build_object('schema_version','narrative-extraction.v1','last_window_hash',$7::text,'extraction_complete',$8::boolean,'selected_chapter_ids',$9::jsonb)) cp WHERE current_op.operation_id=$1 AND current_op.claim_token=$2::uuid;","options":{"queryReplacement":"={{ [$json.operation_id,$json.claim_token,$json.ready_for_reconcile?'ready_for_reconcile':'window_validated',$json.next_cursor,$json.window.window_key,JSON.stringify([$json.validated_window]),$json.validated_window.output_hash,$json.ready_for_reconcile,JSON.stringify($json.selected_chapter_ids),$('Verify Claimed Operation').first().json.lease_seconds] }}"}},
       "id": "02a-checkpoint", "name": "Checkpoint Validated Window", "type": "n8n-nodes-base.postgres", "typeVersion": 2.6, "position": [920,80],
       "credentials":{"postgres":{"id":"REPLACE_WITH_POSTGRES_CREDENTIAL_ID","name":"Short Drama PostgreSQL"}}
     },
@@ -59,24 +72,37 @@
       "credentials":{"postgres":{"id":"REPLACE_WITH_POSTGRES_CREDENTIAL_ID","name":"Short Drama PostgreSQL"}}
     },
     {
-      "parameters": {"jsCode":"return [{json:{success:true,operation_id:$json.operation_id,trace_id:$json.trace_id,status:$json.checkpoint_stage,next_cursor:$json.checkpoint_cursor,ir_revision_id:$json.target_id}}];"},
+      "parameters": {"conditions":{"options":{"typeValidation":"strict"},"conditions":[{"leftValue":"={{ $json.checkpoint_stage }}","rightValue":"ready_for_reconcile","operator":{"type":"string","operation":"equals"}}],"combinator":"and"}},
+      "id": "02a-ready-if", "name": "Ready for Reconcile?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [1140,80]
+    },
+    {
+      "parameters": {"source":"database","workflowId":{"__rl":true,"value":"wf_narrative_ir_reconcile","mode":"id"},"workflowInputs":{"mappingMode":"defineBelow","value":{"operation_id":"={{ $json.operation_id }}","claim_token":"={{ $json.claim_token }}","worker_id":"={{ $json.lease_owner }}"},"matchingColumns":[],"schema":[]},"options":{"waitForSubWorkflow":true}},
+      "id": "02a-reconcile", "name": "Execute 02b Narrative IR Reconcile", "type": "n8n-nodes-base.executeWorkflow", "typeVersion": 1.2, "position": [1360,-40], "onError":"continueErrorOutput"
+    },
+    {
+      "parameters": {"jsCode":"return [{json:{success:true,operation_id:$json.operation_id,trace_id:$json.trace_id,claim_token:$json.claim_token,worker_id:$json.lease_owner,status:$json.checkpoint_stage,next_cursor:$json.checkpoint_cursor,ir_revision_id:$json.target_id}}];"},
       "id": "02a-result", "name": "Window Result", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [1140,0]
     }
   ],
   "connections": {
     "Sub-workflow Trigger":{"main":[[{"node":"Normalize Worker Request","type":"main","index":0}]]},
+    "Pending IR Poll":{"main":[[{"node":"Normalize Worker Request","type":"main","index":0}]]},
     "Normalize Worker Request":{"main":[[{"node":"Claim IR Operation","type":"main","index":0}]]},
     "Claim IR Operation":{"main":[[{"node":"Verify Claimed Operation","type":"main","index":0}]]},
     "Verify Claimed Operation":{"main":[[{"node":"Load One Bounded Chapter Window","type":"main","index":0}]]},
     "Load One Bounded Chapter Window":{"main":[[{"node":"Build Codepoint-bounded Slice","type":"main","index":0}]]},
     "Build Codepoint-bounded Slice":{"main":[[{"node":"Has Source Window?","type":"main","index":0}]]},
-    "Has Source Window?":{"main":[[{"node":"Call Narrative Extraction Model","type":"main","index":0}],[{"node":"Checkpoint Ready Without More Windows","type":"main","index":0}]]},
+    "Has Source Window?":{"main":[[{"node":"Use Mock Provider?","type":"main","index":0}],[{"node":"Checkpoint Ready Without More Windows","type":"main","index":0}]]},
+    "Use Mock Provider?":{"main":[[{"node":"Mock Narrative Extraction Provider","type":"main","index":0}],[{"node":"Call Narrative Extraction Model","type":"main","index":0}]]},
+    "Mock Narrative Extraction Provider":{"main":[[{"node":"Parse Model JSON","type":"main","index":0}]]},
     "Call Narrative Extraction Model":{"main":[[{"node":"Parse Model JSON","type":"main","index":0}]]},
     "Parse Model JSON":{"main":[[{"node":"JSON Schema Validate","type":"main","index":0}]]},
     "JSON Schema Validate":{"main":[[{"node":"Business Validate Provenance and References","type":"main","index":0}]]},
     "Business Validate Provenance and References":{"main":[[{"node":"Checkpoint Validated Window","type":"main","index":0}]]},
-    "Checkpoint Validated Window":{"main":[[{"node":"Window Result","type":"main","index":0}]]},
-    "Checkpoint Ready Without More Windows":{"main":[[{"node":"Window Result","type":"main","index":0}]]}
+    "Checkpoint Validated Window":{"main":[[{"node":"Ready for Reconcile?","type":"main","index":0}]]},
+    "Checkpoint Ready Without More Windows":{"main":[[{"node":"Execute 02b Narrative IR Reconcile","type":"main","index":0}]]},
+    "Ready for Reconcile?":{"main":[[{"node":"Execute 02b Narrative IR Reconcile","type":"main","index":0}],[{"node":"Load One Bounded Chapter Window","type":"main","index":0}]]},
+    "Execute 02b Narrative IR Reconcile":{"main":[[{"node":"Window Result","type":"main","index":0}]]}
   },
   "pinData": {},
   "active": false,

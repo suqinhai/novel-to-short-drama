@@ -9,8 +9,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"short-drama-cms/backend/internal/config"
 )
+
+func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
+	handler := &Handler{config: config.Config{AllowedOrigins: []string{"http://localhost:5173"}}}
+	router := gin.New()
+	router.Use(handler.cors())
+	router.OPTIONS("/api/v2/source-versions/sv_test/chapters/ch_test", func(c *gin.Context) {})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodOptions, "/api/v2/source-versions/sv_test/chapters/ch_test", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+	request.Header.Set("Access-Control-Request-Headers", "Idempotency-Key,If-Match,X-Trace-ID")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("unexpected preflight status %d", recorder.Code)
+	}
+	for _, expected := range []string{"Idempotency-Key", "If-Match", "X-Trace-ID"} {
+		if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Headers"), expected) {
+			t.Fatalf("missing CORS header %s: %s", expected, recorder.Header().Get("Access-Control-Allow-Headers"))
+		}
+	}
+	if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Methods"), http.MethodPatch) {
+		t.Fatalf("PATCH is not allowed: %s", recorder.Header().Get("Access-Control-Allow-Methods"))
+	}
+}
 
 func TestCreateProjectForwardsToN8N(t *testing.T) {
 	var received createProjectRequest

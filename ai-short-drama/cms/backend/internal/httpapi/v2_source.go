@@ -24,6 +24,9 @@ type sourceV2Service interface {
 	CreateSourceVersion(context.Context, string, string, store.CreateSourceVersionInput) (store.SourceVersion, bool, error)
 	GetSourceVersion(context.Context, string) (store.SourceVersion, error)
 	ListVersionChapters(context.Context, string) ([]store.ChapterRevision, error)
+	ListChapterRevisions(context.Context, string) ([]store.ChapterRevisionHistoryItem, error)
+	ListNarrativeIRRevisions(context.Context, string) ([]store.NarrativeIRRevisionSummary, error)
+	ListStoryArcs(context.Context, string) ([]store.StoryArcSummary, error)
 	ApplyImport(context.Context, string, int, string, store.ImportInput) (store.Operation, int, error)
 	ReviseChapter(context.Context, string, string, int, string, string, string) (store.Operation, int, error)
 	PublishSourceVersion(context.Context, string, int, string) (store.Operation, int, error)
@@ -33,6 +36,9 @@ type sourceV2Service interface {
 	GetProjectImpact(context.Context, string, string) (store.ProjectImpact, string, error)
 	CreateRegenerationRequest(context.Context, string, string, string, store.RegenerationRequestInput) (store.RegenerationRequest, bool, error)
 	GetOperation(context.Context, string) (store.Operation, error)
+	CreateAdaptationProject(context.Context, string, store.CreateAdaptationProjectInput) (store.Operation, error)
+	ListAdaptationSpecs(context.Context, string) ([]store.AdaptationSpecSummary, error)
+	CreateAdaptationSpecVersion(context.Context, string, string, store.AdaptationSpecInput) (store.Operation, error)
 }
 
 type sourceV2Handler struct {
@@ -54,10 +60,15 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.POST("/source-versions/*resourcePath", h.dispatchSourceVersionPost)
 	api.PATCH("/source-versions/*resourcePath", h.dispatchSourceVersionPatch)
 	api.GET("/operations/:operationID", h.getOperation)
+	api.GET("/source-chapters/:chapterID/revisions", h.listChapterRevisions)
+	api.GET("/narrative-ir-revisions/:irRevisionID/story-arcs", h.listStoryArcs)
 	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
 	api.GET("/adaptation-projects/:projectID/impact", h.getProjectImpact)
 	api.POST("/adaptation-projects/:projectID/impact/:changeSetID/regeneration-requests", h.createRegenerationRequest)
 	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
+	api.POST("/adaptation-projects", h.createAdaptationProject)
+	api.GET("/adaptation-projects/:projectID/specs", h.listAdaptationSpecs)
+	api.POST("/adaptation-projects/:projectID/specs", h.createAdaptationSpec)
 }
 
 func (h *sourceV2Handler) dispatchSourceVersionGet(c *gin.Context) {
@@ -69,6 +80,9 @@ func (h *sourceV2Handler) dispatchSourceVersionGet(c *gin.Context) {
 	case len(parts) == 2 && parts[1] == "chapters":
 		setParam(c, "versionID", parts[0])
 		h.listChapters(c)
+	case len(parts) == 2 && parts[1] == "ir-revisions":
+		setParam(c, "versionID", parts[0])
+		h.listNarrativeIRRevisions(c)
 	default:
 		v2NotFound(c)
 	}
@@ -245,6 +259,41 @@ func (h *sourceV2Handler) getVersion(c *gin.Context) {
 
 func (h *sourceV2Handler) listChapters(c *gin.Context) {
 	items, err := h.service.ListVersionChapters(c.Request.Context(), c.Param("versionID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), items, nil)
+}
+
+func (h *sourceV2Handler) listChapterRevisions(c *gin.Context) {
+	if !publicIDPattern.MatchString(c.Param("chapterID")) {
+		v2InputError(c, "INVALID_CHAPTER", "chapter_id is invalid")
+		return
+	}
+	items, err := h.service.ListChapterRevisions(c.Request.Context(), c.Param("chapterID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), items, nil)
+}
+
+func (h *sourceV2Handler) listNarrativeIRRevisions(c *gin.Context) {
+	items, err := h.service.ListNarrativeIRRevisions(c.Request.Context(), c.Param("versionID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), items, nil)
+}
+
+func (h *sourceV2Handler) listStoryArcs(c *gin.Context) {
+	if !publicIDPattern.MatchString(c.Param("irRevisionID")) {
+		v2InputError(c, "INVALID_IR_REVISION", "ir_revision_id is invalid")
+		return
+	}
+	items, err := h.service.ListStoryArcs(c.Request.Context(), c.Param("irRevisionID"))
 	if err != nil {
 		v2Error(c, err)
 		return
@@ -737,4 +786,199 @@ func v2Error(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"contract_version": "2.0", "trace_id": traceID(c), "error": gin.H{
 		"code": code, "message": message, "retryable": retryable,
 	}})
+}
+
+type adaptationScopeRequest struct {
+	Mode                string    `json:"mode"`
+	ChapterIDs          *[]string `json:"chapter_ids"`
+	StoryArcRevisionIDs *[]string `json:"story_arc_revision_ids"`
+}
+
+type adaptationRuleRequest struct {
+	RuleType    string          `json:"rule_type"`
+	Enforcement string          `json:"enforcement"`
+	TargetType  string          `json:"target_type"`
+	TargetID    *string         `json:"target_id"`
+	Priority    *int            `json:"priority"`
+	Parameters  json.RawMessage `json:"parameters"`
+	Rationale   string          `json:"rationale"`
+}
+
+type adaptationSpecRequest struct {
+	SchemaVersion          string                  `json:"schema_version"`
+	SourceVersionID        string                  `json:"source_version_id"`
+	IRRevisionID           *string                 `json:"ir_revision_id"`
+	Scope                  *adaptationScopeRequest `json:"scope"`
+	Platform               string                  `json:"platform"`
+	AudienceProfile        json.RawMessage         `json:"audience_profile"`
+	TargetEpisodeCount     int                     `json:"target_episode_count"`
+	EpisodeDurationSeconds int                     `json:"episode_duration_seconds"`
+	Rules                  []adaptationRuleRequest `json:"rules"`
+}
+
+func (h *sourceV2Handler) createAdaptationProject(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request struct {
+		DisplayName    string                `json:"display_name"`
+		AdaptationSpec adaptationSpecRequest `json:"adaptation_spec"`
+	}
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if strings.TrimSpace(request.DisplayName) == "" || len(request.DisplayName) > 1000 {
+		v2InputError(c, "INVALID_ADAPTATION_PROJECT", "display_name must contain 1 to 1000 characters")
+		return
+	}
+	spec, err := validateAdaptationSpecRequest(request.AdaptationSpec)
+	if err != nil {
+		v2InputError(c, "INVALID_ADAPTATION_SPEC", err.Error())
+		return
+	}
+	operation, err := h.service.CreateAdaptationProject(c.Request.Context(), key, store.CreateAdaptationProjectInput{
+		DisplayName: strings.TrimSpace(request.DisplayName), AdaptationSpec: spec,
+	})
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) listAdaptationSpecs(c *gin.Context) {
+	items, err := h.service.ListAdaptationSpecs(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), items, nil)
+}
+
+func (h *sourceV2Handler) createAdaptationSpec(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request adaptationSpecRequest
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	spec, err := validateAdaptationSpecRequest(request)
+	if err != nil {
+		v2InputError(c, "INVALID_ADAPTATION_SPEC", err.Error())
+		return
+	}
+	operation, err := h.service.CreateAdaptationSpecVersion(c.Request.Context(), c.Param("projectID"), key, spec)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func validateAdaptationSpecRequest(request adaptationSpecRequest) (store.AdaptationSpecInput, error) {
+	if request.Scope == nil || request.Scope.ChapterIDs == nil || request.Scope.StoryArcRevisionIDs == nil {
+		return store.AdaptationSpecInput{}, errors.New("scope.mode, chapter_ids and story_arc_revision_ids are required")
+	}
+	result := store.AdaptationSpecInput{
+		SchemaVersion: request.SchemaVersion, SourceVersionID: request.SourceVersionID,
+		Scope: store.AdaptationScopeInput{Mode: request.Scope.Mode, ChapterIDs: *request.Scope.ChapterIDs,
+			StoryArcRevisionIDs: *request.Scope.StoryArcRevisionIDs},
+		Platform: strings.TrimSpace(request.Platform), TargetEpisodeCount: request.TargetEpisodeCount,
+		EpisodeDurationSeconds: request.EpisodeDurationSeconds,
+	}
+	if request.SchemaVersion != "adaptation-spec.v1" || !publicIDPattern.MatchString(request.SourceVersionID) ||
+		(request.IRRevisionID != nil && !publicIDPattern.MatchString(*request.IRRevisionID)) {
+		return result, errors.New("schema_version and source_version_id are required; an explicit ir_revision_id must be valid")
+	}
+	if request.IRRevisionID != nil {
+		result.IRRevisionID = *request.IRRevisionID
+	}
+	if result.Platform == "" || len(result.Platform) > 200 || request.TargetEpisodeCount < 1 || request.TargetEpisodeCount > 1000 ||
+		request.EpisodeDurationSeconds < 1 || request.EpisodeDurationSeconds > 7200 {
+		return result, errors.New("platform, target_episode_count or episode_duration_seconds is outside the contract")
+	}
+	if len(request.AudienceProfile) == 0 || !isJSONObject(request.AudienceProfile) || hasForbiddenProviderPayload(request.AudienceProfile) {
+		return result, errors.New("audience_profile must be an object without provider payloads")
+	}
+	result.AudienceProfile = canonicalJSONObject(request.AudienceProfile)
+	if hasDuplicates(*request.Scope.ChapterIDs) || hasDuplicates(*request.Scope.StoryArcRevisionIDs) {
+		return result, errors.New("scope IDs must be valid and unique")
+	}
+	chapters, arcs := len(*request.Scope.ChapterIDs), len(*request.Scope.StoryArcRevisionIDs)
+	switch request.Scope.Mode {
+	case "chapters_only":
+		if chapters == 0 || arcs != 0 {
+			return result, errors.New("chapters_only requires chapters and forbids arcs")
+		}
+	case "arcs_only":
+		if arcs == 0 || chapters != 0 {
+			return result, errors.New("arcs_only requires arcs and forbids chapters")
+		}
+	case "union":
+		if chapters+arcs == 0 {
+			return result, errors.New("union requires at least one chapter or arc")
+		}
+	case "intersection":
+		if chapters == 0 || arcs == 0 {
+			return result, errors.New("intersection requires both chapters and arcs")
+		}
+	default:
+		return result, errors.New("unsupported scope mode")
+	}
+	if len(request.Rules) < 1 || len(request.Rules) > 5000 {
+		return result, errors.New("rules must contain 1 to 5000 entries")
+	}
+	result.Rules = make([]store.AdaptationRuleInput, 0, len(request.Rules))
+	for _, rule := range request.Rules {
+		if !matchesString(rule.RuleType, "must_preserve", "merge_allowed", "must_not_change", "omit_allowed", "transform_required") ||
+			!matchesString(rule.Enforcement, "hard", "soft") ||
+			!matchesString(rule.TargetType, "entity", "fact", "event", "story_arc", "chapter", "attribute", "free_text") ||
+			rule.Priority == nil || *rule.Priority < 0 || len(rule.Rationale) > 4000 {
+			return result, errors.New("rule enum, priority or rationale is invalid")
+		}
+		if rule.TargetType == "free_text" {
+			if rule.TargetID != nil {
+				return result, errors.New("free_text rules require a null target_id")
+			}
+		} else if rule.TargetID == nil || !publicIDPattern.MatchString(*rule.TargetID) {
+			return result, errors.New("non-free-text rules require a valid target_id")
+		}
+		if len(rule.Parameters) == 0 || !isJSONObject(rule.Parameters) || hasForbiddenProviderPayload(rule.Parameters) {
+			return result, errors.New("rule parameters must be an object without provider payloads")
+		}
+		if rule.TargetType == "attribute" {
+			var parameters map[string]any
+			_ = json.Unmarshal(rule.Parameters, &parameters)
+			ownerType, ownerOK := parameters["owner_type"].(string)
+			ownerID, idOK := parameters["owner_id"].(string)
+			path, pathOK := parameters["path"].(string)
+			if !ownerOK || !matchesString(ownerType, "entity", "fact", "event", "story_arc", "chapter") || !idOK ||
+				!publicIDPattern.MatchString(ownerID) || !pathOK || path == "" || len(path) > 500 {
+				return result, errors.New("attribute rules require valid owner_type, owner_id and path parameters")
+			}
+		}
+		result.Rules = append(result.Rules, store.AdaptationRuleInput{RuleType: rule.RuleType, Enforcement: rule.Enforcement,
+			TargetType: rule.TargetType, TargetID: rule.TargetID, Priority: *rule.Priority,
+			Parameters: canonicalJSONObject(rule.Parameters), Rationale: rule.Rationale})
+	}
+	return result, nil
+}
+
+func canonicalJSONObject(raw json.RawMessage) json.RawMessage {
+	var value map[string]any
+	_ = json.Unmarshal(raw, &value)
+	result, _ := json.Marshal(value)
+	return result
+}
+
+func matchesString(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }

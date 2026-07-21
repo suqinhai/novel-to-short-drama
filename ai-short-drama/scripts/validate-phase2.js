@@ -36,7 +36,7 @@ for (const marker of ['Idempotency-Key', 'If-Match', 'ETAG_REQUIRED', '/source-w
   assert(narrativeApi.includes(marker), `frontend API marker ${marker} missing`);
 }
 const adaptationView = read('cms/frontend/src/views/AdaptationScopeView.vue');
-assert(adaptationView.includes("VITE_ADAPTATION_SPEC_WRITES_ENABLED === 'true'"), 'Adaptation Spec write feature gate missing');
+assert(adaptationView.includes('startCompilerRun') && adaptationView.includes('getAdaptationPlan'), 'Adaptation Spec/compiler UI closure missing');
 assert(adaptationView.includes("mode: 'chapters_only'"), 'safe chapters_only fallback missing');
 
 const workflowFiles = [

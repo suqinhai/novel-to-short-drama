@@ -1,4 +1,5 @@
 {
+  "id": "wf_narrative_ir_reconcile",
   "name": "02b Narrative IR 合并发布",
   "nodes": [
     {

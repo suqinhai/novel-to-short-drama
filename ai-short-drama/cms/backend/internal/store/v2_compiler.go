@@ -105,7 +105,20 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 			'episode_number',episode.episode_number,'title',episode.title,'logline',episode.logline,
 			'estimated_duration_seconds',episode.estimated_duration_seconds,'opening_hook',episode.opening_hook,
 			'ending_hook',episode.ending_hook,'continuity_in',episode.continuity_in,'continuity_out',episode.continuity_out,
-			'source_event_ids',episode.source_event_ids,'source_chapter_ids',episode.source_chapter_ids,
+			'source_event_ids',CASE WHEN jsonb_array_length(episode.source_event_ids)=0 THEN
+				COALESCE((SELECT jsonb_agg(assignment.event_revision_id ORDER BY assignment.sequence_number)
+					FROM drama.episode_event_assignments assignment
+					WHERE assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id),'[]'::jsonb)
+				ELSE episode.source_event_ids END,
+			'source_chapter_ids',CASE WHEN jsonb_array_length(episode.source_chapter_ids)=0 THEN
+				COALESCE((SELECT jsonb_agg(provenance.chapter_id ORDER BY provenance.first_sequence)
+					FROM (SELECT fact.chapter_id,min(assignment.sequence_number) first_sequence
+						FROM drama.episode_event_assignments assignment
+						JOIN drama.narrative_event_revisions event USING(event_revision_id)
+						JOIN drama.narrative_fact_revisions fact USING(fact_revision_id)
+						WHERE assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id
+						GROUP BY fact.chapter_id) provenance),'[]'::jsonb)
+				ELSE episode.source_chapter_ids END,
 			'added_adaptation_content',episode.added_adaptation_content,'merged_content',episode.merged_content,
 			'deviation_notes',episode.deviation_notes,
 			'event_assignments',COALESCE((SELECT jsonb_agg(jsonb_build_object(

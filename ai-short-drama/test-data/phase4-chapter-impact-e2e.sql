@@ -26,8 +26,10 @@ WHERE source_version_id='sv_phase4_revision';
 
 INSERT INTO drama.source_spans(source_span_id,work_id,source_version_id,chapter_id,chapter_revision_id,
   start_utf8_byte,end_utf8_byte,start_codepoint,end_codepoint,start_paragraph,end_paragraph,excerpt_hash,evidence_text,idempotency_key)
-VALUES('span_phase4_chapter_001','sw_legacy_novel_phase1_legacy','sv_phase4_revision','sch_legacy_ch_phase1_legacy_001',
-  'cr_phase4_chapter_001',0,51,0,17,1,1,repeat('c',64),'林夏推开门，发现门后站着陌生人。','fixture:phase4:span');
+SELECT 'span_phase4_chapter_001','sw_legacy_novel_phase1_legacy','sv_phase4_revision','sch_legacy_ch_phase1_legacy_001',
+  chapter_revision_id,0,octet_length(content),0,char_length(content),1,1,
+  encode(digest(convert_to(content,'UTF8'),'sha256'),'hex'),content,'fixture:phase4:span'
+FROM drama.chapter_revisions WHERE chapter_revision_id='cr_phase4_chapter_001';
 
 INSERT INTO drama.operations(operation_id,trace_id,operation_type,target_type,target_id,status,idempotency_key,input_hash,checkpoint_stage)
 VALUES('operation_phase4_ir','trace_phase4_ir','ir_extraction','ir_revision','ir_phase4_incremental','pending',
