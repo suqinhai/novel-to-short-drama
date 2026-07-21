@@ -129,3 +129,55 @@ type AdaptationSpecSummary struct {
 	IRRevisionID            *string `json:"ir_revision_id"`
 	ResourceRevision        int     `json:"resource_revision"`
 }
+
+type ImpactChange struct {
+	SourceChangeItemID string          `json:"source_change_item_id"`
+	ChangeType         string          `json:"change_type"`
+	BeforeEntityID     *string         `json:"before_entity_id"`
+	AfterEntityID      *string         `json:"after_entity_id"`
+	Details            json.RawMessage `json:"details"`
+}
+
+type ArtifactImpact struct {
+	ArtifactID       string          `json:"artifact_id"`
+	ArtifactType     string          `json:"artifact_type"`
+	NativeEntityID   string          `json:"native_entity_id"`
+	RevisionNumber   int             `json:"revision_number"`
+	BeforeStatus     string          `json:"before_status"`
+	AfterStatus      string          `json:"after_status"`
+	ReviewStatus     *string         `json:"review_status"`
+	PropagationDepth int             `json:"propagation_depth"`
+	Reason           json.RawMessage `json:"reason"`
+}
+
+type ProjectImpact struct {
+	SourceChangeSetID      string           `json:"source_change_set_id"`
+	FromSourceVersionID    string           `json:"from_source_version_id"`
+	ToSourceVersionID      string           `json:"to_source_version_id"`
+	FromIRRevisionID       *string          `json:"from_ir_revision_id"`
+	ToIRRevisionID         *string          `json:"to_ir_revision_id"`
+	Status                 string           `json:"status"`
+	ChangedChapterIDs      []string         `json:"changed_chapter_ids"`
+	ChangedEvents          []ImpactChange   `json:"changed_events"`
+	ChangedCharacterStates []ImpactChange   `json:"changed_character_states"`
+	AffectedStoryArcs      []ImpactChange   `json:"affected_story_arcs"`
+	AffectedArtifacts      []ArtifactImpact `json:"affected_artifacts"`
+	NeedsReview            []string         `json:"needs_review"`
+}
+
+type RegenerationRequestInput struct {
+	Strategy    string
+	ArtifactIDs []string
+	RequestedBy *string
+}
+
+type RegenerationRequest struct {
+	RegenerationRequestID string    `json:"regeneration_request_id"`
+	SourceChangeSetID     string    `json:"source_change_set_id"`
+	ProjectID             string    `json:"project_id"`
+	Strategy              string    `json:"strategy"`
+	Status                string    `json:"status"`
+	ArtifactIDs           []string  `json:"artifact_ids"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}

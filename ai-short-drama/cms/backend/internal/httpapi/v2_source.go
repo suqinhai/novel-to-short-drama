@@ -30,6 +30,8 @@ type sourceV2Service interface {
 	StartIRRun(context.Context, string, string, store.IRRunInput) (store.Operation, error)
 	StartCompilerRun(context.Context, string, string, store.CompilerRunInput) (store.Operation, error)
 	GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error)
+	GetProjectImpact(context.Context, string, string) (store.ProjectImpact, string, error)
+	CreateRegenerationRequest(context.Context, string, string, string, store.RegenerationRequestInput) (store.RegenerationRequest, bool, error)
 	GetOperation(context.Context, string) (store.Operation, error)
 }
 
@@ -53,6 +55,8 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.PATCH("/source-versions/*resourcePath", h.dispatchSourceVersionPatch)
 	api.GET("/operations/:operationID", h.getOperation)
 	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
+	api.GET("/adaptation-projects/:projectID/impact", h.getProjectImpact)
+	api.POST("/adaptation-projects/:projectID/impact/:changeSetID/regeneration-requests", h.createRegenerationRequest)
 	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
 }
 
@@ -385,6 +389,61 @@ func (h *sourceV2Handler) getOperation(c *gin.Context) {
 		return
 	}
 	v2Response(c, http.StatusOK, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) getProjectImpact(c *gin.Context) {
+	toSourceVersionID := strings.TrimSpace(c.Query("to_source_version_id"))
+	if !publicIDPattern.MatchString(toSourceVersionID) {
+		v2InputError(c, "INVALID_SOURCE_VERSION", "to_source_version_id is required")
+		return
+	}
+	impact, traceID, err := h.service.GetProjectImpact(c.Request.Context(), c.Param("projectID"), toSourceVersionID)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID, impact, nil)
+}
+
+func (h *sourceV2Handler) createRegenerationRequest(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	if !publicIDPattern.MatchString(c.Param("changeSetID")) {
+		v2InputError(c, "INVALID_CHANGE_SET", "source_change_set_id is invalid")
+		return
+	}
+	var request struct {
+		Strategy    string   `json:"strategy"`
+		ArtifactIDs []string `json:"artifact_ids"`
+		RequestedBy *string  `json:"requested_by"`
+	}
+	if !decodeStrictJSON(c, &request) || (request.Strategy != "selective" && request.Strategy != "full_recompile") ||
+		len(request.ArtifactIDs) == 0 || len(request.ArtifactIDs) > 500 || hasDuplicates(request.ArtifactIDs) ||
+		(request.RequestedBy != nil && (strings.TrimSpace(*request.RequestedBy) == "" || len(*request.RequestedBy) > 200)) {
+		if !c.IsAborted() {
+			v2InputError(c, "INVALID_REGENERATION_REQUEST", "select at least one affected artifact")
+		}
+		return
+	}
+	for _, artifactID := range request.ArtifactIDs {
+		if !publicIDPattern.MatchString(artifactID) {
+			v2InputError(c, "INVALID_REGENERATION_REQUEST", "artifact_ids contains an invalid id")
+			return
+		}
+	}
+	created, wasCreated, err := h.service.CreateRegenerationRequest(c.Request.Context(), c.Param("projectID"), c.Param("changeSetID"), key,
+		store.RegenerationRequestInput{Strategy: request.Strategy, ArtifactIDs: request.ArtifactIDs, RequestedBy: request.RequestedBy})
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if wasCreated {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, created.RegenerationRequestID, created, nil)
 }
 
 func (h *sourceV2Handler) startCompilerRun(c *gin.Context) {

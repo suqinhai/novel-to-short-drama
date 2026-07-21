@@ -135,6 +135,15 @@ export const narrativeApi = {
   getOperation(operationId) {
     return request(`/operations/${id(operationId)}`)
   },
+  getProjectImpact(projectId, toSourceVersionId) {
+    const query = new URLSearchParams({ to_source_version_id: toSourceVersionId })
+    return request(`/adaptation-projects/${id(projectId)}/impact?${query}`)
+  },
+  createRegenerationRequest(projectId, changeSetId, payload, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/impact/${id(changeSetId)}/regeneration-requests`, {
+      body: payload, idempotencyKey,
+    })
+  },
   createAdaptationProject(payload, idempotencyKey) {
     return command('/adaptation-projects', { body: payload, idempotencyKey })
   },

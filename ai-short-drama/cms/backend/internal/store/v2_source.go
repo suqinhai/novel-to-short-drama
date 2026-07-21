@@ -445,9 +445,11 @@ func (s *Store) PublishSourceVersion(ctx context.Context, versionID string, expe
 	}
 	defer tx.Rollback(ctx)
 	var workID, status string
+	var parentSourceVersionID *string
 	var revision, chapterCount int
-	if err := tx.QueryRow(ctx, `SELECT work_id,status,resource_revision,chapter_count FROM drama.source_versions WHERE source_version_id=$1 FOR UPDATE`, versionID).
-		Scan(&workID, &status, &revision, &chapterCount); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, `SELECT work_id,status,resource_revision,chapter_count,parent_source_version_id
+		FROM drama.source_versions WHERE source_version_id=$1 FOR UPDATE`, versionID).
+		Scan(&workID, &status, &revision, &chapterCount, &parentSourceVersionID); errors.Is(err, pgx.ErrNoRows) {
 		return Operation{}, 0, ErrNotFound
 	} else if err != nil {
 		return Operation{}, 0, err
@@ -484,6 +486,66 @@ func (s *Store) PublishSourceVersion(ctx context.Context, versionID string, expe
 		input_hash,checkpoint_stage,result_type,result_id,completed_at) VALUES($1,$2,'source_import','source_version',$3,'completed',$4,$5,
 		'finished','source_version',$3,CURRENT_TIMESTAMP)`, operationID, traceID, versionID, key, inputHash); err != nil {
 		return Operation{}, 0, mapPGConflict(err)
+	}
+	if parentSourceVersionID != nil {
+		var changedChapterIDs []string
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(array_agg(current_chapter.chapter_id ORDER BY current_chapter.ordinal),'{}')
+			FROM drama.source_version_chapters current_chapter
+			LEFT JOIN drama.source_version_chapters parent_chapter
+			  ON parent_chapter.source_version_id=$2 AND parent_chapter.chapter_id=current_chapter.chapter_id
+			WHERE current_chapter.source_version_id=$1
+			  AND current_chapter.chapter_revision_id IS DISTINCT FROM parent_chapter.chapter_revision_id`,
+			versionID, *parentSourceVersionID).Scan(&changedChapterIDs); err != nil {
+			return Operation{}, 0, err
+		}
+		if len(changedChapterIDs) > 0 {
+			var baseIRRevisionID, schemaVersion, extractorVersion string
+			err := tx.QueryRow(ctx, `SELECT ir_revision_id,schema_version,extractor_version
+				FROM drama.narrative_ir_revisions WHERE source_version_id=$1 AND status='published'
+				  AND is_current AND revision_scope='full' ORDER BY revision_number DESC LIMIT 1`, *parentSourceVersionID).
+				Scan(&baseIRRevisionID, &schemaVersion, &extractorVersion)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return Operation{}, 0, err
+			}
+			if err == nil {
+				autoInput := IRRunInput{SchemaVersion: schemaVersion, ExtractorVersion: extractorVersion, ChapterIDs: changedChapterIDs}
+				autoInputHash, err := hashJSON(autoInput)
+				if err != nil {
+					return Operation{}, 0, err
+				}
+				autoOperationID, _ := newPublicID("op_")
+				autoTraceID, _ := newPublicID("tr_")
+				autoIRRevisionID, _ := newPublicID("ir_")
+				autoKey := "chapter-impact-ir:" + hashText(key)
+				var irRevisionNumber int
+				if err := tx.QueryRow(ctx, `SELECT COALESCE(max(revision_number),0)+1 FROM drama.narrative_ir_revisions
+					WHERE source_version_id=$1`, versionID).Scan(&irRevisionNumber); err != nil {
+					return Operation{}, 0, err
+				}
+				if _, err := tx.Exec(ctx, `INSERT INTO drama.operations(operation_id,trace_id,operation_type,target_type,target_id,status,
+					idempotency_key,input_hash,checkpoint_stage,checkpoint_data)
+					VALUES($1,$2,'ir_extraction','ir_revision',$3,'pending',$4,$5,'queued',$6)`, autoOperationID, autoTraceID,
+					autoIRRevisionID, autoKey, autoInputHash, mustJSON(map[string]any{"schema_version": schemaVersion,
+						"extractor_version": extractorVersion, "chapter_ids": changedChapterIDs, "revision_scope": "incremental",
+						"base_ir_revision_id": baseIRRevisionID, "initiated_by_operation_id": operationID})); err != nil {
+					return Operation{}, 0, mapPGConflict(err)
+				}
+				if _, err := tx.Exec(ctx, `INSERT INTO drama.narrative_ir_revisions(ir_revision_id,operation_id,work_id,source_version_id,
+					revision_number,schema_version,extractor_version,status,input_hash,idempotency_key,validation_summary,
+					revision_scope,base_ir_revision_id,changed_chapter_ids)
+					VALUES($1,$2,$3,$4,$5,$6,$7,'staging',$8,$9,$10,'incremental',$11,$12)`, autoIRRevisionID,
+					autoOperationID, workID, versionID, irRevisionNumber, schemaVersion, extractorVersion, autoInputHash, autoKey,
+					mustJSON(map[string]any{"requested_chapter_ids": changedChapterIDs, "state": "queued", "revision_scope": "incremental"}),
+					baseIRRevisionID, mustJSON(changedChapterIDs)); err != nil {
+					return Operation{}, 0, mapPGConflict(err)
+				}
+				if _, err := tx.Exec(ctx, `UPDATE drama.operations SET checkpoint_data=jsonb_build_object(
+					'incremental_ir_operation_id',$2::text,'incremental_ir_revision_id',$3::text,'changed_chapter_ids',$4::jsonb)
+					WHERE operation_id=$1`, operationID, autoOperationID, autoIRRevisionID, mustJSON(changedChapterIDs)); err != nil {
+					return Operation{}, 0, err
+				}
+			}
+		}
 	}
 	operation, _, err := getOperationByIdempotency(ctx, tx, key)
 	if err != nil {
@@ -541,9 +603,39 @@ func (s *Store) StartIRRun(ctx context.Context, versionID, key string, input IRR
 	traceID, _ := newPublicID("tr_")
 	irRevisionID, _ := newPublicID("ir_")
 	var workID string
+	var parentSourceVersionID *string
 	var revisionNumber int
-	if err := tx.QueryRow(ctx, `SELECT work_id FROM drama.source_versions WHERE source_version_id=$1`, versionID).Scan(&workID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT work_id,parent_source_version_id FROM drama.source_versions WHERE source_version_id=$1`, versionID).
+		Scan(&workID, &parentSourceVersionID); err != nil {
 		return Operation{}, err
+	}
+	revisionScope := "full"
+	var baseIRRevisionID *string
+	if len(input.ChapterIDs) > 0 && parentSourceVersionID != nil {
+		var baseID string
+		err := tx.QueryRow(ctx, `SELECT ir_revision_id FROM drama.narrative_ir_revisions
+			WHERE source_version_id=$1 AND status='published' AND is_current AND revision_scope='full'
+			ORDER BY revision_number DESC LIMIT 1`, *parentSourceVersionID).Scan(&baseID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Operation{}, ErrConflict
+		} else if err != nil {
+			return Operation{}, err
+		}
+		var changedCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*)
+			FROM drama.source_version_chapters current_chapter
+			LEFT JOIN drama.source_version_chapters parent_chapter
+			  ON parent_chapter.source_version_id=$2 AND parent_chapter.chapter_id=current_chapter.chapter_id
+			WHERE current_chapter.source_version_id=$1 AND current_chapter.chapter_id=ANY($3)
+			  AND current_chapter.chapter_revision_id IS DISTINCT FROM parent_chapter.chapter_revision_id`,
+			versionID, *parentSourceVersionID, input.ChapterIDs).Scan(&changedCount); err != nil {
+			return Operation{}, err
+		}
+		if changedCount != len(input.ChapterIDs) {
+			return Operation{}, ErrConflict
+		}
+		revisionScope = "incremental"
+		baseIRRevisionID = &baseID
 	}
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(revision_number),0)+1 FROM drama.narrative_ir_revisions WHERE source_version_id=$1`, versionID).
 		Scan(&revisionNumber); err != nil {
@@ -551,14 +643,16 @@ func (s *Store) StartIRRun(ctx context.Context, versionID, key string, input IRR
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.operations(operation_id,trace_id,operation_type,target_type,target_id,status,idempotency_key,input_hash,
 		checkpoint_stage,checkpoint_data) VALUES($1,$2,'ir_extraction','ir_revision',$3,'pending',$4,$5,'queued',$6)`, operationID, traceID,
-		irRevisionID, key, inputHash, mustJSON(map[string]any{"schema_version": input.SchemaVersion, "extractor_version": input.ExtractorVersion, "chapter_ids": input.ChapterIDs})); err != nil {
+		irRevisionID, key, inputHash, mustJSON(map[string]any{"schema_version": input.SchemaVersion, "extractor_version": input.ExtractorVersion,
+			"chapter_ids": input.ChapterIDs, "revision_scope": revisionScope, "base_ir_revision_id": baseIRRevisionID})); err != nil {
 		return Operation{}, mapPGConflict(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.narrative_ir_revisions(ir_revision_id,operation_id,work_id,source_version_id,revision_number,
-		schema_version,extractor_version,status,input_hash,idempotency_key,validation_summary)
-		VALUES($1,$2,$3,$4,$5,$6,$7,'staging',$8,$9,$10)`, irRevisionID, operationID, workID, versionID, revisionNumber,
+		schema_version,extractor_version,status,input_hash,idempotency_key,validation_summary,revision_scope,base_ir_revision_id,changed_chapter_ids)
+		VALUES($1,$2,$3,$4,$5,$6,$7,'staging',$8,$9,$10,$11,$12,$13)`, irRevisionID, operationID, workID, versionID, revisionNumber,
 		input.SchemaVersion, input.ExtractorVersion, inputHash, key,
-		mustJSON(map[string]any{"requested_chapter_ids": input.ChapterIDs, "state": "queued"})); err != nil {
+		mustJSON(map[string]any{"requested_chapter_ids": input.ChapterIDs, "state": "queued", "revision_scope": revisionScope}),
+		revisionScope, baseIRRevisionID, mustJSON(input.ChapterIDs)); err != nil {
 		return Operation{}, mapPGConflict(err)
 	}
 	operation, _, err := getOperationByIdempotency(ctx, tx, key)

@@ -1,0 +1,95 @@
+{
+  "name": "02c - Chapter Revision Impact Analysis",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "02c-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-620, 0]
+    },
+    {
+      "parameters": {
+        "rule": {"interval": [{"field": "minutes", "minutesInterval": 1}]}
+      },
+      "id": "02c-schedule",
+      "name": "Pending Impact Poll",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-620, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto');const source=$json||{};return [{json:{worker_id:String(source.worker_id||'n8n-chapter-impact').slice(0,200),claim_request_id:String(source.claim_request_id||('impact-claim-'+crypto.randomUUID())).slice(0,255),lease_seconds:Math.min(3600,Math.max(30,Number(source.lease_seconds||300)))}}];"
+      },
+      "id": "02c-normalize",
+      "name": "Normalize Impact Worker Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT operation_id,claim_token::text FROM drama.claim_operation($1::text,$2::text,ARRAY['invalidation_scan']::text[],$3::integer);",
+        "options": {
+          "queryReplacement": "={{ [$json.worker_id,$json.claim_request_id,$json.lease_seconds] }}"
+        }
+      },
+      "id": "02c-claim",
+      "name": "Claim Invalidation Scan",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-160, 0],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT drama.analyze_chapter_impact($1::text,$2::uuid) AS impact;",
+        "options": {
+          "queryReplacement": "={{ [$json.operation_id,$json.claim_token] }}"
+        }
+      },
+      "id": "02c-analyze",
+      "name": "Compare IR and Mark Exact Lineage Stale",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [100, 0],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {"main": [[{"node": "Normalize Impact Worker Request", "type": "main", "index": 0}]]},
+    "Pending Impact Poll": {"main": [[{"node": "Normalize Impact Worker Request", "type": "main", "index": 0}]]},
+    "Normalize Impact Worker Request": {"main": [[{"node": "Claim Invalidation Scan", "type": "main", "index": 0}]]},
+    "Claim Invalidation Scan": {"main": [[{"node": "Compare IR and Mark Exact Lineage Stale", "type": "main", "index": 0}]]}
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "versionId": "02c-chapter-impact-analysis-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "contract": "chapter-impact.v1",
+    "resume": "operation lease plus deterministic source_change_item and invalidation_impact ids"
+  },
+  "tags": []
+}

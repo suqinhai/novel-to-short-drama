@@ -446,7 +446,7 @@ paths:
       tags: [Lineage]
       operationId: getProjectImpact
       summary: Preview project impact for a source-version change
-      x-implementation-phase: 5
+      x-implementation-phase: 4
       parameters:
         - $ref: '#/components/parameters/ProjectID'
         - name: to_source_version_id
@@ -459,6 +459,44 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ImpactResponse'}
+  /adaptation-projects/{project_id}/impact/{source_change_set_id}/regeneration-requests:
+    post:
+      tags: [Lineage]
+      operationId: createRegenerationRequest
+      summary: Record the user's explicit decision to regenerate selected stale artifacts
+      description: This command queues a decision record only; it never deletes or overwrites an approved artifact.
+      x-implementation-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: source_change_set_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [strategy, artifact_ids]
+              properties:
+                strategy: {type: string, enum: [selective, full_recompile]}
+                artifact_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  uniqueItems: true
+                  items: {$ref: '#/components/schemas/ID'}
+                requested_by: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        '201':
+          description: Regeneration decision recorded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RegenerationRequestResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /operations/{operation_id}:
     get:
       tags: [Operations]
@@ -976,9 +1014,61 @@ components:
         data:
           type: object
           additionalProperties: false
-          required: [source_change_set_id, changed_facts, affected_artifacts, needs_review]
+          required: [source_change_set_id, from_source_version_id, to_source_version_id, status, changed_chapter_ids, changed_events, changed_character_states, affected_story_arcs, affected_artifacts, needs_review]
           properties:
             source_change_set_id: {$ref: '#/components/schemas/ID'}
-            changed_facts: {type: array, items: {$ref: '#/components/schemas/ID'}}
-            affected_artifacts: {type: array, items: {$ref: '#/components/schemas/ID'}}
+            from_source_version_id: {$ref: '#/components/schemas/ID'}
+            to_source_version_id: {$ref: '#/components/schemas/ID'}
+            from_ir_revision_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
+            to_ir_revision_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
+            status: {type: string, enum: [pending, running, completed, failed, needs_review]}
+            changed_chapter_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/ID'}}
+            changed_events: {type: array, items: {$ref: '#/components/schemas/ImpactChange'}}
+            changed_character_states: {type: array, items: {$ref: '#/components/schemas/ImpactChange'}}
+            affected_story_arcs: {type: array, items: {$ref: '#/components/schemas/ImpactChange'}}
+            affected_artifacts: {type: array, items: {$ref: '#/components/schemas/ArtifactImpact'}}
             needs_review: {type: array, items: {$ref: '#/components/schemas/ID'}}
+    ImpactChange:
+      type: object
+      additionalProperties: false
+      required: [source_change_item_id, change_type, details]
+      properties:
+        source_change_item_id: {$ref: '#/components/schemas/ID'}
+        change_type: {type: string, enum: [added, changed, removed, relocated, unchanged, ambiguous]}
+        before_entity_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
+        after_entity_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
+        details: {type: object}
+    ArtifactImpact:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, artifact_type, native_entity_id, revision_number, before_status, after_status, propagation_depth, reason]
+      properties:
+        artifact_id: {$ref: '#/components/schemas/ID'}
+        artifact_type: {type: string}
+        native_entity_id: {$ref: '#/components/schemas/ID'}
+        revision_number: {type: integer, minimum: 1}
+        before_status: {type: string}
+        after_status: {type: string, const: stale}
+        review_status: {type: string, nullable: true}
+        propagation_depth: {type: integer, minimum: 0}
+        reason: {type: object}
+    RegenerationRequestResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data:
+          type: object
+          additionalProperties: false
+          required: [regeneration_request_id, source_change_set_id, project_id, strategy, status, artifact_ids, created_at, updated_at]
+          properties:
+            regeneration_request_id: {$ref: '#/components/schemas/ID'}
+            source_change_set_id: {$ref: '#/components/schemas/ID'}
+            project_id: {$ref: '#/components/schemas/ID'}
+            strategy: {type: string, enum: [selective, full_recompile]}
+            status: {type: string, enum: [queued, running, completed, failed, cancelled]}
+            artifact_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/ID'}}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}

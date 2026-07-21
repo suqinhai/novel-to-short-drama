@@ -23,6 +23,8 @@ services:
       - ./database/06-verify-narrative-foundation.sql:/opt/drama/06-verify-narrative-foundation.sql:ro
       - ./database/07-adaptation-compiler-audit.sql:/opt/drama/07-adaptation-compiler-audit.sql:ro
       - ./database/07-verify-adaptation-compiler.sql:/opt/drama/07-verify-adaptation-compiler.sql:ro
+      - ./database/08-chapter-impact-analysis.sql:/opt/drama/08-chapter-impact-analysis.sql:ro
+      - ./database/08-verify-chapter-impact-analysis.sql:/opt/drama/08-verify-chapter-impact-analysis.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

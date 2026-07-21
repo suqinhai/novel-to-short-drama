@@ -69,6 +69,16 @@ func (f *fakeSourceV2) StartCompilerRun(context.Context, string, string, store.C
 func (f *fakeSourceV2) GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error) {
 	return json.RawMessage(`{"schema_version":"compiler-plan.v2","compiler_run_id":"compiler_test","episodes":[],"diagnostics":[],"validation":{}}`), "tr_compile_test", nil
 }
+func (f *fakeSourceV2) GetProjectImpact(context.Context, string, string) (store.ProjectImpact, string, error) {
+	return store.ProjectImpact{SourceChangeSetID: "change_test", Status: "needs_review", ChangedChapterIDs: []string{"chapter_test"},
+		ChangedEvents: []store.ImpactChange{}, ChangedCharacterStates: []store.ImpactChange{}, AffectedStoryArcs: []store.ImpactChange{},
+		AffectedArtifacts: []store.ArtifactImpact{}, NeedsReview: []string{}}, "tr_impact_test", nil
+}
+func (f *fakeSourceV2) CreateRegenerationRequest(_ context.Context, projectID, changeSetID, _ string, input store.RegenerationRequestInput) (store.RegenerationRequest, bool, error) {
+	now := time.Now().UTC()
+	return store.RegenerationRequest{RegenerationRequestID: "regen_test", ProjectID: projectID, SourceChangeSetID: changeSetID,
+		Strategy: input.Strategy, Status: "queued", ArtifactIDs: input.ArtifactIDs, CreatedAt: now, UpdatedAt: now}, true, nil
+}
 func (f *fakeSourceV2) GetOperation(context.Context, string) (store.Operation, error) {
 	return completedTestOperation(), nil
 }
@@ -199,5 +209,26 @@ func TestCompilerRunRequiresFrozenInputsAndReturnsPendingOperation(t *testing.T)
 	}
 	if body.Data.OperationType != "adaptation_compile" || body.Data.Status != "pending" || body.Data.TargetID != "project_test" {
 		t.Fatalf("unexpected compiler operation: %#v", body.Data)
+	}
+}
+
+func TestImpactPreviewAndExplicitRegenerationDecision(t *testing.T) {
+	router := newSourceV2TestRouter(&fakeSourceV2{})
+	preview := httptest.NewRecorder()
+	router.ServeHTTP(preview, httptest.NewRequest(http.MethodGet,
+		"/api/v2/adaptation-projects/project_test/impact?to_source_version_id=sv_test", nil))
+	if preview.Code != http.StatusOK || !bytes.Contains(preview.Body.Bytes(), []byte(`"source_change_set_id":"change_test"`)) {
+		t.Fatalf("unexpected impact preview: status=%d body=%s", preview.Code, preview.Body.String())
+	}
+
+	regenerate := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/impact/change_test/regeneration-requests",
+		bytes.NewBufferString(`{"strategy":"selective","artifact_ids":["artifact_test"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "impact-decision-test")
+	router.ServeHTTP(regenerate, request)
+	if regenerate.Code != http.StatusCreated || !bytes.Contains(regenerate.Body.Bytes(), []byte(`"status":"queued"`)) {
+		t.Fatalf("unexpected regeneration response: status=%d body=%s", regenerate.Code, regenerate.Body.String())
 	}
 }
