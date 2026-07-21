@@ -158,6 +158,30 @@ type ReviewListResult struct {
 	Facets  ReviewFacets       `json:"facets"`
 }
 
+type ReviewMedia struct {
+	Kind        string  `json:"kind"`
+	Label       string  `json:"label"`
+	OriginalURL *string `json:"original_url,omitempty"`
+	StorageURL  *string `json:"storage_url,omitempty"`
+	PreviewURL  *string `json:"preview_url,omitempty"`
+	MediaURL    *string `json:"media_url,omitempty"`
+}
+
+type ReviewContent struct {
+	ReviewID     string          `json:"review_id"`
+	ProjectID    string          `json:"project_id"`
+	NovelName    string          `json:"novel_name"`
+	Stage        string          `json:"stage"`
+	EntityType   string          `json:"entity_type"`
+	EntityID     string          `json:"entity_id"`
+	ReviewStatus string          `json:"review_status"`
+	ArtifactType string          `json:"artifact_type"`
+	Metadata     json.RawMessage `json:"metadata"`
+	Artifact     json.RawMessage `json:"artifact"`
+	Media        []ReviewMedia   `json:"media"`
+	TestMode     bool            `json:"test_mode"`
+}
+
 type MediaAsset struct {
 	AssetID      string    `json:"asset_id"`
 	AssetType    string    `json:"asset_type"`
@@ -730,6 +754,201 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 	}
 	result.Facets.Statuses = []string{"pending", "approved", "rejected", "cancelled"}
 	return result, nil
+}
+
+func (s *Store) GetReviewContent(ctx context.Context, reviewID string) (ReviewContent, error) {
+	var result ReviewContent
+	err := s.pool.QueryRow(ctx, `SELECT r.review_id,r.project_id,p.novel_name,r.stage,r.entity_type,
+		r.entity_id,r.review_status,COALESCE(r.metadata,'{}'::jsonb),p.test_mode
+		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id
+		WHERE r.review_id=$1`, reviewID).Scan(
+		&result.ReviewID, &result.ProjectID, &result.NovelName, &result.Stage, &result.EntityType,
+		&result.EntityID, &result.ReviewStatus, &result.Metadata, &result.TestMode,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReviewContent{}, ErrNotFound
+	}
+	if err != nil {
+		return ReviewContent{}, err
+	}
+
+	result.ArtifactType = reviewArtifactType(result.Stage, result.EntityType)
+	result.Media = make([]ReviewMedia, 0)
+	var artifact json.RawMessage
+	switch result.ArtifactType {
+	case "story_bible":
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(b)-'id'
+			FROM drama.story_bibles b WHERE b.project_id=$1 AND b.story_bible_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact)
+	case "season_outline":
+		err = s.pool.QueryRow(ctx, `SELECT (to_jsonb(s)-'id') || jsonb_build_object(
+			'episodes',COALESCE((SELECT jsonb_agg(to_jsonb(e)-'id' ORDER BY e.episode_number,e.version DESC)
+				FROM drama.episode_outlines e WHERE e.project_id=s.project_id AND e.season_id=s.season_id),'[]'::jsonb))
+			FROM drama.seasons s WHERE s.project_id=$1 AND s.season_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact)
+	case "episode_script":
+		err = s.pool.QueryRow(ctx, `SELECT (to_jsonb(s)-'id') || jsonb_build_object(
+			'scene_details',COALESCE((SELECT jsonb_agg(
+				(to_jsonb(sc)-'id') || jsonb_build_object('dialogue_rows',COALESCE(
+					(SELECT jsonb_agg(to_jsonb(d)-'id' ORDER BY d.sequence_number)
+					 FROM drama.dialogues d WHERE d.scene_id=sc.scene_id),sc.dialogues,'[]'::jsonb))
+				ORDER BY sc.scene_number) FROM drama.script_scenes sc WHERE sc.script_id=s.script_id),'[]'::jsonb))
+			FROM drama.episode_scripts s WHERE s.project_id=$1 AND s.script_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact)
+	case "storyboard":
+		err = s.pool.QueryRow(ctx, `SELECT (to_jsonb(b)-'id') || jsonb_build_object(
+			'shots',COALESCE((SELECT jsonb_agg(to_jsonb(sh)-'id' ORDER BY sh.shot_order,sh.shot_number)
+				FROM drama.storyboard_shots sh WHERE sh.storyboard_id=b.storyboard_id),'[]'::jsonb))
+			FROM drama.storyboards b WHERE b.project_id=$1 AND b.storyboard_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact)
+	case "visual_asset":
+		var media ReviewMedia
+		media.Kind, media.Label = "image", "视觉资产"
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(a)-'id',a.original_url,a.storage_url,a.thumbnail_url
+			FROM drama.generated_assets a WHERE a.project_id=$1 AND a.asset_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil {
+			result.Media = append(result.Media, media)
+		}
+	case "storyboard_image":
+		var media ReviewMedia
+		media.Kind, media.Label = "image", "分镜图片"
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(i)-'id',i.image_url,i.storage_url,NULL::text
+			FROM drama.storyboard_images i WHERE i.project_id=$1 AND i.storyboard_image_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil {
+			result.Media = append(result.Media, media)
+		}
+	case "shot_video":
+		var media ReviewMedia
+		media.Kind, media.Label = "video", "镜头视频"
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(v)-'id',v.original_url,v.storage_url,v.thumbnail_url
+			FROM drama.shot_videos v WHERE v.project_id=$1 AND v.shot_video_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil {
+			result.Media = append(result.Media, media)
+		}
+	case "dialogue_audio":
+		var media ReviewMedia
+		media.Kind, media.Label = "audio", "对白音频"
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(a)-'id',a.original_url,a.storage_url,a.waveform_url
+			FROM drama.dialogue_audio a WHERE a.project_id=$1 AND a.dialogue_audio_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil {
+			result.Media = append(result.Media, media)
+		}
+	case "voice_profile":
+		var media ReviewMedia
+		media.Kind, media.Label = "audio", "声线样音"
+		err = s.pool.QueryRow(ctx, `SELECT to_jsonb(v)-'id',v.sample_audio_url,NULL::text,NULL::text
+			FROM drama.voice_profiles v WHERE v.project_id=$1 AND v.voice_profile_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil && media.OriginalURL != nil {
+			result.Media = append(result.Media, media)
+		}
+	case "final_review":
+		metadata := rawJSONMap(result.Metadata)
+		masterID := firstNonEmpty(metadataString(metadata, "master_id"), result.EntityID)
+		qcReportID := firstNonEmpty(metadataString(metadata, "qc_report_id"), result.EntityID)
+		var media ReviewMedia
+		media.Kind, media.Label = "video", "最终成片"
+		err = s.pool.QueryRow(ctx, `SELECT jsonb_build_object(
+			'master',to_jsonb(m)-'id',
+			'qc_report',COALESCE((SELECT to_jsonb(q)-'id' FROM drama.qc_reports q
+				WHERE q.project_id=m.project_id AND (q.qc_report_id=$3 OR q.master_id=m.master_id)
+				ORDER BY q.version DESC LIMIT 1),'{}'::jsonb),
+			'final_review',COALESCE((SELECT to_jsonb(f)-'id' FROM drama.final_reviews f
+				WHERE f.project_id=m.project_id AND f.master_id=m.master_id ORDER BY f.created_at DESC LIMIT 1),'{}'::jsonb)),
+			NULL::text,COALESCE(NULLIF(m.storage_url,''),m.local_path),m.thumbnail_url
+			FROM drama.episode_masters m WHERE m.project_id=$1 AND (m.master_id=$2 OR m.master_id=(
+				SELECT q.master_id FROM drama.qc_reports q WHERE q.qc_report_id=$3 LIMIT 1))
+			ORDER BY m.generation_version DESC LIMIT 1`,
+			result.ProjectID, masterID, qcReportID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil {
+			result.Media = append(result.Media, media)
+		}
+	case "publication_metadata":
+		var media ReviewMedia
+		media.Kind, media.Label = "image", "发布封面"
+		err = s.pool.QueryRow(ctx, `SELECT (to_jsonb(p)-'id') || jsonb_build_object(
+			'master',COALESCE((SELECT to_jsonb(m)-'id' FROM drama.episode_masters m WHERE m.master_id=p.master_id),'{}'::jsonb)),
+			p.cover_url,NULL::text,p.cover_url
+			FROM drama.publication_metadata p WHERE p.project_id=$1 AND p.metadata_id=$2`,
+			result.ProjectID, result.EntityID).Scan(&artifact, &media.OriginalURL, &media.StorageURL, &media.PreviewURL)
+		if err == nil && media.OriginalURL != nil {
+			result.Media = append(result.Media, media)
+		}
+	default:
+		return ReviewContent{}, ErrNotFound
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReviewContent{}, ErrNotFound
+	}
+	if err != nil {
+		return ReviewContent{}, err
+	}
+	result.Artifact = artifact
+	return result, nil
+}
+
+func reviewArtifactType(stage, entityType string) string {
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	entityType = strings.ToLower(strings.TrimSpace(entityType))
+	switch {
+	case matchesValue(stage, entityType, "story_bible"):
+		return "story_bible"
+	case matchesValue(stage, entityType, "season_outline", "season"):
+		return "season_outline"
+	case matchesValue(stage, entityType, "episode_script", "script"):
+		return "episode_script"
+	case matchesValue(stage, entityType, "storyboard"):
+		return "storyboard"
+	case matchesValue(stage, entityType, "visual_asset", "generated_asset"):
+		return "visual_asset"
+	case matchesValue(stage, entityType, "storyboard_image"):
+		return "storyboard_image"
+	case matchesValue(stage, entityType, "shot_video", "video"):
+		return "shot_video"
+	case matchesValue(stage, entityType, "dialogue_audio", "audio"):
+		return "dialogue_audio"
+	case matchesValue(stage, entityType, "voice_profile"):
+		return "voice_profile"
+	case matchesValue(stage, entityType, "final", "final_review", "qc_report"):
+		return "final_review"
+	case matchesValue(stage, entityType, "publication", "publication_metadata"):
+		return "publication_metadata"
+	default:
+		return ""
+	}
+}
+
+func matchesValue(stage, entityType string, values ...string) bool {
+	for _, value := range values {
+		if stage == value || entityType == value {
+			return true
+		}
+	}
+	return false
+}
+
+func rawJSONMap(raw json.RawMessage) map[string]any {
+	value := make(map[string]any)
+	_ = json.Unmarshal(raw, &value)
+	return value
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewContext, error) {

@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ClipboardCheck, Clock3, CircleCheckBig, CircleX, Filter, RefreshCw, X, Webhook, ExternalLink, LoaderCircle, MessageSquareText } from 'lucide-vue-next'
+import { ClipboardCheck, Clock3, CircleCheckBig, CircleX, Eye, Filter, RefreshCw, X, Webhook, ExternalLink, LoaderCircle, MessageSquareText } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
+import ReviewContentViewer from '../components/ReviewContentViewer.vue'
 
 const data = ref(null)
 const loading = ref(true)
@@ -15,6 +16,7 @@ const decision = reactive({
   revision_instruction: '', prompt_adjustment: '', selected_as_primary: true, lock_after_approval: true,
 })
 const submitting = ref(false)
+const preview = reactive({ open: false, item: null, content: null, loading: false, error: '' })
 
 const items = computed(() => data.value?.items || [])
 const summary = computed(() => data.value?.summary || { total: 0, pending: 0, approved: 0, rejected: 0 })
@@ -54,6 +56,22 @@ function openDecision(item, status) {
   })
 }
 
+async function openPreview(item) {
+  Object.assign(preview, { open: true, item, content: null, loading: true, error: '' })
+  try { preview.content = await api.getReviewContent(item.review_id) }
+  catch (err) { preview.error = err.message }
+  finally { preview.loading = false }
+}
+
+function closePreview() {
+  if (!submitting.value) Object.assign(preview, { open: false, item: null, content: null, loading: false, error: '' })
+}
+
+function decideFromPreview(status) {
+  if (!preview.item) return
+  openDecision(preview.item, status)
+}
+
 function closeDecision() {
   if (!submitting.value) decision.open = false
 }
@@ -75,6 +93,7 @@ async function submitDecision() {
     })
     result.value = response
     decision.open = false
+    Object.assign(preview, { open: false, item: null, content: null, loading: false, error: '' })
     await load()
   } catch (err) {
     error.value = err.message
@@ -117,10 +136,31 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
           <div class="review-stage-icon"><ClipboardCheck :size="18" /></div>
           <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || item.stage }}</strong><StatusBadge :status="item.review_status" /><span>{{ webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ item.entity_type }}</code><span>{{ item.entity_id }}</span></div></div>
           <div class="review-history"><span>创建时间</span><strong>{{ formatTime(item.created_at) }}</strong><small v-if="item.reviewed_at">审核于 {{ formatTime(item.reviewed_at) }}</small></div>
-          <div class="review-actions"><button class="approve-button" @click="openDecision(item, 'approved')"><CircleCheckBig :size="15" />通过</button><button class="reject-button" @click="openDecision(item, 'rejected')"><CircleX :size="15" />拒绝</button></div>
+          <div class="review-actions"><button class="review-open-button" @click="openPreview(item)"><Eye :size="15" />查看内容</button></div>
         </article>
       </div>
     </article>
+
+    <div v-if="preview.open" class="review-drawer-backdrop" @click.self="closePreview">
+      <aside class="review-drawer" role="dialog" aria-modal="true" aria-label="审核内容详情">
+        <header class="review-drawer-head">
+          <div><span>CONTENT REVIEW</span><h2>{{ stageLabels[preview.item?.stage] || preview.item?.stage }}</h2><p>{{ preview.item?.novel_name }} · {{ preview.item?.entity_id }}</p></div>
+          <button aria-label="关闭审核内容" @click="closePreview"><X :size="20" /></button>
+        </header>
+        <div class="review-drawer-body">
+          <div v-if="preview.loading" class="review-content-loading"><LoaderCircle :size="24" class="spin" /><strong>正在读取生成内容…</strong><span>系统正在按审核对象加载实际产物，而不是任务 ID。</span></div>
+          <div v-else-if="preview.error" class="review-content-error"><CircleX :size="22" /><strong>内容读取失败</strong><span>{{ preview.error }}</span><button class="button button-secondary" @click="openPreview(preview.item)"><RefreshCw :size="15" />重新读取</button></div>
+          <ReviewContentViewer v-else-if="preview.content" :content="preview.content" />
+        </div>
+        <footer class="review-drawer-actions">
+          <span v-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，当前为只读查看。</span>
+          <template v-else>
+            <button class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />退回修改</button>
+            <button class="button button-primary" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('approved')"><CircleCheckBig :size="16" />通过审核</button>
+          </template>
+        </footer>
+      </aside>
+    </div>
 
     <div v-if="decision.open" class="modal-backdrop" @click.self="closeDecision">
       <div class="review-modal" role="dialog" aria-modal="true" :aria-label="decision.review_status === 'approved' ? '通过审核' : '拒绝审核'">

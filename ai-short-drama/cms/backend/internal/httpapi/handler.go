@@ -54,6 +54,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/projects/:projectID", h.getProject)
 	api.POST("/projects/:projectID/actions", h.advanceProject)
 	api.GET("/reviews", h.listReviews)
+	api.GET("/reviews/:reviewID/content", h.getReviewContent)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
 	api.GET("/media-assets", h.listMediaAssets)
 	api.GET("/diagnostics", h.diagnostics)
@@ -243,6 +244,27 @@ func (h *Handler) listReviews(c *gin.Context) {
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "REVIEW_LIST_FAILED", "审核任务读取失败")
 		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (h *Handler) getReviewContent(c *gin.Context) {
+	result, err := h.store.GetReviewContent(c.Request.Context(), c.Param("reviewID"))
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "REVIEW_CONTENT_NOT_FOUND", "审核内容不存在或尚未生成")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "REVIEW_CONTENT_FAILED", "审核内容读取失败")
+		return
+	}
+	for index := range result.Media {
+		media := &result.Media[index]
+		media.MediaURL = resolvePublicMediaURL(h.config.MediaPublicURL, media.StorageURL, media.OriginalURL)
+		media.PreviewURL = resolvePublicMediaURL(h.config.MediaPublicURL, media.PreviewURL)
+		if media.Kind == "image" && media.PreviewURL == nil {
+			media.PreviewURL = media.MediaURL
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }

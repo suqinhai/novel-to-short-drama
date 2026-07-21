@@ -44,7 +44,7 @@ npm run dev
 - 项目列表
 - 新建项目（粘贴 `novel_text`，通过 n8n webhook 创建）
 - 项目详情
-- 审核中心（项目/阶段/状态筛选，通过 n8n 执行 approved/rejected）
+- 审核中心（项目/阶段/状态筛选，直接预览故事圣经、大纲、剧本、分镜和音视频产物，再通过 n8n 执行 approved/rejected）
 - 媒体资产库（只读浏览图片、视频、音频和剧集成片）
 - 系统诊断（Docker 健康、workflow active、Postgres Credential、executeCommand 扫描和最近失败任务）
 - AI 配置管理（可选择原生直连、自定义接口、兼容网关或推荐的混合路由；文本、图片、视频和 TTS 分能力配置 Base URL 与只写密钥，白名单写入 CMS 托管 env）
