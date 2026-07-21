@@ -1,12 +1,14 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck, Images } from 'lucide-vue-next'
+import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck, Images, LibraryBig, BookOpenCheck } from 'lucide-vue-next'
 
 const route = useRoute()
 const sidebarOpen = ref(false)
 const navigation = [
   { label: '项目列表', to: '/projects', icon: FolderKanban, matches: ['/projects'] },
+  { label: '原著资料库', to: '/library', icon: LibraryBig, matches: ['/library'] },
+  { label: '新建改编项目', to: '/adaptations/new', icon: BookOpenCheck, matches: ['/adaptations'] },
   { label: '审核中心', to: '/reviews', icon: ClipboardCheck, matches: ['/reviews'] },
   { label: '媒体资产库', to: '/media-assets', icon: Images, matches: ['/media-assets'] },
   { label: 'AI 配置', to: '/ai-config', icon: Bot, matches: ['/ai-config'] },
@@ -14,7 +16,7 @@ const navigation = [
 ]
 
 const isActive = (item) => {
-  if (item.to === '/projects') return route.path.startsWith('/projects')
+  if (item.to === '/projects') return route.path.startsWith('/projects') && !route.path.endsWith('/adaptation-scope')
   return item.matches.some((path) => route.path.startsWith(path))
 }
 const pageTitle = computed(() => route.meta.title || '控制台')

@@ -4,6 +4,7 @@ const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 const workflowDir = path.join(root, 'workflows');
+const databaseName = process.env.WORKFLOW_SQL_DATABASE || 'short_drama';
 const files = fs.readdirSync(workflowDir)
   .filter((file) => file.endsWith('.json'))
   .sort();
@@ -51,7 +52,7 @@ for (const file of files) {
       const input = `BEGIN;\nPREPARE ${name} AS ${statement};\nDEALLOCATE ${name};\nROLLBACK;\n`;
       const result = spawnSync('docker', [
         'compose','--env-file','.env.example','exec','-T','postgres',
-        'psql','-v','ON_ERROR_STOP=1','-U','n8n','-d','short_drama','-X','-q',
+        'psql','-v','ON_ERROR_STOP=1','-U','n8n','-d',databaseName,'-X','-q',
       ], { cwd: root, input, encoding: 'utf8', windowsHide: true });
       checked += 1;
       if (result.status !== 0) {

@@ -15,7 +15,8 @@ import (
 var ErrNotFound = errors.New("record not found")
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	writer *pgxpool.Pool
 }
 
 type Project struct {
@@ -369,10 +370,34 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connect to short_drama: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	writerConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("parse writer database configuration: %w", err)
+	}
+	writerConfig.MaxConns = 4
+	writerConfig.MinConns = 1
+	writerConfig.MaxConnLifetime = 30 * time.Minute
+	writerConfig.ConnConfig.RuntimeParams["search_path"] = "drama,public"
+	writer, err := pgxpool.NewWithConfig(ctx, writerConfig)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("create writer database pool: %w", err)
+	}
+	writerCheckCtx, writerCheckCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer writerCheckCancel()
+	if err := writer.Ping(writerCheckCtx); err != nil {
+		writer.Close()
+		pool.Close()
+		return nil, fmt.Errorf("connect writer to short_drama: %w", err)
+	}
+	return &Store{pool: pool, writer: writer}, nil
 }
 
-func (s *Store) Close() { s.pool.Close() }
+func (s *Store) Close() {
+	s.pool.Close()
+	s.writer.Close()
+}
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 

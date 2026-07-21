@@ -1,0 +1,24 @@
+{
+  "fixture_version": "phase2-ir-window.v1",
+  "chapter_ids": ["chapter_phase2_002"],
+  "window": {
+    "operation_id": "op_ir_phase2_subset",
+    "ir_revision_id": "ir_phase2_subset",
+    "work_id": "work_phase2_001",
+    "source_version_id": "sv_phase2_001",
+    "chapter_id": "chapter_phase2_002",
+    "chapter_revision_id": "chapter_revision_phase2_002",
+    "ordinal": 2,
+    "start_codepoint": 0,
+    "start_utf8_byte": 0,
+    "content": "第二章"
+  },
+  "extraction": {
+    "schema_version": "narrative-extraction.v1",
+    "entities": [],
+    "facts": [],
+    "event_relations": [],
+    "story_arcs": []
+  },
+  "expected_valid": true
+}

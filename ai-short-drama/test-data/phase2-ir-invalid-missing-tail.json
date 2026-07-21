@@ -1,0 +1,11 @@
+{
+  "fixture_version": "phase2-ir-window.v1",
+  "window": {"operation_id":"op_missing_tail","ir_revision_id":"ir_missing_tail","work_id":"work_phase2_001","source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","ordinal":1,"start_codepoint":0,"start_utf8_byte":0,"content":"前半章"},
+  "extraction": {"schema_version":"narrative-extraction.v1","entities":[],"facts":[],"event_relations":[],"story_arcs":[]},
+  "checkpoint": {
+    "selected_chapter_ids": ["chapter_phase2_001"],
+    "windows": [{"window":{"chapter_id":"chapter_phase2_001","ordinal":1,"start_codepoint":0,"end_codepoint":3,"chapter_total_codepoints":6}}]
+  },
+  "expected_valid": false,
+  "expected_error": "CHAPTER_TAIL_MISSING"
+}

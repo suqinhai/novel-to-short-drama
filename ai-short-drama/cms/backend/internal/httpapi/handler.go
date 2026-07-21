@@ -59,6 +59,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	api.PUT("/ai-config", h.updateAIConfig)
+	registerSourceV2(router, h.store)
 	return router
 }
 

@@ -1,0 +1,114 @@
+{
+  "fixture_version": "phase2-ir-window.v1",
+  "window": {
+    "operation_id": "op_ir_phase2_001",
+    "ir_revision_id": "ir_phase2_001",
+    "work_id": "work_phase2_001",
+    "source_version_id": "sv_phase2_001",
+    "chapter_id": "chapter_phase2_001",
+    "chapter_revision_id": "chapter_revision_phase2_001",
+    "ordinal": 1,
+    "start_codepoint": 0,
+    "content": "林夏推开门，发现桌上有一把旧钥匙。"
+  },
+  "extraction": {
+    "schema_version": "narrative-extraction.v1",
+    "entities": [
+      {
+        "local_id": "character.lin_xia",
+        "entity_type": "character",
+        "canonical_name": "林夏",
+        "aliases": [],
+        "attributes": {"role": "protagonist"},
+        "source": {
+          "source_version_id": "sv_phase2_001",
+          "chapter_id": "chapter_phase2_001",
+          "chapter_revision_id": "chapter_revision_phase2_001",
+          "start_utf8_byte": 0,
+          "end_utf8_byte": 6,
+          "start_codepoint": 0,
+          "end_codepoint": 2,
+          "start_paragraph": 1,
+          "end_paragraph": 1,
+          "quote": "林夏",
+          "quote_hash": "2df5a0911fc069be28d484f49edef58e8832298c14676dbdcab6e2bc7a866f25",
+          "confidence": 0.99
+        }
+      }
+    ],
+    "facts": [
+      {
+        "local_id": "event.open_door",
+        "fact_kind": "event",
+        "statement": "林夏推开门。",
+        "source": {
+          "source_version_id": "sv_phase2_001",
+          "chapter_id": "chapter_phase2_001",
+          "chapter_revision_id": "chapter_revision_phase2_001",
+          "start_utf8_byte": 0,
+          "end_utf8_byte": 15,
+          "start_codepoint": 0,
+          "end_codepoint": 5,
+          "start_paragraph": 1,
+          "end_paragraph": 1,
+          "quote": "林夏推开门",
+          "quote_hash": "b7d314518b45b0e47220c2bac868d9af4b6b11b28e7978d18b3ce2e8e29ffe0b",
+          "confidence": 0.98
+        },
+        "event": {
+          "event_type": "action",
+          "summary": "林夏推开房门。",
+          "narrative_order": 1,
+          "importance": 0.7,
+          "participants": [
+            {
+              "entity_local_id": "character.lin_xia",
+              "role": "actor",
+              "state": {},
+              "source": {
+                "source_version_id": "sv_phase2_001",
+                "chapter_id": "chapter_phase2_001",
+                "chapter_revision_id": "chapter_revision_phase2_001",
+                "start_utf8_byte": 0,
+                "end_utf8_byte": 15,
+                "start_codepoint": 0,
+                "end_codepoint": 5,
+                "start_paragraph": 1,
+                "end_paragraph": 1,
+                "quote": "林夏推开门",
+                "quote_hash": "b7d314518b45b0e47220c2bac868d9af4b6b11b28e7978d18b3ce2e8e29ffe0b",
+                "confidence": 0.98
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "event_relations": [],
+    "story_arcs": [
+      {
+        "local_id": "arc.key_mystery",
+        "title": "旧钥匙之谜",
+        "summary": "林夏发现旧钥匙。",
+        "arc_type": "mystery",
+        "event_local_ids": ["event.open_door"],
+        "source": {
+          "source_version_id": "sv_phase2_001",
+          "chapter_id": "chapter_phase2_001",
+          "chapter_revision_id": "chapter_revision_phase2_001",
+          "start_utf8_byte": 0,
+          "end_utf8_byte": 15,
+          "start_codepoint": 0,
+          "end_codepoint": 5,
+          "start_paragraph": 1,
+          "end_paragraph": 1,
+          "quote": "林夏推开门",
+          "quote_hash": "b7d314518b45b0e47220c2bac868d9af4b6b11b28e7978d18b3ce2e8e29ffe0b",
+          "confidence": 0.85
+        },
+        "confidence": 0.85
+      }
+    ]
+  },
+  "expected_valid": true
+}

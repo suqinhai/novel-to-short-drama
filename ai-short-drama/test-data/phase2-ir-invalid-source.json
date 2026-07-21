@@ -1,0 +1,26 @@
+{
+  "fixture_version": "phase2-ir-window.v1",
+  "window": {
+    "operation_id": "op_ir_phase2_bad_source",
+    "ir_revision_id": "ir_phase2_bad_source",
+    "work_id": "work_phase2_001",
+    "source_version_id": "sv_phase2_001",
+    "chapter_id": "chapter_phase2_001",
+    "chapter_revision_id": "chapter_revision_phase2_001",
+    "ordinal": 1,
+    "start_codepoint": 0,
+    "content": "林夏推开门。"
+  },
+  "extraction": {
+    "schema_version": "narrative-extraction.v1",
+    "entities": [{
+      "local_id":"character.lin_xia","entity_type":"character","canonical_name":"林夏","aliases":[],
+      "source":{"source_version_id":"sv_wrong","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","start_utf8_byte":0,"end_utf8_byte":15,"start_codepoint":0,"end_codepoint":5,"quote":"林夏推开门","quote_hash":"b7d314518b45b0e47220c2bac868d9af4b6b11b28e7978d18b3ce2e8e29ffe0b","confidence":0.9}
+    }],
+    "facts": [],
+    "event_relations": [],
+    "story_arcs": []
+  },
+  "expected_valid": false,
+  "expected_error": "SOURCE_ID_MISMATCH"
+}

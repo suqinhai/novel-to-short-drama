@@ -1,0 +1,20 @@
+{
+  "fixture_version": "phase2-ir-window.v1",
+  "window": {
+    "operation_id":"op_ir_phase2_bad_cycle","ir_revision_id":"ir_phase2_bad_cycle","work_id":"work_phase2_001","source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","ordinal":1,"start_codepoint":0,"content":"甲导致乙。"
+  },
+  "extraction": {
+    "schema_version":"narrative-extraction.v1","entities":[],
+    "facts":[
+      {"local_id":"event.a","fact_kind":"event","statement":"甲。","source":{"source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","start_utf8_byte":0,"end_utf8_byte":3,"start_codepoint":0,"end_codepoint":1,"quote":"甲","quote_hash":"33e3580c093111e1c4cac922872c40371f7896bb3fa4e23be5840bd1834fc622","confidence":0.9},"event":{"event_type":"action","summary":"甲","narrative_order":1,"participants":[]}},
+      {"local_id":"event.b","fact_kind":"event","statement":"乙。","source":{"source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","start_utf8_byte":9,"end_utf8_byte":12,"start_codepoint":3,"end_codepoint":4,"quote":"乙","quote_hash":"71530d4c49f12c489dcfc7d6d1b46d53546ca05bfd1775392c9a42b9b7944bbb","confidence":0.9},"event":{"event_type":"action","summary":"乙","narrative_order":2,"participants":[]}}
+    ],
+    "event_relations":[
+      {"from_event_local_id":"event.a","to_event_local_id":"event.b","relation_type":"causes","source":{"source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","start_utf8_byte":0,"end_utf8_byte":12,"start_codepoint":0,"end_codepoint":4,"quote":"甲导致乙","quote_hash":"2a2b1a5228c9fb032f82928c51c4802974603209d3d924687da78aaa26dde416","confidence":0.8},"confidence":0.8},
+      {"from_event_local_id":"event.b","to_event_local_id":"event.a","relation_type":"causes","source":{"source_version_id":"sv_phase2_001","chapter_id":"chapter_phase2_001","chapter_revision_id":"chapter_revision_phase2_001","start_utf8_byte":0,"end_utf8_byte":12,"start_codepoint":0,"end_codepoint":4,"quote":"甲导致乙","quote_hash":"2a2b1a5228c9fb032f82928c51c4802974603209d3d924687da78aaa26dde416","confidence":0.8},"confidence":0.8}
+    ],
+    "story_arcs":[]
+  },
+  "expected_valid": false,
+  "expected_error": "CAUSAL_CYCLE"
+}

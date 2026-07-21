@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle, SlidersHorizontal } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
@@ -126,7 +126,7 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
     <template v-else-if="project">
       <div class="detail-hero">
         <div class="detail-title"><div class="project-cover large">{{ project.novel_name.slice(0, 1) }}</div><div><div class="title-line"><h2>{{ project.novel_name }}</h2><StatusBadge :status="project.status" /></div><p>{{ project.project_id }} · 创建于 {{ formatDate(project.created_at) }}</p></div></div>
-        <div class="detail-actions"><button class="button button-secondary" :disabled="flowLoading" @click="load"><RefreshCw :size="16" />刷新详情</button><button class="button button-primary" :disabled="flowLoading" @click="runFlowAction('resume')"><LoaderCircle v-if="flowLoading && !retryingTaskId" :size="16" class="spin" /><Play v-else :size="16" />{{ flowLoading && !retryingTaskId ? '推进中…' : 'Resume 流程' }}</button></div>
+        <div class="detail-actions"><RouterLink class="button button-secondary" :to="`/projects/${project.project_id}/adaptation-scope`"><SlidersHorizontal :size="16" />改编范围</RouterLink><button class="button button-secondary" :disabled="flowLoading" @click="load"><RefreshCw :size="16" />刷新详情</button><button class="button button-primary" :disabled="flowLoading" @click="runFlowAction('resume')"><LoaderCircle v-if="flowLoading && !retryingTaskId" :size="16" class="spin" /><Play v-else :size="16" />{{ flowLoading && !retryingTaskId ? '推进中…' : 'Resume 流程' }}</button></div>
       </div>
 
       <article v-if="createResult" class="creation-result-card">
