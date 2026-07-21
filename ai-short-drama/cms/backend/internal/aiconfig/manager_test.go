@@ -85,6 +85,28 @@ func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
 	}
 }
 
+func TestManagerSaveAcceptsRecommendedAndCustomVideoModels(t *testing.T) {
+	for _, model := range []string{
+		"gemini-omni-flash-preview",
+		"veo-3.1-generate-preview",
+		"veo-3.1-fast-generate-preview",
+		"compatible-gateway-video-model",
+	} {
+		path := filepath.Join(t.TempDir(), "cms-managed.env")
+		manager := New(path, "unused")
+		if _, err := manager.Save(map[string]string{"VIDEO_MODEL": model}, nil); err != nil {
+			t.Fatalf("save video model %q: %v", model, err)
+		}
+		values, _, err := readEnvFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if values["VIDEO_MODEL"] != model {
+			t.Fatalf("video model did not round-trip: got %q want %q", values["VIDEO_MODEL"], model)
+		}
+	}
+}
+
 func TestSecretConfiguredRejectsPlaceholders(t *testing.T) {
 	for _, value := range []string{"", "replace_me", "CHANGE_ME_NOW", "your_api_key_here"} {
 		if secretConfigured(value) {

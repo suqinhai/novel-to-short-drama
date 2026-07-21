@@ -53,7 +53,7 @@ var FieldSpecs = []FieldSpec{
 	{Key: "IMAGE_MODEL", Label: "图片模型", Category: "图片生成", Kind: "text"},
 	{Key: "IMAGE_API_BASE_URL", Label: "图片 API 地址", Category: "图片生成", Kind: "url"},
 	{Key: "VIDEO_PROVIDER", Label: "视频供应商", Category: "视频生成", Kind: "select", Options: []string{"mock", "generic_sync_video", "generic_async_video"}},
-	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "text"},
+	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "suggest", Options: []string{"gemini-omni-flash-preview", "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "mock-image-to-video"}, Description: "可选择 Gemini Omni、Veo 3.1 或 Veo 3.1 Fast，也可输入兼容接口支持的其他模型 ID。"},
 	{Key: "VIDEO_API_BASE_URL", Label: "视频 API 地址", Category: "视频生成", Kind: "url"},
 	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "generic_sync_tts", "generic_async_tts"}},
 	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "text"},

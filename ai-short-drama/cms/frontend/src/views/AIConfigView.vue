@@ -17,6 +17,12 @@ const secretDrafts = reactive({})
 
 const sourceLabels = { native: '原生直连', custom: '自定义接口', gateway: '统一网关' }
 const sourceIcons = { native: Building2, custom: Cable, gateway: Network }
+const optionLabels = {
+  'gemini-omni-flash-preview': 'Gemini Omni Flash（推荐）',
+  'veo-3.1-generate-preview': 'Veo 3.1',
+  'veo-3.1-fast-generate-preview': 'Veo 3.1 Fast',
+  'mock-image-to-video': 'Mock 测试模型',
+}
 const defaultPlan = {
   AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
   VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native',
@@ -197,7 +203,10 @@ onMounted(load)
             <code>{{ field.key }}</code>
             <select v-if="field.kind === 'boolean'" v-model="drafts[field.key]" class="select-control"><option value="true">true</option><option value="false">false</option></select>
             <select v-else-if="field.kind === 'select'" v-model="drafts[field.key]" class="select-control"><option v-for="option in field.options" :key="option" :value="option">{{ option }}</option></select>
-            <input v-else v-model="drafts[field.key]" :type="field.kind === 'url' ? 'url' : 'text'" :placeholder="field.allow_empty ? '留空表示禁用' : '请输入配置值'" spellcheck="false" />
+            <template v-else>
+              <input v-model="drafts[field.key]" :type="field.kind === 'url' ? 'url' : 'text'" :list="field.kind === 'suggest' ? `options-${field.key}` : undefined" :placeholder="field.allow_empty ? '留空表示禁用' : '请输入配置值'" spellcheck="false" />
+              <datalist v-if="field.kind === 'suggest'" :id="`options-${field.key}`"><option v-for="option in field.options" :key="option" :value="option" :label="optionLabels[option] || option" /></datalist>
+            </template>
             <small>{{ field.description || '当前容器：' }}<b v-if="!field.description">{{ displayCurrent(field) }}</b></small>
           </label>
         </div>
