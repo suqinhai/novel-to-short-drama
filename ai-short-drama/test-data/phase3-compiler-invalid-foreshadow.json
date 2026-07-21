@@ -1,0 +1,12 @@
+{
+  "operation_id": "op_compile_foreshadow",
+  "claim_token": "33333333-3333-4333-8333-333333333333",
+  "ir_status": "published",
+  "run": {"compiler_run_id": "compiler_foreshadow", "project_id": "project_fixture_001", "work_id": "work_fixture_001", "source_version_id": "source_version_fixture_001", "adaptation_spec_version_id": "spec_foreshadow", "ir_revision_id": "ir_fixture_001"},
+  "spec": {"source_version_id": "source_version_fixture_001", "ir_revision_id": "ir_fixture_001", "status": "active", "scope_mode": "chapters_only", "target_episode_count": 1, "episode_duration_seconds": 120},
+  "scope_chapters": [{"chapter_id": "chapter_fixture_001", "include_mode": "include"}],
+  "scope_arcs": [], "rules": [{"adaptation_rule_id": "rule_foreshadow", "rule_type": "must_preserve", "enforcement": "hard", "target_type": "event", "target_id": "event_foreshadow_001", "priority": 1, "parameters": {}, "rationale": "保留"}],
+  "events": [{"event_revision_id": "event_foreshadow_001", "fact_revision_id": "fact_foreshadow_001", "chapter_id": "chapter_fixture_001", "source_span_id": "span_foreshadow_001", "summary": "直接揭晓谜底", "narrative_order": 1, "importance": 0.5, "story_arc_revision_ids": [], "participant_entity_revision_ids": []}],
+  "relations": [], "state_changes": [],
+  "foreshadow_occurrences": [{"foreshadow_thread_id": "thread_foreshadow_001", "event_revision_id": "event_foreshadow_001", "lifecycle_stage": "resolved", "occurrence_order": 2}]
+}

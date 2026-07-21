@@ -28,6 +28,8 @@ type sourceV2Service interface {
 	ReviseChapter(context.Context, string, string, int, string, string, string) (store.Operation, int, error)
 	PublishSourceVersion(context.Context, string, int, string) (store.Operation, int, error)
 	StartIRRun(context.Context, string, string, store.IRRunInput) (store.Operation, error)
+	StartCompilerRun(context.Context, string, string, store.CompilerRunInput) (store.Operation, error)
+	GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error)
 	GetOperation(context.Context, string) (store.Operation, error)
 }
 
@@ -50,6 +52,8 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.POST("/source-versions/*resourcePath", h.dispatchSourceVersionPost)
 	api.PATCH("/source-versions/*resourcePath", h.dispatchSourceVersionPatch)
 	api.GET("/operations/:operationID", h.getOperation)
+	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
+	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
 }
 
 func (h *sourceV2Handler) dispatchSourceVersionGet(c *gin.Context) {
@@ -381,6 +385,46 @@ func (h *sourceV2Handler) getOperation(c *gin.Context) {
 		return
 	}
 	v2Response(c, http.StatusOK, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) startCompilerRun(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request struct {
+		AdaptationSpecVersionID string `json:"adaptation_spec_version_id"`
+		IRRevisionID            string `json:"ir_revision_id"`
+		CompilerVersion         string `json:"compiler_version"`
+	}
+	if !decodeStrictJSON(c, &request) ||
+		!publicIDPattern.MatchString(request.AdaptationSpecVersionID) ||
+		!publicIDPattern.MatchString(request.IRRevisionID) ||
+		strings.TrimSpace(request.CompilerVersion) == "" || len(request.CompilerVersion) > 200 {
+		if !c.IsAborted() {
+			v2InputError(c, "INVALID_COMPILER_RUN", "compiler input does not satisfy the frozen contract")
+		}
+		return
+	}
+	operation, err := h.service.StartCompilerRun(c.Request.Context(), c.Param("projectID"), key, store.CompilerRunInput{
+		AdaptationSpecVersionID: request.AdaptationSpecVersionID,
+		IRRevisionID:            request.IRRevisionID,
+		CompilerVersion:         strings.TrimSpace(request.CompilerVersion),
+	})
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) getAdaptationPlan(c *gin.Context) {
+	plan, trace, err := h.service.GetAdaptationPlan(c.Request.Context(), c.Param("adaptationPlanID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, trace, plan, nil)
 }
 
 func normalizeImport(request importRequest) (store.ImportInput, error) {

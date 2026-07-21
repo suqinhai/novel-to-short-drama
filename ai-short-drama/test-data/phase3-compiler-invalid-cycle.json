@@ -1,0 +1,18 @@
+{
+  "operation_id": "op_compile_cycle",
+  "claim_token": "22222222-2222-4222-8222-222222222222",
+  "ir_status": "published",
+  "run": {"compiler_run_id": "compiler_cycle", "project_id": "project_fixture_001", "work_id": "work_fixture_001", "source_version_id": "source_version_fixture_001", "adaptation_spec_version_id": "spec_cycle", "ir_revision_id": "ir_fixture_001"},
+  "spec": {"source_version_id": "source_version_fixture_001", "ir_revision_id": "ir_fixture_001", "status": "active", "scope_mode": "chapters_only", "target_episode_count": 1, "episode_duration_seconds": 120},
+  "scope_chapters": [{"chapter_id": "chapter_fixture_001", "include_mode": "include"}],
+  "scope_arcs": [], "rules": [{"adaptation_rule_id": "rule_cycle", "rule_type": "must_preserve", "enforcement": "hard", "target_type": "event", "target_id": "event_cycle_001", "priority": 1, "parameters": {}, "rationale": "保留"}],
+  "events": [
+    {"event_revision_id": "event_cycle_001", "fact_revision_id": "fact_cycle_001", "chapter_id": "chapter_fixture_001", "source_span_id": "span_cycle_001", "summary": "事件甲", "narrative_order": 1, "importance": 0.5, "story_arc_revision_ids": [], "participant_entity_revision_ids": []},
+    {"event_revision_id": "event_cycle_002", "fact_revision_id": "fact_cycle_002", "chapter_id": "chapter_fixture_001", "source_span_id": "span_cycle_002", "summary": "事件乙", "narrative_order": 2, "importance": 0.5, "story_arc_revision_ids": [], "participant_entity_revision_ids": []}
+  ],
+  "relations": [
+    {"from_event_revision_id": "event_cycle_001", "to_event_revision_id": "event_cycle_002", "relation_type": "causes"},
+    {"from_event_revision_id": "event_cycle_002", "to_event_revision_id": "event_cycle_001", "relation_type": "enables"}
+  ],
+  "state_changes": [], "foreshadow_occurrences": []
+}

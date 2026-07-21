@@ -114,6 +114,12 @@ type IRRunInput struct {
 	ChapterIDs       []string
 }
 
+type CompilerRunInput struct {
+	AdaptationSpecVersionID string
+	IRRevisionID            string
+	CompilerVersion         string
+}
+
 type AdaptationSpecSummary struct {
 	AdaptationSpecID        string  `json:"adaptation_spec_id"`
 	AdaptationSpecVersionID string  `json:"adaptation_spec_version_id"`

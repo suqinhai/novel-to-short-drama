@@ -393,7 +393,7 @@ paths:
       tags: [AdaptationProjects]
       operationId: startCompilerRun
       summary: Compile a validated adaptation plan
-      x-implementation-phase: 4
+      x-implementation-phase: 3
       parameters:
         - $ref: '#/components/parameters/ProjectID'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -415,6 +415,32 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OperationResponse'}
+  /adaptation-plans/{adaptation_plan_id}:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getAdaptationPlan
+      summary: Get a reviewable compiler plan with source and deviation audit fields
+      x-implementation-phase: 3
+      parameters:
+        - name: adaptation_plan_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      responses:
+        '200':
+          description: Reviewable compiler plan
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [contract_version, trace_id, data]
+                properties:
+                  contract_version: {type: string, const: '2.0'}
+                  trace_id: {$ref: '#/components/schemas/ID'}
+                  data:
+                    $ref: ../json-schema/compiler-plan.v2.json
+        '404': {$ref: '#/components/responses/NotFound'}
   /adaptation-projects/{project_id}/impact:
     get:
       tags: [Lineage]

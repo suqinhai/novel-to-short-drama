@@ -1,0 +1,50 @@
+{
+  "operation_id": "op_compile_fixture",
+  "claim_token": "11111111-1111-4111-8111-111111111111",
+  "ir_status": "published",
+  "run": {
+    "compiler_run_id": "compiler_fixture_001",
+    "project_id": "project_fixture_001",
+    "work_id": "work_fixture_001",
+    "source_version_id": "source_version_fixture_001",
+    "adaptation_spec_version_id": "spec_version_fixture_001",
+    "ir_revision_id": "ir_fixture_001"
+  },
+  "spec": {
+    "source_version_id": "source_version_fixture_001",
+    "ir_revision_id": "ir_fixture_001",
+    "status": "active",
+    "scope_mode": "chapters_only",
+    "target_episode_count": 2,
+    "episode_duration_seconds": 50
+  },
+  "scope_chapters": [
+    {"chapter_id": "chapter_fixture_001", "include_mode": "include"},
+    {"chapter_id": "chapter_fixture_002", "include_mode": "include"}
+  ],
+  "scope_arcs": [],
+  "rules": [
+    {"adaptation_rule_id": "rule_preserve_001", "rule_type": "must_preserve", "enforcement": "hard", "target_type": "event", "target_id": "event_fixture_001", "priority": 100, "parameters": {}, "rationale": "保留开端"},
+    {"adaptation_rule_id": "rule_merge_global", "rule_type": "merge_allowed", "enforcement": "hard", "target_type": "free_text", "target_id": null, "priority": 50, "parameters": {}, "rationale": "相邻事件可压缩呈现"},
+    {"adaptation_rule_id": "rule_transform_002", "rule_type": "transform_required", "enforcement": "hard", "target_type": "event", "target_id": "event_fixture_002", "priority": 80, "parameters": {"added_content_description": "增加一条不改变因果关系的视觉化转场"}, "rationale": "适配竖屏节奏"}
+  ],
+  "events": [
+    {"event_revision_id": "event_fixture_001", "fact_revision_id": "fact_fixture_001", "chapter_id": "chapter_fixture_001", "source_span_id": "span_fixture_001", "summary": "主角收到匿名警告", "narrative_order": 1, "importance": 0.28, "story_arc_revision_ids": ["arc_fixture_001"], "participant_entity_revision_ids": ["entity_fixture_hero"]},
+    {"event_revision_id": "event_fixture_002", "fact_revision_id": "fact_fixture_002", "chapter_id": "chapter_fixture_001", "source_span_id": "span_fixture_002", "summary": "主角决定调查警告来源", "narrative_order": 2, "importance": 0.28, "story_arc_revision_ids": ["arc_fixture_001"], "participant_entity_revision_ids": ["entity_fixture_hero"]},
+    {"event_revision_id": "event_fixture_003", "fact_revision_id": "fact_fixture_003", "chapter_id": "chapter_fixture_002", "source_span_id": "span_fixture_003", "summary": "主角发现关键证据", "narrative_order": 3, "importance": 0.28, "story_arc_revision_ids": ["arc_fixture_001"], "participant_entity_revision_ids": ["entity_fixture_hero"]},
+    {"event_revision_id": "event_fixture_004", "fact_revision_id": "fact_fixture_004", "chapter_id": "chapter_fixture_002", "source_span_id": "span_fixture_004", "summary": "证据指向真正幕后者", "narrative_order": 4, "importance": 0.28, "story_arc_revision_ids": ["arc_fixture_001"], "participant_entity_revision_ids": ["entity_fixture_hero"]}
+  ],
+  "relations": [
+    {"from_event_revision_id": "event_fixture_001", "to_event_revision_id": "event_fixture_002", "relation_type": "enables"},
+    {"from_event_revision_id": "event_fixture_002", "to_event_revision_id": "event_fixture_003", "relation_type": "causes"},
+    {"from_event_revision_id": "event_fixture_003", "to_event_revision_id": "event_fixture_004", "relation_type": "before"}
+  ],
+  "state_changes": [
+    {"state_change_id": "state_fixture_001", "character_entity_revision_id": "entity_fixture_hero", "state_dimension": "knowledge", "before_state": {"clue": 0}, "after_state": {"clue": 1}, "trigger_event_revision_id": "event_fixture_001", "sequence_number": 1},
+    {"state_change_id": "state_fixture_002", "character_entity_revision_id": "entity_fixture_hero", "state_dimension": "knowledge", "before_state": {"clue": 1}, "after_state": {"clue": 2}, "trigger_event_revision_id": "event_fixture_003", "sequence_number": 2}
+  ],
+  "foreshadow_occurrences": [
+    {"foreshadow_thread_id": "thread_fixture_001", "event_revision_id": "event_fixture_001", "lifecycle_stage": "planted", "occurrence_order": 1},
+    {"foreshadow_thread_id": "thread_fixture_001", "event_revision_id": "event_fixture_004", "lifecycle_stage": "resolved", "occurrence_order": 2}
+  ]
+}

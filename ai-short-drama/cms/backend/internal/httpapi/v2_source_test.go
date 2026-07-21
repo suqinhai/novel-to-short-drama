@@ -60,6 +60,15 @@ func (f *fakeSourceV2) StartIRRun(context.Context, string, string, store.IRRunIn
 		TargetID: "ir_test", Status: "pending", Checkpoint: store.OperationCheckpoint{Stage: "queued"}, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
+func (f *fakeSourceV2) StartCompilerRun(context.Context, string, string, store.CompilerRunInput) (store.Operation, error) {
+	now := time.Now().UTC()
+	return store.Operation{OperationID: "op_compile_test", TraceID: "tr_compile_test", OperationType: "adaptation_compile",
+		TargetType: "project", TargetID: "project_test", Status: "pending", Checkpoint: store.OperationCheckpoint{Stage: "queued"},
+		CreatedAt: now, UpdatedAt: now}, nil
+}
+func (f *fakeSourceV2) GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error) {
+	return json.RawMessage(`{"schema_version":"compiler-plan.v2","compiler_run_id":"compiler_test","episodes":[],"diagnostics":[],"validation":{}}`), "tr_compile_test", nil
+}
 func (f *fakeSourceV2) GetOperation(context.Context, string) (store.Operation, error) {
 	return completedTestOperation(), nil
 }
@@ -169,5 +178,26 @@ func TestIRRunReturnsPendingIRRevisionTarget(t *testing.T) {
 	}
 	if body.Data.Status != "pending" || body.Data.TargetType != "ir_revision" || body.Data.TargetID != "ir_test" {
 		t.Fatalf("IR run must target a staging IR revision: %#v", body.Data)
+	}
+}
+
+func TestCompilerRunRequiresFrozenInputsAndReturnsPendingOperation(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-projects/project_test/compiler-runs", bytes.NewBufferString(`{
+		"adaptation_spec_version_id":"spec_version_test","ir_revision_id":"ir_test","compiler_version":"constraint-v1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "compiler-run-key-001")
+	newSourceV2TestRouter(&fakeSourceV2{}).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Data store.Operation `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.OperationType != "adaptation_compile" || body.Data.Status != "pending" || body.Data.TargetID != "project_test" {
+		t.Fatalf("unexpected compiler operation: %#v", body.Data)
 	}
 }
