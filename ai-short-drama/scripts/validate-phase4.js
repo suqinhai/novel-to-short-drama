@@ -118,6 +118,7 @@ const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-p
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
 assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
 assert(videoAdapterWorkflow.includes('model: task.model, ...request'), '09a-video-provider-adapter.json: selected video model is not forwarded to provider');
+assert(videoAdapterWorkflow.includes("const { URL: URLCtor } = require('url')"), '09a-video-provider-adapter.json: endpoint validation must use the sandbox-safe URL implementation');
 
 const envPath = path.join(root, '.env.example');
 const envLines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));

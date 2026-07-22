@@ -168,7 +168,7 @@ services:
       TZ: ${TZ:-Asia/Taipei}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       NODES_EXCLUDE: '${NODES_EXCLUDE:-["n8n-nodes-base.localFileTrigger"]}'
-      NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs,path
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs,path,url
       AI_CONNECTION_MODE: ${AI_CONNECTION_MODE:-hybrid}
       TEXT_API_SOURCE: ${TEXT_API_SOURCE:-gateway}
       IMAGE_API_SOURCE: ${IMAGE_API_SOURCE:-native}
