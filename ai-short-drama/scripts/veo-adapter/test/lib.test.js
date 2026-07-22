@@ -6,6 +6,7 @@ const test = require('node:test')
 const {
   appendGcsPrefix,
   assertAllowedImageUrl,
+  buildVeoParameters,
   createServiceAccountJwt,
   decodeBase64Video,
   extractInteractionVideoOutputs,
@@ -44,6 +45,32 @@ test('normalizes pipeline and Vertex resolutions', () => {
   assert.equal(normalizeResolution('720x1280'), '720p')
   assert.equal(normalizePipelineResolution('', '9:16', '1080p'), '1080x1920')
   assert.equal(normalizePipelineResolution('', '16:9', '720p'), '1280x720')
+})
+
+test('builds only documented Veo predictLongRunning parameters', () => {
+  const parameters = buildVeoParameters({
+    duration_seconds: 6,
+    aspect_ratio: '9:16',
+    resolution: '720p',
+    expected_audio: true,
+    negative_prompt: 'blur',
+    seed: 7,
+    fps: 24,
+  }, { storageUri: '', resizeMode: 'crop' })
+  assert.deepEqual(parameters, {
+    sampleCount: 1,
+    durationSeconds: 6,
+    aspectRatio: '9:16',
+    resolution: '720p',
+    personGeneration: 'allow_adult',
+    enhancePrompt: true,
+    generateAudio: true,
+    resizeMode: 'crop',
+    negativePrompt: 'blur',
+    seed: 7,
+  })
+  assert.equal('task' in parameters, false)
+  assert.equal('fps' in parameters, false)
 })
 
 test('rewrites and restricts image URLs', () => {
@@ -89,7 +116,10 @@ test('extracts inline Veo and Omni video payloads', () => {
 test('validates local MP4 payloads and references', () => {
   const mp4 = Buffer.from('000000186674797069736f6d0000000069736f6d', 'hex')
   assert.deepEqual(decodeBase64Video(mp4.toString('base64'), 1024), mp4)
+  const largeMp4 = Buffer.concat([mp4, Buffer.alloc(2 * 1024 * 1024)])
+  assert.deepEqual(decodeBase64Video(largeMp4.toString('base64'), 3 * 1024 * 1024), largeMp4)
   assert.throws(() => decodeBase64Video(Buffer.from('not-video').toString('base64'), 1024), /valid MP4/)
+  assert.throws(() => decodeBase64Video('AAAA*AAA', 1024), /valid base64/)
   assert.throws(() => decodeBase64Video(mp4.toString('base64'), 8), /size limit/)
   const taskId = 'veo_0123456789abcdef01234567'
   const reference = localVideoRef(taskId, 2)

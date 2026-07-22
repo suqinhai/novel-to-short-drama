@@ -9,6 +9,7 @@ const { Readable } = require('stream')
 const {
   appendGcsPrefix,
   assertAllowedImageUrl,
+  buildVeoParameters,
   clampInteger,
   createServiceAccountJwt,
   decodeBase64Video,
@@ -358,21 +359,12 @@ async function submitVeoTask(taskId, normalized, requestHash) {
   const projectId = await validateGoogleProject()
   if (!/^[-a-z0-9]+$/.test(config.location)) throw new HttpError(503, 'VEO_LOCATION is invalid', 'VEO_LOCATION_INVALID')
   const storageUri = config.outputMode === 'gcs' ? appendGcsPrefix(config.outputUri, taskId) : ''
-  const parameters = {
-    sampleCount: 1,
-    durationSeconds: normalized.duration_seconds,
-    aspectRatio: normalized.aspect_ratio,
-    resolution: normalized.resolution,
-    fps: normalized.fps,
+  const parameters = buildVeoParameters(normalized, {
+    storageUri,
     personGeneration: config.personGeneration,
     enhancePrompt: config.enhancePrompt,
-    generateAudio: normalized.expected_audio,
-    task: 'imageToVideo',
     resizeMode: config.resizeMode,
-    ...(normalized.negative_prompt ? { negativePrompt: normalized.negative_prompt } : {}),
-    ...(normalized.seed === undefined ? {} : { seed: normalized.seed }),
-    ...(storageUri ? { storageUri } : {}),
-  }
+  })
   const url = `${vertexApiOrigin()}/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(config.location)}/publishers/google/models/${encodeURIComponent(normalized.model)}:predictLongRunning`
   const operation = await fetchGoogleJson(url, {
     method: 'POST',

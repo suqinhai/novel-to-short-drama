@@ -435,7 +435,8 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "shot_id": "={{$json.shot.shot_id}}"
+            "shot_id": "={{$json.shot.shot_id}}",
+            "regenerate": "={{['retry','regenerate','resume'].includes($json.action)}}"
           },
           "matchingColumns": [],
           "schema": []
@@ -468,6 +469,21 @@
         360
       ],
       "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{Math.max(7,Math.ceil(Number($env.VIDEO_REQUEST_INTERVAL_MS||7000)/1000))}}",
+        "unit": "seconds"
+      },
+      "id": "09-rate-limit-wait",
+      "name": "Rate Limit Video Submissions",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1480,
+        360
+      ]
     },
     {
       "parameters": {
@@ -876,7 +892,7 @@
       "main": [
         [
           {
-            "node": "Loop Video Shots",
+            "node": "Rate Limit Video Submissions",
             "type": "main",
             "index": 0
           }
@@ -884,6 +900,17 @@
         [
           {
             "node": "Normalize Video Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Video Submissions": {
+      "main": [
+        [
+          {
+            "node": "Loop Video Shots",
             "type": "main",
             "index": 0
           }

@@ -95,7 +95,13 @@ for (const file of requiredWorkflows) {
         assert(laneCount === expected, `${file}: Switch ${node.name} has ${laneCount} lanes, expected ${expected}`);
       }
     }
-    if (node.type === 'n8n-nodes-base.wait') errors.push(`${file}: Wait node is not allowed in phase 4 polling`);
+    if (node.type === 'n8n-nodes-base.wait') {
+      const quotaPacingWait = file === '09-image-to-video.json'
+        && node.name === 'Rate Limit Video Submissions'
+        && node.parameters?.resume === 'timeInterval'
+        && node.parameters?.unit === 'seconds';
+      if (!quotaPacingWait) errors.push(`${file}: Wait node is not allowed outside bounded video submission pacing`);
+    }
   }
   console.log(`OK workflow ${file}: ${workflow.nodes.length} nodes`);
 }
@@ -117,8 +123,11 @@ const videoGenerationWorkflow = fs.readFileSync(path.join(workflowDir, '09-image
 const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-provider-adapter.json'), 'utf8');
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
 assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
+assert(videoGenerationWorkflow.includes('Rate Limit Video Submissions'), '09-image-to-video.json: provider dispatch is missing quota-safe request pacing');
 assert(videoAdapterWorkflow.includes('model: task.model, ...request'), '09a-video-provider-adapter.json: selected video model is not forwarded to provider');
 assert(videoAdapterWorkflow.includes("const { URL: URLCtor } = require('url')"), '09a-video-provider-adapter.json: endpoint validation must use the sandbox-safe URL implementation');
+assert(videoAdapterWorkflow.includes('Normalize Provider Response v3'), '09a-video-provider-adapter.json: provider responses must use the nested-response-safe allowlisted normalizer');
+assert(videoAdapterWorkflow.includes("createHash('sha256')") && videoAdapterWorkflow.includes('recovered_provider_task_id'), '09a-video-provider-adapter.json: Veo task IDs must be recoverable without persisting raw HTTP objects');
 
 const envPath = path.join(root, '.env.example');
 const envLines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));

@@ -64,6 +64,23 @@ function normalizePipelineResolution(value, aspectRatio, vertexResolution) {
   return landscape ? '1920x1080' : '1080x1920'
 }
 
+function buildVeoParameters(normalized, options = {}) {
+  const storageUri = String(options.storageUri || '').trim()
+  return {
+    sampleCount: 1,
+    durationSeconds: normalized.duration_seconds,
+    aspectRatio: normalized.aspect_ratio,
+    resolution: normalized.resolution,
+    personGeneration: options.personGeneration || 'allow_adult',
+    enhancePrompt: options.enhancePrompt !== false,
+    generateAudio: Boolean(normalized.expected_audio),
+    resizeMode: options.resizeMode || 'crop',
+    ...(normalized.negative_prompt ? { negativePrompt: normalized.negative_prompt } : {}),
+    ...(normalized.seed === undefined ? {} : { seed: normalized.seed }),
+    ...(storageUri ? { storageUri } : {}),
+  }
+}
+
 function parseGcsUri(value) {
   const uri = String(value || '').trim()
   if (!uri.startsWith('gs://')) throw new Error('invalid GCS URI')
@@ -218,10 +235,20 @@ function extractInteractionVideoOutputs(interaction) {
 function decodeBase64Video(value, maxBytes) {
   const encoded = String(value || '').trim()
   const limit = Number(maxBytes)
-  if (!encoded || encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+  if (!encoded || encoded.length % 4 !== 0) {
     throw new Error('video output is not valid base64')
   }
-  if (Number.isFinite(limit) && Math.floor(encoded.length * 3 / 4) > limit + 2) {
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+  const contentLength = encoded.length - padding
+  if ((padding === 1 && contentLength % 4 !== 3) || (padding === 2 && contentLength % 4 !== 2)) {
+    throw new Error('video output is not valid base64')
+  }
+  for (let offset = 0; offset < contentLength; offset += 8192) {
+    const chunk = encoded.slice(offset, Math.min(contentLength, offset + 8192))
+    if (!/^[A-Za-z0-9+/]+$/.test(chunk)) throw new Error('video output is not valid base64')
+  }
+  const estimatedBytes = (encoded.length / 4) * 3 - padding
+  if (Number.isFinite(limit) && estimatedBytes > limit) {
     throw new Error('video output exceeds the configured local size limit')
   }
   const data = Buffer.from(encoded, 'base64')
@@ -274,6 +301,7 @@ module.exports = {
   SUPPORTED_MODELS,
   appendGcsPrefix,
   assertAllowedImageUrl,
+  buildVeoParameters,
   clampInteger,
   createServiceAccountJwt,
   decodeBase64Video,
