@@ -205,14 +205,15 @@ func projectFlowRoute(currentStage string) (webhookStage, requestedStage string,
 	case "storyboard_approved", "stage_2_completed", "visual_assets", "visual_asset_review",
 		"visual_assets_locked", "storyboard_images", "storyboard_image_review", "stage_3_failed":
 		return "stage3", "", true
-	case "storyboard_images_approved", "stage_3_completed", "stage_4_failed":
+	case "storyboard_images_approved", "stage_3_completed", "stage_4_failed",
+		"image_to_video", "video_tasks_submitted", "video_processing", "shot_videos_generated",
+		"shot_video_review", "shot_videos_approved", "voice_audio", "voice_profiles_created",
+		"voice_profile_review", "voice_profiles_locked", "tts_processing", "dialogue_audio_generated",
+		"audio_processing", "audio_review", "audio_ready", "audio_plan_completed":
+		// Resume must go through the Stage 4 orchestrator without pinning one branch.
+		// Video and audio are parallel; targeting the branch implied by current_stage
+		// can permanently starve the other branch.
 		return "stage4", "", true
-	case "image_to_video", "video_tasks_submitted", "video_processing", "shot_videos_generated",
-		"shot_video_review", "shot_videos_approved":
-		return "stage4", "image_to_video", true
-	case "voice_audio", "voice_profiles_created", "voice_profile_review", "voice_profiles_locked",
-		"tts_processing", "dialogue_audio_generated", "audio_processing", "audio_review", "audio_ready", "audio_plan_completed":
-		return "stage4", "voice_audio", true
 	case "stage_4_completed", "preparing_timeline", "edit_timeline_ready", "rendering", "preview_rendered",
 		"final_rendered", "waiting_qc", "qc_completed", "waiting_final_review", "final_review_approved",
 		"preparing_publication", "waiting_publication_metadata_review", "publication_metadata_approved",
@@ -358,6 +359,7 @@ type reviewDecisionRequest struct {
 	RejectionReason     string `json:"rejection_reason"`
 	RevisionInstruction string `json:"revision_instruction"`
 	PromptAdjustment    string `json:"prompt_adjustment"`
+	ProviderVoiceID     string `json:"provider_voice_id"`
 	SelectedAsPrimary   bool   `json:"selected_as_primary"`
 	LockAfterApproval   bool   `json:"lock_after_approval"`
 }
@@ -373,6 +375,7 @@ func (h *Handler) decideReview(c *gin.Context) {
 	input.RejectionReason = strings.TrimSpace(input.RejectionReason)
 	input.RevisionInstruction = strings.TrimSpace(input.RevisionInstruction)
 	input.PromptAdjustment = strings.TrimSpace(input.PromptAdjustment)
+	input.ProviderVoiceID = strings.TrimSpace(input.ProviderVoiceID)
 	if input.ReviewStatus != "approved" && input.ReviewStatus != "rejected" {
 		respondError(c, http.StatusBadRequest, "INVALID_REVIEW_STATUS", "审核状态只允许 approved 或 rejected")
 		return
@@ -408,6 +411,7 @@ func (h *Handler) decideReview(c *gin.Context) {
 		"review_status": input.ReviewStatus, "review_comment": input.ReviewComment,
 		"reviewer_comment": input.ReviewComment, "rejection_reason": input.RejectionReason,
 		"revision_instruction": input.RevisionInstruction, "prompt_adjustment": input.PromptAdjustment,
+		"provider_voice_id":   input.ProviderVoiceID,
 		"selected_as_primary": input.SelectedAsPrimary, "lock_after_approval": input.LockAfterApproval,
 		"entity_type": review.EntityType, "entity_id": review.EntityID, "test_mode": review.TestMode,
 		"generation_version": metadataInt(metadata, "generation_version", metadataInt(metadata, "version", 1)),

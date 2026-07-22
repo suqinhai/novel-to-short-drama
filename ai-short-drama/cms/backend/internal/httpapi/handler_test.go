@@ -128,8 +128,9 @@ func TestProjectFlowRoute(t *testing.T) {
 		{"storyboard_approved", "stage3", ""},
 		{"visual_asset_review", "stage3", ""},
 		{"storyboard_images_approved", "stage4", ""},
-		{"video_processing", "stage4", "image_to_video"},
-		{"audio_processing", "stage4", "voice_audio"},
+		{"video_processing", "stage4", ""},
+		{"shot_videos_approved", "stage4", ""},
+		{"audio_processing", "stage4", ""},
 		{"stage_4_completed", "stage5", ""},
 		{"waiting_final_review", "stage5", ""},
 	}

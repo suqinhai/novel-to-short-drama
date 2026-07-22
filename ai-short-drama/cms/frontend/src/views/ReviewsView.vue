@@ -14,6 +14,7 @@ const filters = reactive({ project_id: '', stage: '', status: '' })
 const decision = reactive({
   open: false, item: null, review_status: 'approved', review_comment: '', rejection_reason: '',
   revision_instruction: '', prompt_adjustment: '', selected_as_primary: true, lock_after_approval: true,
+  provider_voice_id: '',
 })
 const submitting = ref(false)
 const preview = reactive({ open: false, item: null, content: null, loading: false, error: '' })
@@ -53,6 +54,7 @@ function openDecision(item, status) {
   Object.assign(decision, {
     open: true, item, review_status: status, review_comment: '', rejection_reason: '', revision_instruction: '',
     prompt_adjustment: '', selected_as_primary: true, lock_after_approval: true,
+    provider_voice_id: '',
   })
 }
 
@@ -79,6 +81,7 @@ function closeDecision() {
 async function submitDecision() {
   if (!decision.item || submitting.value) return
   if (decision.review_status === 'rejected' && !decision.rejection_reason.trim()) return
+  if (isVoiceProfile.value && decision.review_status === 'approved' && !decision.provider_voice_id.trim()) return
   submitting.value = true
   error.value = ''
   try {
@@ -88,6 +91,7 @@ async function submitDecision() {
       rejection_reason: decision.rejection_reason.trim(),
       revision_instruction: decision.revision_instruction.trim(),
       prompt_adjustment: decision.prompt_adjustment.trim(),
+      provider_voice_id: decision.provider_voice_id.trim(),
       selected_as_primary: decision.selected_as_primary,
       lock_after_approval: decision.lock_after_approval,
     })
@@ -103,6 +107,7 @@ async function submitDecision() {
 }
 
 const isVisualAsset = computed(() => decision.item?.stage === 'visual_asset')
+const isVoiceProfile = computed(() => decision.item?.stage === 'voice_profile')
 const supportsPromptAdjustment = computed(() => ['visual_asset', 'storyboard_image', 'shot_video', 'dialogue_audio'].includes(decision.item?.stage))
 const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
 </script>
@@ -170,9 +175,10 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
         <label v-if="decision.review_status === 'rejected'" class="field"><span>拒绝原因 <i>*</i></span><textarea v-model="decision.rejection_reason" rows="3" placeholder="请说明需要修改的问题" required></textarea></label>
         <label v-if="decision.review_status === 'rejected'" class="field"><span>修改指令</span><textarea v-model="decision.revision_instruction" rows="2" placeholder="可选：给后续重做流程的具体指令"></textarea></label>
         <label v-if="supportsPromptAdjustment" class="field"><span>Prompt 调整</span><textarea v-model="decision.prompt_adjustment" rows="2" placeholder="可选：用于视觉或音视频重新生成"></textarea></label>
-        <div v-if="isVisualAsset && decision.review_status === 'approved'" class="decision-options"><label><input v-model="decision.selected_as_primary" type="checkbox" />设为主资产</label><label><input v-model="decision.lock_after_approval" type="checkbox" />批准后锁定</label></div>
+        <label v-if="isVoiceProfile && decision.review_status === 'approved'" class="field"><span>供应商音色 ID <i>*</i></span><input v-model="decision.provider_voice_id" type="text" placeholder="例如：Kore、Aoede、Puck" required /></label>
+        <div v-if="(isVisualAsset || isVoiceProfile) && decision.review_status === 'approved'" class="decision-options"><label v-if="isVisualAsset"><input v-model="decision.selected_as_primary" type="checkbox" />设为主资产</label><label><input v-model="decision.lock_after_approval" type="checkbox" />批准后锁定</label></div>
         <div class="modal-notice"><Webhook :size="16" /><span>此操作将调用 n8n，不会由 CMS 直接更新 review_tasks。</span></div>
-        <div class="modal-actions"><button class="button button-secondary" :disabled="submitting" @click="closeDecision">取消</button><button class="button" :class="decision.review_status === 'approved' ? 'button-primary' : 'button-danger'" :disabled="submitting || (decision.review_status === 'rejected' && !decision.rejection_reason.trim())" @click="submitDecision"><LoaderCircle v-if="submitting" :size="16" class="spin" /><MessageSquareText v-else :size="16" />确认{{ decision.review_status === 'approved' ? '通过' : '拒绝' }}</button></div>
+        <div class="modal-actions"><button class="button button-secondary" :disabled="submitting" @click="closeDecision">取消</button><button class="button" :class="decision.review_status === 'approved' ? 'button-primary' : 'button-danger'" :disabled="submitting || (decision.review_status === 'rejected' && !decision.rejection_reason.trim()) || (isVoiceProfile && decision.review_status === 'approved' && !decision.provider_voice_id.trim())" @click="submitDecision"><LoaderCircle v-if="submitting" :size="16" class="spin" /><MessageSquareText v-else :size="16" />确认{{ decision.review_status === 'approved' ? '通过' : '拒绝' }}</button></div>
       </div>
     </div>
   </section>
