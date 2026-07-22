@@ -7,12 +7,18 @@ const {
   appendGcsPrefix,
   assertAllowedImageUrl,
   createServiceAccountJwt,
+  decodeBase64Video,
+  extractInteractionVideoOutputs,
   extractInteractionVideoUris,
+  extractVideoOutputs,
   extractVideoUris,
+  localVideoRef,
   normalizeDuration,
   normalizePipelineResolution,
   normalizeResolution,
+  parseByteRange,
   parseGcsUri,
+  parseLocalVideoRef,
   rewriteImageUrl,
   safeEqual,
   signMediaUrl,
@@ -69,6 +75,34 @@ test('handles GCS task prefixes and response variants', () => {
   assert.deepEqual(extractVideoUris({ response: { videos: [{ gcsUri: 'gs://bucket-name/a.mp4' }] } }), ['gs://bucket-name/a.mp4'])
   assert.deepEqual(extractVideoUris({ response: { generatedVideos: [{ video: { uri: 'gs://bucket-name/b.mp4' } }] } }), ['gs://bucket-name/b.mp4'])
   assert.deepEqual(extractInteractionVideoUris({ steps: [{ type: 'model_output', content: [{ type: 'video', uri: 'gs://bucket-name/omni.mp4' }] }] }), ['gs://bucket-name/omni.mp4'])
+})
+
+test('extracts inline Veo and Omni video payloads', () => {
+  const veo = extractVideoOutputs({ response: { generatedVideos: [{ video: { bytesBase64Encoded: 'AAAA', mimeType: 'video/mp4' } }] } })
+  assert.deepEqual(veo, [{ uri: '', data: 'AAAA', mime_type: 'video/mp4' }])
+  const omni = extractInteractionVideoOutputs({
+    steps: [{ type: 'model_output', content: [{ type: 'video', data: 'BBBB', mime_type: 'video/mp4' }] }],
+  })
+  assert.deepEqual(omni, [{ uri: '', data: 'BBBB', mime_type: 'video/mp4' }])
+})
+
+test('validates local MP4 payloads and references', () => {
+  const mp4 = Buffer.from('000000186674797069736f6d0000000069736f6d', 'hex')
+  assert.deepEqual(decodeBase64Video(mp4.toString('base64'), 1024), mp4)
+  assert.throws(() => decodeBase64Video(Buffer.from('not-video').toString('base64'), 1024), /valid MP4/)
+  assert.throws(() => decodeBase64Video(mp4.toString('base64'), 8), /size limit/)
+  const taskId = 'veo_0123456789abcdef01234567'
+  const reference = localVideoRef(taskId, 2)
+  assert.equal(reference, `local://${taskId}/2.mp4`)
+  assert.deepEqual(parseLocalVideoRef(reference), { taskId, index: 2 })
+})
+
+test('normalizes HTTP byte ranges for locally served videos', () => {
+  assert.equal(parseByteRange('', 100), null)
+  assert.deepEqual(parseByteRange('bytes=10-19', 100), { start: 10, end: 19 })
+  assert.deepEqual(parseByteRange('bytes=90-', 100), { start: 90, end: 99 })
+  assert.deepEqual(parseByteRange('bytes=-10', 100), { start: 90, end: 99 })
+  assert.throws(() => parseByteRange('bytes=100-101', 100), /invalid byte range/)
 })
 
 test('creates a signed service-account JWT', () => {

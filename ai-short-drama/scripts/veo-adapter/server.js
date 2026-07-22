@@ -11,15 +11,19 @@ const {
   assertAllowedImageUrl,
   clampInteger,
   createServiceAccountJwt,
-  extractInteractionVideoUris,
-  extractVideoUris,
+  decodeBase64Video,
+  extractInteractionVideoOutputs,
+  extractVideoOutputs,
+  localVideoRef,
   modelFamily,
   normalizeAspectRatio,
   normalizeDuration,
   normalizeModel,
   normalizePipelineResolution,
   normalizeResolution,
+  parseByteRange,
   parseGcsUri,
+  parseLocalVideoRef,
   requestFingerprint,
   rewriteImageUrl,
   safeEqual,
@@ -27,6 +31,12 @@ const {
   sniffImageMime,
   taskIdForIdempotency,
 } = require('./lib')
+
+const configuredOutputUri = String(process.env.VEO_GCS_OUTPUT_URI || '').trim()
+const requestedOutputMode = String(process.env.VEO_OUTPUT_MODE || 'auto').trim().toLowerCase()
+const outputMode = requestedOutputMode === 'auto'
+  ? (configuredOutputUri ? 'gcs' : 'local')
+  : requestedOutputMode
 
 const config = {
   port: clampInteger(process.env.VEO_ADAPTER_PORT, 8091, 1, 65535),
@@ -36,7 +46,10 @@ const config = {
   projectId: String(process.env.VEO_PROJECT_ID || '').trim(),
   location: String(process.env.VEO_LOCATION || 'us-central1').trim(),
   defaultModel: String(process.env.VEO_DEFAULT_MODEL || 'veo-3.1-fast-generate-001').trim(),
-  outputUri: String(process.env.VEO_GCS_OUTPUT_URI || '').trim(),
+  outputMode,
+  outputUri: configuredOutputUri,
+  localOutputDir: String(process.env.VEO_LOCAL_OUTPUT_DIR || '/data/videos'),
+  localVideoMaxBytes: clampInteger(process.env.VEO_LOCAL_VIDEO_MAX_MB, 128, 1, 512) * 1024 * 1024,
   taskDir: String(process.env.VEO_TASK_DIR || '/data/tasks'),
   publicBaseUrl: String(process.env.VEO_ADAPTER_PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
   imageRewriteFrom: String(process.env.VEO_IMAGE_URL_REWRITE_FROM || '').replace(/\/+$/, ''),
@@ -312,13 +325,40 @@ async function validateGoogleProject() {
   return projectId
 }
 
+async function materializeVideoOutputs(taskId, outputs, mode = config.outputMode) {
+  if (mode === 'gcs') {
+    return outputs.map((item) => item.uri).filter((uri) => String(uri).startsWith('gs://'))
+  }
+  if (mode !== 'local') {
+    throw new HttpError(503, 'VEO_OUTPUT_MODE must be local or gcs', 'VEO_OUTPUT_MODE_INVALID')
+  }
+  const inline = outputs.filter((item) => item.data)
+  if (!inline.length) return []
+  const taskDirectory = path.join(config.localOutputDir, taskId)
+  await fsp.mkdir(taskDirectory, { recursive: true, mode: 0o700 })
+  const videos = []
+  for (const [index, output] of inline.slice(0, 4).entries()) {
+    let data
+    try {
+      data = decodeBase64Video(output.data, config.localVideoMaxBytes)
+    } catch (error) {
+      throw new HttpError(502, error.message, 'VIDEO_INLINE_OUTPUT_INVALID')
+    }
+    const target = path.join(taskDirectory, `${index}.mp4`)
+    const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`
+    await fsp.writeFile(temporary, data, { mode: 0o600, flag: 'wx' })
+    await fsp.rename(temporary, target)
+    videos.push(localVideoRef(taskId, index))
+  }
+  return videos
+}
+
 async function submitVeoTask(taskId, normalized, requestHash) {
   const image = await downloadInputImage(normalized.image_url)
   const projectId = await validateGoogleProject()
   if (!/^[-a-z0-9]+$/.test(config.location)) throw new HttpError(503, 'VEO_LOCATION is invalid', 'VEO_LOCATION_INVALID')
-  const storageUri = appendGcsPrefix(config.outputUri, taskId)
+  const storageUri = config.outputMode === 'gcs' ? appendGcsPrefix(config.outputUri, taskId) : ''
   const parameters = {
-    storageUri,
     sampleCount: 1,
     durationSeconds: normalized.duration_seconds,
     aspectRatio: normalized.aspect_ratio,
@@ -331,6 +371,7 @@ async function submitVeoTask(taskId, normalized, requestHash) {
     resizeMode: config.resizeMode,
     ...(normalized.negative_prompt ? { negativePrompt: normalized.negative_prompt } : {}),
     ...(normalized.seed === undefined ? {} : { seed: normalized.seed }),
+    ...(storageUri ? { storageUri } : {}),
   }
   const url = `${vertexApiOrigin()}/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(config.location)}/publishers/google/models/${encodeURIComponent(normalized.model)}:predictLongRunning`
   const operation = await fetchGoogleJson(url, {
@@ -353,7 +394,8 @@ async function submitVeoTask(taskId, normalized, requestHash) {
     operation_name: String(operation.name),
     request_hash: requestHash,
     request: normalized,
-    storage_uri: storageUri,
+    output_mode: config.outputMode,
+    storage_uri: storageUri || null,
     videos: [],
     created_at: now,
     updated_at: now,
@@ -365,11 +407,28 @@ async function submitVeoTask(taskId, normalized, requestHash) {
 async function submitOmniTask(taskId, normalized, requestHash) {
   const image = await downloadInputImage(normalized.image_url)
   const projectId = await validateGoogleProject()
-  const storageUri = appendGcsPrefix(config.outputUri, taskId)
-  const extension = image.mimeType === 'image/png' ? 'png' : 'jpg'
-  const inputUri = `${storageUri}input.${extension}`
-  const outputUri = `${storageUri}output/`
-  await uploadGcsObject(inputUri, image.data, image.mimeType)
+  const storageUri = config.outputMode === 'gcs' ? appendGcsPrefix(config.outputUri, taskId) : ''
+  let imageInput
+  let responseFormat
+  if (storageUri) {
+    const extension = image.mimeType === 'image/png' ? 'png' : 'jpg'
+    const inputUri = `${storageUri}input.${extension}`
+    const outputUri = `${storageUri}output/`
+    await uploadGcsObject(inputUri, image.data, image.mimeType)
+    imageInput = { type: 'image', uri: inputUri, mime_type: image.mimeType }
+    responseFormat = {
+      type: 'video', delivery: 'uri', gcs_uri: outputUri,
+      aspect_ratio: normalized.aspect_ratio,
+      duration: `${normalized.duration_seconds}s`,
+    }
+  } else {
+    imageInput = { type: 'image', data: image.data.toString('base64'), mime_type: image.mimeType }
+    responseFormat = {
+      type: 'video', delivery: 'inline',
+      aspect_ratio: normalized.aspect_ratio,
+      duration: `${normalized.duration_seconds}s`,
+    }
+  }
   const prompt = normalized.negative_prompt
     ? `${normalized.prompt}\n\nAvoid these visual defects: ${normalized.negative_prompt}`
     : normalized.prompt
@@ -380,20 +439,17 @@ async function submitOmniTask(taskId, normalized, requestHash) {
       model: normalized.model,
       background: true,
       input: [
-        { type: 'image', uri: inputUri, mime_type: image.mimeType },
+        imageInput,
         { type: 'text', text: prompt },
       ],
-      response_format: [{
-        type: 'video', delivery: 'uri', gcs_uri: outputUri,
-        aspect_ratio: normalized.aspect_ratio,
-        duration: `${normalized.duration_seconds}s`,
-      }],
+      response_format: [responseFormat],
       generation_config: { video_config: { task: 'image_to_video' } },
     }),
   })
   if (!interaction.id) throw new HttpError(502, 'Vertex did not return an interaction ID', 'OMNI_INTERACTION_MISSING')
   const now = new Date().toISOString()
-  const videos = extractInteractionVideoUris(interaction)
+  const outputs = extractInteractionVideoOutputs(interaction)
+  const videos = await materializeVideoOutputs(taskId, outputs)
   const completed = String(interaction.status || '').toLowerCase() === 'completed' && videos.length > 0
   const task = {
     task_id: taskId,
@@ -403,7 +459,8 @@ async function submitOmniTask(taskId, normalized, requestHash) {
     interaction_id: String(interaction.id),
     request_hash: requestHash,
     request: normalized,
-    storage_uri: storageUri,
+    output_mode: config.outputMode,
+    storage_uri: storageUri || null,
     videos,
     created_at: now,
     updated_at: now,
@@ -509,12 +566,13 @@ async function refreshTask(task) {
     await taskStore.save(failed)
     return failed
   }
-  const videos = extractVideoUris(operation)
+  const taskOutputMode = task.output_mode || config.outputMode
+  const videos = await materializeVideoOutputs(task.task_id, extractVideoOutputs(operation), taskOutputMode)
   if (!videos.length) {
     const failed = {
       ...task, status: 'failed', progress: 0,
       error_code: 'VEO_RESULT_MISSING',
-      error_message: 'Vertex completed the operation without a GCS video URI',
+      error_message: `Vertex completed without a usable ${taskOutputMode === 'local' ? 'inline video' : 'GCS video URI'}`,
       updated_at: now,
     }
     await taskStore.save(failed)
@@ -546,12 +604,13 @@ async function refreshOmniTask(task) {
     await taskStore.save(failed)
     return failed
   }
-  const videos = extractInteractionVideoUris(interaction)
+  const taskOutputMode = task.output_mode || config.outputMode
+  const videos = await materializeVideoOutputs(task.task_id, extractInteractionVideoOutputs(interaction), taskOutputMode)
   if (!videos.length) {
     const failed = {
       ...task, status: 'failed', progress: 0,
       error_code: 'OMNI_RESULT_MISSING',
-      error_message: 'Gemini Omni completed without a GCS video URI',
+      error_message: `Gemini Omni completed without a usable ${taskOutputMode === 'local' ? 'inline video' : 'GCS video URI'}`,
       updated_at: now,
     }
     await taskStore.save(failed)
@@ -571,6 +630,48 @@ async function handleTask(request, response, taskId) {
   sendJson(response, 200, providerPayload(request, task))
 }
 
+async function serveLocalVideo(request, response, taskId, index, reference) {
+  let parsed
+  try {
+    parsed = parseLocalVideoRef(reference)
+  } catch {
+    throw new HttpError(404, 'video not found', 'VIDEO_NOT_FOUND')
+  }
+  if (parsed.taskId !== taskId || parsed.index !== index) {
+    throw new HttpError(404, 'video not found', 'VIDEO_NOT_FOUND')
+  }
+  const target = path.join(config.localOutputDir, taskId, `${index}.mp4`)
+  let stat
+  try {
+    stat = await fsp.stat(target)
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new HttpError(404, 'video not found', 'VIDEO_NOT_FOUND')
+    throw error
+  }
+  if (!stat.isFile()) throw new HttpError(404, 'video not found', 'VIDEO_NOT_FOUND')
+  let range
+  try {
+    range = parseByteRange(request.headers.range, stat.size)
+  } catch {
+    response.writeHead(416, { 'content-range': `bytes */${stat.size}`, 'accept-ranges': 'bytes' })
+    return response.end()
+  }
+  const start = range?.start ?? 0
+  const end = range?.end ?? Math.max(0, stat.size - 1)
+  const statusCode = range ? 206 : 200
+  const headers = {
+    'content-type': 'video/mp4',
+    'content-length': Math.max(0, end - start + 1),
+    'cache-control': 'private, max-age=300',
+    'accept-ranges': 'bytes',
+    'last-modified': stat.mtime.toUTCString(),
+    ...(range ? { 'content-range': `bytes ${start}-${end}/${stat.size}` } : {}),
+  }
+  response.writeHead(statusCode, headers)
+  if (request.method === 'HEAD' || stat.size === 0) return response.end()
+  fs.createReadStream(target, { start, end }).pipe(response)
+}
+
 async function handleMedia(request, response, taskId, indexText, url) {
   if (request.method !== 'GET' && request.method !== 'HEAD') throw new HttpError(405, 'method not allowed', 'METHOD_NOT_ALLOWED')
   const index = Number(indexText)
@@ -584,7 +685,11 @@ async function handleMedia(request, response, taskId, indexText, url) {
   }
   const task = await taskStore.get(taskId)
   if (!task || task.status !== 'succeeded' || !task.videos[index]) throw new HttpError(404, 'video not found', 'VIDEO_NOT_FOUND')
-  const { bucket, object } = parseGcsUri(task.videos[index])
+  const reference = task.videos[index]
+  if (String(reference).startsWith('local://')) {
+    return serveLocalVideo(request, response, taskId, index, reference)
+  }
+  const { bucket, object } = parseGcsUri(reference)
   const accessToken = await googleAuth.accessToken()
   const headers = { authorization: `Bearer ${accessToken}` }
   if (request.headers.range) headers.range = request.headers.range
@@ -615,7 +720,11 @@ async function route(request, response) {
     try { await googleAuth.load(); credentialReadable = true } catch { credentialReadable = false }
     return sendJson(response, 200, {
       status: 'ok', service: 'google-video-adapter',
-      configured: Boolean(config.apiKey && config.outputUri && credentialReadable),
+      configured: Boolean(config.apiKey && credentialReadable && (
+        config.outputMode === 'local' || (config.outputMode === 'gcs' && config.outputUri)
+      )),
+      output_mode: config.outputMode,
+      gcs_output_configured: Boolean(config.outputUri),
       veo_location: config.location, omni_location: 'global', default_model: config.defaultModel,
       supported_models: ['gemini-omni-flash-preview', 'veo-3.1-generate-001', 'veo-3.1-fast-generate-001'],
       credential_readable: credentialReadable,
@@ -631,6 +740,10 @@ async function route(request, response) {
 
 async function main() {
   await taskStore.init()
+  await fsp.mkdir(config.localOutputDir, { recursive: true, mode: 0o700 })
+  if (!['local', 'gcs'].includes(config.outputMode)) {
+    throw new Error('VEO_OUTPUT_MODE must be local, gcs, or auto')
+  }
   normalizeModel(config.defaultModel)
   const server = http.createServer((request, response) => {
     route(request, response).catch((error) => {

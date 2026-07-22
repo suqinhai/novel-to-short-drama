@@ -26,7 +26,7 @@ const optionLabels = {
 const defaultPlan = {
   AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
   VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native', VIDEO_USE_GENERATED_AUDIO: 'false',
-  VEO_LOCATION: 'us-central1',
+  VEO_LOCATION: 'us-central1', VEO_OUTPUT_MODE: 'local',
 }
 const googleVideoModels = [
   { id: 'gemini-omni-flash-preview', title: 'Gemini Omni Flash', badge: '推荐', description: '3–10 秒、720p，速度快、角色一致性好；当前为 Preview。' },
@@ -35,7 +35,7 @@ const googleVideoModels = [
 ]
 const googleVideoFieldKeys = new Set([
   'VIDEO_PROVIDER', 'VIDEO_MODEL', 'VIDEO_USE_GENERATED_AUDIO',
-  'VEO_PROJECT_ID', 'VEO_LOCATION', 'VEO_GCS_OUTPUT_URI',
+  'VEO_OUTPUT_MODE', 'VEO_PROJECT_ID', 'VEO_LOCATION', 'VEO_GCS_OUTPUT_URI',
 ])
 const connectionModes = [
   {
@@ -228,9 +228,10 @@ onMounted(load)
           </button>
         </div>
         <div class="google-config-grid">
+          <label class="config-edit-field"><span class="config-field-head"><strong>视频输出存储</strong><i v-if="fieldsByKey.VEO_OUTPUT_MODE?.has_managed_override">待重启覆盖</i></span><code>VEO_OUTPUT_MODE</code><select v-model="drafts.VEO_OUTPUT_MODE" class="select-control"><option value="auto">自动（无 GCS 地址时使用本地）</option><option value="local">本地存储（无需 GCS）</option><option value="gcs">Google Cloud Storage</option></select><small>本地模式将生成结果写入适配器的持久化 Docker 卷，再由工作流下载到媒体库。</small></label>
           <label class="config-edit-field"><span class="config-field-head"><strong>Google Cloud Project ID</strong><i v-if="fieldsByKey.VEO_PROJECT_ID?.has_managed_override">待重启覆盖</i></span><code>VEO_PROJECT_ID</code><input v-model="drafts.VEO_PROJECT_ID" type="text" placeholder="可留空，从服务账号自动读取" spellcheck="false" /><small>Google Cloud 项目 ID，不是项目名称。</small></label>
           <label class="config-edit-field"><span class="config-field-head"><strong>Veo 区域</strong><i v-if="fieldsByKey.VEO_LOCATION?.has_managed_override">待重启覆盖</i></span><code>VEO_LOCATION</code><input v-model="drafts.VEO_LOCATION" type="text" placeholder="us-central1" spellcheck="false" /><small>仅用于 Veo；Omni 会自动使用 global。</small></label>
-          <label class="config-edit-field"><span class="config-field-head"><strong>Cloud Storage 输出目录</strong><i v-if="fieldsByKey.VEO_GCS_OUTPUT_URI?.has_managed_override">待重启覆盖</i></span><code>VEO_GCS_OUTPUT_URI</code><input v-model="drafts.VEO_GCS_OUTPUT_URI" type="text" placeholder="gs://bucket/short-drama" spellcheck="false" /><small>服务账号需要对此目录拥有对象创建和读取权限。</small></label>
+          <label v-if="drafts.VEO_OUTPUT_MODE === 'gcs' || (drafts.VEO_OUTPUT_MODE === 'auto' && drafts.VEO_GCS_OUTPUT_URI)" class="config-edit-field"><span class="config-field-head"><strong>Cloud Storage 输出目录</strong><i v-if="fieldsByKey.VEO_GCS_OUTPUT_URI?.has_managed_override">待重启覆盖</i></span><code>VEO_GCS_OUTPUT_URI</code><input v-model="drafts.VEO_GCS_OUTPUT_URI" type="text" placeholder="gs://bucket/short-drama" spellcheck="false" /><small>服务账号需要对此目录拥有对象创建和读取权限。</small></label>
           <label class="config-edit-field"><span class="config-field-head"><strong>模型原生音频</strong></span><code>VIDEO_USE_GENERATED_AUDIO</code><select v-model="drafts.VIDEO_USE_GENERATED_AUDIO" class="select-control"><option value="false">关闭（使用系统配音，推荐）</option><option value="true">保留模型生成的音频</option></select><small>关闭后标准化阶段会移除 Omni/Veo 自带音轨，避免双重配音。</small></label>
         </div>
         <label class="google-credential-field">

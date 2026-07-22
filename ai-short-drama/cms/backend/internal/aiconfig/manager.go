@@ -60,9 +60,10 @@ var FieldSpecs = []FieldSpec{
 	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "suggest", Options: []string{"gemini-omni-flash-preview", "veo-3.1-generate-001", "veo-3.1-fast-generate-001", "mock-image-to-video"}, Description: "可选择 Gemini Omni、Veo 3.1 或 Veo 3.1 Fast，也可输入兼容接口支持的其他模型 ID。"},
 	{Key: "VIDEO_API_BASE_URL", Label: "视频 API 地址", Category: "视频生成", Kind: "url"},
 	{Key: "VIDEO_USE_GENERATED_AUDIO", Label: "保留模型生成的音频", Category: "视频生成", Kind: "boolean", Description: "关闭时移除模型原生音轨，继续使用系统自己的配音与混音。"},
+	{Key: "VEO_OUTPUT_MODE", Label: "视频输出存储", Category: "Google 视频模型", Kind: "select", Options: []string{"auto", "local", "gcs"}, Description: "auto 在未填写 GCS 地址时使用本地卷；local 强制本地；gcs 使用 Cloud Storage。", Target: "video-adapter"},
 	{Key: "VEO_PROJECT_ID", Label: "Google Cloud Project ID", Category: "Google 视频模型", Kind: "text", Description: "留空时从服务账号 JSON 自动读取。", AllowEmpty: true, Target: "video-adapter"},
 	{Key: "VEO_LOCATION", Label: "Veo 区域", Category: "Google 视频模型", Kind: "text", Description: "Veo 3.1 默认使用 us-central1；Omni 固定使用 global。", Target: "video-adapter"},
-	{Key: "VEO_GCS_OUTPUT_URI", Label: "Cloud Storage 输出目录", Category: "Google 视频模型", Kind: "gcs_uri", Description: "例如 gs://my-private-bucket/short-drama；Veo 和 Omni 共用此私有目录。", Target: "video-adapter"},
+	{Key: "VEO_GCS_OUTPUT_URI", Label: "Cloud Storage 输出目录", Category: "Google 视频模型", Kind: "gcs_uri", Description: "仅在输出存储选择 gcs 时填写，例如 gs://my-private-bucket/short-drama。", AllowEmpty: true, Target: "video-adapter"},
 	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "generic_sync_tts", "generic_async_tts"}},
 	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "text"},
 	{Key: "TTS_API_BASE_URL", Label: "语音 API 地址", Category: "语音合成", Kind: "url"},
@@ -283,6 +284,9 @@ func validateFieldValue(spec FieldSpec, value string) error {
 			return ErrInvalidInput
 		}
 	case "gcs_uri":
+		if trimmed == "" && spec.AllowEmpty {
+			return nil
+		}
 		if !strings.HasPrefix(trimmed, "gs://") {
 			return ErrInvalidInput
 		}

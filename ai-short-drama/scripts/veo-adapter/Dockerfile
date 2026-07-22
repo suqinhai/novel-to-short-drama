@@ -9,8 +9,8 @@ WORKDIR /app
 COPY scripts/veo-adapter/package.json ./package.json
 COPY scripts/veo-adapter/lib.js scripts/veo-adapter/server.js ./
 
-RUN mkdir -p /data/tasks \
-    && chown -R node:node /app /data/tasks
+RUN mkdir -p /data/tasks /data/videos \
+    && chown -R node:node /app /data/tasks /data/videos
 
 USER node
 EXPOSE 8091

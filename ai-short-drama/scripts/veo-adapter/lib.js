@@ -171,29 +171,103 @@ function signMediaUrl(secret, taskId, index, expiresAt) {
 }
 
 function extractVideoUris(operation) {
+  return extractVideoOutputs(operation).map((item) => item.uri).filter(Boolean)
+}
+
+function normalizeVideoOutput(entry) {
+  if (!entry || typeof entry !== 'object') return null
+  const nested = entry.video && typeof entry.video === 'object' ? entry.video : {}
+  const uri = String(entry.gcsUri || entry.uri || nested.gcsUri || nested.uri || '')
+  const data = String(entry.bytesBase64Encoded || entry.data || nested.bytesBase64Encoded || nested.data || '')
+  if (!uri.startsWith('gs://') && !data) return null
+  return {
+    uri: uri.startsWith('gs://') ? uri : '',
+    data,
+    mime_type: String(entry.mimeType || entry.mime_type || nested.mimeType || nested.mime_type || 'video/mp4'),
+  }
+}
+
+function extractVideoOutputs(operation) {
   const response = operation && operation.response && typeof operation.response === 'object'
     ? operation.response
     : {}
   const candidates = []
   if (Array.isArray(response.videos)) candidates.push(...response.videos)
   if (Array.isArray(response.generatedVideos)) candidates.push(...response.generatedVideos)
-  return candidates.map((entry) => {
-    if (typeof entry === 'string') return entry
-    if (!entry || typeof entry !== 'object') return ''
-    return entry.gcsUri || entry.uri || entry.video?.gcsUri || entry.video?.uri || ''
-  }).filter((uri) => String(uri).startsWith('gs://'))
+  return candidates.map(normalizeVideoOutput).filter(Boolean)
 }
 
 function extractInteractionVideoUris(interaction) {
+  return extractInteractionVideoOutputs(interaction).map((item) => item.uri).filter(Boolean)
+}
+
+function extractInteractionVideoOutputs(interaction) {
   const steps = Array.isArray(interaction?.steps) ? interaction.steps : []
-  const uris = []
+  const outputs = []
   for (const step of steps) {
     if (!step || step.type !== 'model_output' || !Array.isArray(step.content)) continue
     for (const item of step.content) {
-      if (item?.type === 'video' && String(item.uri || '').startsWith('gs://')) uris.push(String(item.uri))
+      if (item?.type !== 'video') continue
+      const output = normalizeVideoOutput(item)
+      if (output) outputs.push(output)
     }
   }
-  return uris
+  return outputs
+}
+
+function decodeBase64Video(value, maxBytes) {
+  const encoded = String(value || '').trim()
+  const limit = Number(maxBytes)
+  if (!encoded || encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    throw new Error('video output is not valid base64')
+  }
+  if (Number.isFinite(limit) && Math.floor(encoded.length * 3 / 4) > limit + 2) {
+    throw new Error('video output exceeds the configured local size limit')
+  }
+  const data = Buffer.from(encoded, 'base64')
+  if (Number.isFinite(limit) && data.length > limit) {
+    throw new Error('video output exceeds the configured local size limit')
+  }
+  if (data.length < 12 || data.subarray(4, 8).toString('ascii') !== 'ftyp') {
+    throw new Error('video output is not a valid MP4')
+  }
+  return data
+}
+
+function localVideoRef(taskId, index) {
+  if (!/^veo_[a-f0-9]{24}$/.test(String(taskId)) || !Number.isInteger(index) || index < 0 || index > 99) {
+    throw new Error('invalid local video reference')
+  }
+  return `local://${taskId}/${index}.mp4`
+}
+
+function parseLocalVideoRef(value) {
+  const match = String(value || '').match(/^local:\/\/(veo_[a-f0-9]{24})\/(\d{1,2})\.mp4$/)
+  if (!match) throw new Error('invalid local video reference')
+  return { taskId: match[1], index: Number(match[2]) }
+}
+
+function parseByteRange(value, size) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (!Number.isInteger(size) || size < 0 || !/^bytes=\d*-\d*$/.test(raw)) throw new Error('invalid byte range')
+  const [startText, endText] = raw.slice(6).split('-')
+  if (!startText && !endText) throw new Error('invalid byte range')
+  let start
+  let end
+  if (!startText) {
+    const suffix = Number(endText)
+    if (!Number.isInteger(suffix) || suffix <= 0) throw new Error('invalid byte range')
+    start = Math.max(0, size - suffix)
+    end = size - 1
+  } else {
+    start = Number(startText)
+    end = endText ? Number(endText) : size - 1
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start >= size || end < start) {
+    throw new Error('invalid byte range')
+  }
+  return { start, end: Math.min(end, size - 1) }
 }
 
 module.exports = {
@@ -202,8 +276,12 @@ module.exports = {
   assertAllowedImageUrl,
   clampInteger,
   createServiceAccountJwt,
+  decodeBase64Video,
+  extractInteractionVideoOutputs,
   extractInteractionVideoUris,
+  extractVideoOutputs,
   extractVideoUris,
+  localVideoRef,
   modelFamily,
   normalizeAspectRatio,
   normalizeDuration,
@@ -211,6 +289,8 @@ module.exports = {
   normalizePipelineResolution,
   normalizeResolution,
   parseGcsUri,
+  parseByteRange,
+  parseLocalVideoRef,
   requestFingerprint,
   rewriteImageUrl,
   safeEqual,

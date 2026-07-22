@@ -434,7 +434,10 @@ services:
       VEO_PROJECT_ID: ${VEO_PROJECT_ID:-}
       VEO_LOCATION: ${VEO_LOCATION:-us-central1}
       VEO_DEFAULT_MODEL: ${VEO_DEFAULT_MODEL:-veo-3.1-fast-generate-001}
+      VEO_OUTPUT_MODE: ${VEO_OUTPUT_MODE:-auto}
       VEO_GCS_OUTPUT_URI: ${VEO_GCS_OUTPUT_URI:-}
+      VEO_LOCAL_OUTPUT_DIR: /data/videos
+      VEO_LOCAL_VIDEO_MAX_MB: ${VEO_LOCAL_VIDEO_MAX_MB:-128}
       VEO_TASK_DIR: /data/tasks
       VEO_ADAPTER_PUBLIC_BASE_URL: ${VEO_ADAPTER_PUBLIC_BASE_URL:-http://veo-adapter:8091}
       VEO_IMAGE_URL_REWRITE_FROM: ${VEO_IMAGE_URL_REWRITE_FROM:-http://localhost:8088}
@@ -447,11 +450,12 @@ services:
       VEO_MEDIA_URL_TTL_SECONDS: ${VEO_MEDIA_URL_TTL_SECONDS:-86400}
     volumes:
       - veo_adapter_data:/data/tasks
+      - veo_adapter_video_data:/data/videos
     depends_on:
       media:
         condition: service_healthy
     cpus: ${VEO_ADAPTER_CPUS:-0.5}
-    mem_limit: ${VEO_ADAPTER_MEMORY_LIMIT:-256m}
+    mem_limit: ${VEO_ADAPTER_MEMORY_LIMIT:-512m}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8091/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
@@ -463,3 +467,4 @@ volumes:
   redis_data:
   n8n_data:
   veo_adapter_data:
+  veo_adapter_video_data:

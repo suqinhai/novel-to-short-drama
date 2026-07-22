@@ -71,6 +71,7 @@ func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
 		"TTS_API_SOURCE":     "native",
 		"IMAGE_PROVIDER":     "generic_openai_images",
 		"VIDEO_PROVIDER":     "generic_async_video",
+		"VEO_OUTPUT_MODE":    "local",
 		"TTS_PROVIDER":       "generic_sync_tts",
 	}, nil)
 	if err != nil {
@@ -146,5 +147,11 @@ func TestManagerRejectsInvalidServiceAccountJSONAndGCSURI(t *testing.T) {
 	}
 	if _, err := manager.Save(map[string]string{"VEO_GCS_OUTPUT_URI": "https://example.com/bucket"}, nil); err != ErrInvalidInput {
 		t.Fatalf("expected non-GCS URI to be rejected, got %v", err)
+	}
+	if _, err := manager.Save(map[string]string{"VEO_OUTPUT_MODE": "filesystem"}, nil); err != ErrInvalidInput {
+		t.Fatalf("expected invalid output mode to be rejected, got %v", err)
+	}
+	if _, err := manager.Save(map[string]string{"VEO_OUTPUT_MODE": "local", "VEO_GCS_OUTPUT_URI": ""}, nil); err != nil {
+		t.Fatalf("expected local mode with empty GCS URI to be accepted, got %v", err)
 	}
 }

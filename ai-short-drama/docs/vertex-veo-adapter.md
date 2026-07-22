@@ -5,14 +5,14 @@
 - `POST /generate`
 - `GET /tasks/{provider_task_id}`
 
-按后台选择的模型自动转换为两套 Google Cloud 协议：Veo 3.1 使用 `predictLongRunning` / `fetchPredictOperation`，Gemini Omni 使用 `global` 区域的 Interactions API。服务账号 JSON 由 CMS 按密钥保存，页面和接口只返回“是否已配置”，不返回明文。生成结果保存在私有 Cloud Storage 存储桶，n8n 通过带时效签名的适配器媒体地址下载，不需要公开存储桶。
+按后台选择的模型自动转换为两套 Google Cloud 协议：Veo 3.1 使用 `predictLongRunning` / `fetchPredictOperation`，Gemini Omni 使用 `global` 区域的 Interactions API。服务账号 JSON 由 CMS 按密钥保存，页面和接口只返回“是否已配置”，不返回明文。输出可选择本地持久化卷或私有 Cloud Storage；n8n 都通过带时效签名的适配器媒体地址下载。
 
 ## 1. Google Cloud 准备
 
 1. 启用 Vertex AI API；使用 Gemini Omni 时同时确认 Agent Platform API 已启用且项目已关联结算账号。
 2. 创建专用服务账号，并授予项目级 `Vertex AI User`（`roles/aiplatform.user`）。
-3. 创建私有 Cloud Storage 存储桶，并仅在该存储桶上授予服务账号 `Storage Object User`（`roles/storage.objectUser`）。
-4. 创建服务账号 JSON 密钥，下载后在 CMS“AI 配置 → Google 视频模型”中粘贴完整内容。
+3. 创建服务账号 JSON 密钥，下载后在 CMS“AI 配置 → Google 视频模型”中粘贴完整内容。
+4. 只有选择 GCS 输出时才需要创建私有 Cloud Storage 存储桶，并仅在该存储桶上授予服务账号 `Storage Object User`（`roles/storage.objectUser`）。
 
 不要使用 Owner、Editor 或 Storage Admin。不要把 JSON 内容放入 Sub2API、工作流 JSON、Git 或项目文档；CMS 只会把它写入已被 Git 忽略且权限为 `0600` 的 `cms/config/cms-managed.env`。
 
@@ -21,7 +21,7 @@
 进入“AI 配置 → Google 视频模型”：
 
 1. 点击 `Gemini Omni Flash`、`Veo 3.1 Fast` 或 `Veo 3.1` 模型卡。
-2. 填写 Cloud Storage 目录，例如 `gs://你的私有存储桶/short-drama`。
+2. “视频输出存储”选择“本地存储（无需 GCS）”。只有希望长期保存在 Google Cloud 时才选择 GCS 并填写 `gs://你的私有存储桶/short-drama`。
 3. Project ID 可以留空，适配器会从服务账号 JSON 自动读取。
 4. Veo 区域默认 `us-central1`；Omni 无论此处填写什么都会安全地使用 `global`。
 5. 粘贴完整服务账号 JSON。
@@ -49,11 +49,13 @@ VIDEO_DEFAULT_FPS=24
 VEO_SERVICE_ACCOUNT_JSON={完整的单行服务账号JSON}
 VEO_PROJECT_ID=
 VEO_LOCATION=us-central1
-VEO_GCS_OUTPUT_URI=gs://你的私有存储桶/veo-output
+VEO_OUTPUT_MODE=local
+VEO_GCS_OUTPUT_URI=
+VEO_LOCAL_VIDEO_MAX_MB=128
 VEO_ADAPTER_PUBLIC_BASE_URL=http://veo-adapter:8091
 ```
 
-`VEO_PROJECT_ID` 留空时从服务账号 JSON 读取。Gemini Omni 支持 3–10 秒、720p，自动使用 `global`；Veo 只接受 4、6、8 秒，适配器会自动映射时长。生产批量镜头可选 Omni 或 `veo-3.1-fast-generate-001`，重点镜头可选 `veo-3.1-generate-001`。
+`VEO_PROJECT_ID` 留空时从服务账号 JSON 读取。`VEO_OUTPUT_MODE=local` 时 Google 返回的视频字节会写入 `veo_adapter_video_data` 持久化卷，不需要 GCS；改为 `gcs` 时必须填写 `VEO_GCS_OUTPUT_URI`。Gemini Omni 支持 3–10 秒、720p，自动使用 `global`；Veo 只接受 4、6、8 秒，适配器会自动映射时长。生产批量镜头可选 Omni 或 `veo-3.1-fast-generate-001`，重点镜头可选 `veo-3.1-generate-001`。
 
 如果 `MEDIA_PUBLIC_BASE_URL` 不是默认的 `http://localhost:8088`，还需要同步设置：
 
@@ -100,7 +102,8 @@ docker compose exec n8n n8n import:workflow --input=/data/workflows/09b-video-ta
 - 输入图片只允许配置白名单中的 HTTP(S) 主机，最大 20 MB，且必须为真实 PNG/JPEG。
 - 服务账号 OAuth token 只缓存在适配器内存中。
 - 任务元数据持久化到 `veo_adapter_data`，容器重启后仍能继续轮询。
-- GCS 视频不公开；适配器媒体代理支持 Range 请求，供 FFmpeg 下载。
+- 本地视频持久化到 `veo_adapter_video_data`；GCS 视频保持私有。两种模式的适配器媒体代理都支持 Range 请求，供 FFmpeg 下载。
+- 本地模式依赖 Google API 的 inline 响应。大视频会占用更多适配器内存，默认单文件上限 128 MB、容器内存 512 MB；如遇提供方 inline 大小限制，可切换回 GCS 模式。
 - 服务端不会把图片 Base64、视频二进制、OAuth token 或服务账号私钥写入任务文件。
 - Omni 的负面提示会合并进普通提示文本，因为 Interactions API 不提供独立的 `negativePrompt` 参数。
 - 当“模型原生音频”关闭时，09b 标准化步骤会使用 FFmpeg 移除源音轨，避免与系统 TTS 重叠。
