@@ -116,6 +116,7 @@ for (const [file, workflow] of parsed) {
 const videoGenerationWorkflow = fs.readFileSync(path.join(workflowDir, '09-image-to-video.json'), 'utf8');
 const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-provider-adapter.json'), 'utf8');
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
+assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
 assert(videoAdapterWorkflow.includes('model: task.model, ...request'), '09a-video-provider-adapter.json: selected video model is not forwarded to provider');
 
 const envPath = path.join(root, '.env.example');

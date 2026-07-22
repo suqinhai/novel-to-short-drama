@@ -434,7 +434,9 @@
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
-          "value": {},
+          "value": {
+            "shot_id": "={{$json.shot.shot_id}}"
+          },
           "matchingColumns": [],
           "schema": []
         },
