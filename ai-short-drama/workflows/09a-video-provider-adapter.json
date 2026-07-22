@@ -45,7 +45,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
           "name": "AI Short Drama PostgreSQL"
         }
       }
@@ -420,7 +420,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
           "name": "AI Short Drama PostgreSQL"
         }
       }

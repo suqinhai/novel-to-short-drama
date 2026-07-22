@@ -70,7 +70,7 @@
       "position": [-860, 80],
       "credentials": {
         "postgres": {
-          "id": "__POSTGRES_CREDENTIAL_ID__",
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
           "name": "AI Short Drama PostgreSQL"
         }
       },
@@ -276,7 +276,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [900, 80],
-      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "credentials": { "postgres": { "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "AI Short Drama PostgreSQL" } },
       "onError": "continueErrorOutput"
     },
     {
@@ -310,7 +310,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [900, 500],
-      "credentials": { "postgres": { "id": "__POSTGRES_CREDENTIAL_ID__", "name": "AI Short Drama PostgreSQL" } },
+      "credentials": { "postgres": { "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "AI Short Drama PostgreSQL" } },
       "onError": "continueErrorOutput"
     },
     {

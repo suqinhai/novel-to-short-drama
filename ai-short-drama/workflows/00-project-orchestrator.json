@@ -1448,7 +1448,7 @@
           "schema": []
         },
         "options": {
-          "waitForSubWorkflow": false
+          "waitForSubWorkflow": true
         }
       },
       "id": "00-stage4-run9",
@@ -1486,7 +1486,7 @@
           "schema": []
         },
         "options": {
-          "waitForSubWorkflow": false
+          "waitForSubWorkflow": true
         }
       },
       "id": "00-stage4-run10",
