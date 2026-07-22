@@ -64,15 +64,17 @@ func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cms-managed.env")
 	manager := New(path, "unused")
 	_, err := manager.Save(map[string]string{
-		"AI_CONNECTION_MODE": "hybrid",
-		"TEXT_API_SOURCE":    "gateway",
-		"IMAGE_API_SOURCE":   "native",
-		"VIDEO_API_SOURCE":   "custom",
-		"TTS_API_SOURCE":     "native",
-		"IMAGE_PROVIDER":     "generic_openai_images",
-		"VIDEO_PROVIDER":     "generic_async_video",
-		"VEO_OUTPUT_MODE":    "local",
-		"TTS_PROVIDER":       "generic_sync_tts",
+		"AI_CONNECTION_MODE":        "hybrid",
+		"TEXT_API_SOURCE":           "gateway",
+		"IMAGE_API_SOURCE":          "native",
+		"VIDEO_API_SOURCE":          "custom",
+		"TTS_API_SOURCE":            "native",
+		"IMAGE_PROVIDER":            "generic_openai_images",
+		"VIDEO_PROVIDER":            "generic_async_video",
+		"VEO_OUTPUT_MODE":           "local",
+		"TTS_PROVIDER":              "google_gemini_speech",
+		"TTS_MODEL":                 "gemini-3.1-flash-tts-preview",
+		"DEFAULT_NARRATOR_VOICE_ID": "Kore",
 	}, nil)
 	if err != nil {
 		t.Fatalf("save connection plan: %v", err)
@@ -83,6 +85,28 @@ func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
 	}
 	if values["AI_CONNECTION_MODE"] != "hybrid" || values["TEXT_API_SOURCE"] != "gateway" {
 		t.Fatalf("connection plan did not round-trip: %+v", values)
+	}
+}
+
+func TestManagerSaveAcceptsGoogleSpeechProvidersAndModels(t *testing.T) {
+	for _, test := range []struct {
+		provider string
+		model    string
+		voice    string
+	}{
+		{provider: "google_gemini_speech", model: "gemini-3.1-flash-tts-preview", voice: "Kore"},
+		{provider: "google_gemini_speech", model: "gemini-2.5-flash-preview-tts", voice: "Puck"},
+		{provider: "google_chirp3_hd", model: "chirp-3-hd", voice: "cmn-CN-Chirp3-HD-Kore"},
+	} {
+		path := filepath.Join(t.TempDir(), "cms-managed.env")
+		manager := New(path, "unused")
+		if _, err := manager.Save(map[string]string{
+			"TTS_PROVIDER":              test.provider,
+			"TTS_MODEL":                 test.model,
+			"DEFAULT_NARRATOR_VOICE_ID": test.voice,
+		}, nil); err != nil {
+			t.Fatalf("save Google speech config %+v: %v", test, err)
+		}
 	}
 }
 

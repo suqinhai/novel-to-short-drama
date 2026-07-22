@@ -22,6 +22,10 @@ const optionLabels = {
   'veo-3.1-generate-001': 'Veo 3.1',
   'veo-3.1-fast-generate-001': 'Veo 3.1 Fast（推荐批量生产）',
   'mock-image-to-video': 'Mock 测试模型',
+  'gemini-3.1-flash-tts-preview': 'Gemini 3.1 Flash TTS Preview（推荐）',
+  'gemini-2.5-flash-preview-tts': 'Gemini 2.5 Flash Preview TTS',
+  'gemini-2.5-pro-preview-tts': 'Gemini 2.5 Pro Preview TTS',
+  'chirp-3-hd': 'Chirp 3 HD',
 }
 const defaultPlan = {
   AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
@@ -33,10 +37,16 @@ const googleVideoModels = [
   { id: 'veo-3.1-fast-generate-001', title: 'Veo 3.1 Fast', badge: '批量', description: '适合批量镜头生产，支持 4/6/8 秒与 720p/1080p。' },
   { id: 'veo-3.1-generate-001', title: 'Veo 3.1', badge: '质量', description: '适合重点镜头，生成速度与成本通常高于 Fast。' },
 ]
+const googleSpeechModels = [
+  { provider: 'google_gemini_speech', model: 'gemini-3.1-flash-tts-preview', title: 'Gemini Speech', badge: '可控', description: '原生 Gemini TTS，支持用自然语言控制语气、节奏和表现；当前为 Preview。', baseUrl: 'https://generativelanguage.googleapis.com', voice: 'Kore' },
+  { provider: 'google_chirp3_hd', model: 'chirp-3-hd', title: 'Chirp 3 HD', badge: '稳定', description: 'Google Cloud 高保真语音，普通话使用 cmn-CN-Chirp3-HD-* 完整声线 ID。', baseUrl: 'https://texttospeech.googleapis.com', voice: 'cmn-CN-Chirp3-HD-Kore' },
+]
+const geminiSpeechModelOptions = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
 const googleVideoFieldKeys = new Set([
   'VIDEO_PROVIDER', 'VIDEO_MODEL', 'VIDEO_USE_GENERATED_AUDIO',
   'VEO_OUTPUT_MODE', 'VEO_PROJECT_ID', 'VEO_LOCATION', 'VEO_GCS_OUTPUT_URI',
 ])
+const googleAudioFieldKeys = new Set(['TTS_PROVIDER', 'TTS_MODEL', 'DEFAULT_NARRATOR_VOICE_ID'])
 const connectionModes = [
   {
     id: 'hybrid', title: '混合路由', icon: Waypoints, recommended: true,
@@ -74,7 +84,7 @@ const capabilities = [
   },
   {
     id: 'tts', title: '语音合成', icon: Mic2, sourceKey: 'TTS_API_SOURCE', baseKey: 'TTS_API_BASE_URL', secretKey: 'TTS_API_KEY',
-    endpoint: 'POST {Base URL}/tts', note: '同步接口必须返回可下载的音频 URL，不能只返回 Base64 或二进制响应。',
+    endpoint: 'Google 原生接口 · 或 POST {Base URL}/tts', note: 'Google 模型由内置适配器安全解码并落盘；自定义同步接口仍须返回可下载的音频 URL。',
   },
 ]
 const routedFieldKeys = new Set([
@@ -87,7 +97,7 @@ const secretsByKey = computed(() => Object.fromEntries((data.value?.secrets || [
 const categories = computed(() => {
   const groups = []
   for (const field of data.value?.fields || []) {
-    if (routedFieldKeys.has(field.key) || googleVideoFieldKeys.has(field.key)) continue
+    if (routedFieldKeys.has(field.key) || googleVideoFieldKeys.has(field.key) || googleAudioFieldKeys.has(field.key)) continue
     let group = groups.find((item) => item.name === field.category)
     if (!group) {
       group = { name: field.category, fields: [] }
@@ -124,6 +134,13 @@ function hydrate(response) {
     if (drafts.VIDEO_PROVIDER !== 'generic_async_video') drafts.VIDEO_PROVIDER = 'generic_async_video'
     if (drafts.VIDEO_API_SOURCE !== 'native') drafts.VIDEO_API_SOURCE = 'native'
   }
+  const googleSpeech = googleSpeechModels.find((item) => item.provider === drafts.TTS_PROVIDER)
+  if (googleSpeech) {
+    if (!drafts.TTS_API_BASE_URL) drafts.TTS_API_BASE_URL = googleSpeech.baseUrl
+    if (!drafts.TTS_MODEL) drafts.TTS_MODEL = googleSpeech.model
+    if (!drafts.DEFAULT_NARRATOR_VOICE_ID) drafts.DEFAULT_NARRATOR_VOICE_ID = googleSpeech.voice
+    if (drafts.TTS_API_SOURCE !== 'native') drafts.TTS_API_SOURCE = 'native'
+  }
 }
 
 async function load() {
@@ -144,6 +161,14 @@ function selectGoogleVideoModel(model) {
   drafts.VIDEO_PROVIDER = 'generic_async_video'
   drafts.VIDEO_MODEL = model
   drafts.VIDEO_API_BASE_URL = 'http://veo-adapter:8091'
+}
+
+function selectGoogleSpeechModel(item) {
+  drafts.TTS_API_SOURCE = 'native'
+  drafts.TTS_PROVIDER = item.provider
+  drafts.TTS_MODEL = item.model
+  drafts.TTS_API_BASE_URL = item.baseUrl
+  drafts.DEFAULT_NARRATOR_VOICE_ID = item.voice
 }
 
 function resetDrafts() {
@@ -240,6 +265,34 @@ onMounted(load)
           <textarea v-model="secretDrafts.VEO_SERVICE_ACCOUNT_JSON" rows="8" autocomplete="off" :placeholder="googleCredential?.configured || googleCredential?.managed_override_configured ? '已安全保存；留空不修改。需要更换时粘贴新的完整 JSON。' : '粘贴从 Google Cloud 下载的完整服务账号 JSON'" spellcheck="false"></textarea>
           <small><ShieldCheck :size="14" />JSON 只写入权限受限的托管配置，页面与接口永不返回私钥内容。</small>
         </label>
+      </article>
+
+      <article class="panel padded google-audio-panel">
+        <div class="section-title"><div><span>GOOGLE SPEECH</span><h3>Google 语音模型</h3></div><div class="section-icon"><Mic2 :size="19" /></div></div>
+        <p class="plan-intro">Gemini Speech 与 Chirp 3 HD 已直接接入语音工作流。点击模型卡会自动填写供应商、官方 Base URL、模型和中文旁白默认声线。</p>
+        <div class="google-model-grid google-speech-model-grid">
+          <button v-for="item in googleSpeechModels" :key="item.provider" type="button" class="google-model-card" :class="{ active: drafts.TTS_PROVIDER === item.provider }" @click="selectGoogleSpeechModel(item)">
+            <span><Mic2 :size="19" /></span><div><strong>{{ item.title }}<i>{{ item.badge }}</i></strong><code>{{ item.model }}</code><small>{{ item.description }}</small></div><b></b>
+          </button>
+        </div>
+        <div class="google-config-grid">
+          <label v-if="drafts.TTS_PROVIDER === 'google_gemini_speech'" class="config-edit-field">
+            <span class="config-field-head"><strong>Gemini Speech 模型</strong><i v-if="fieldsByKey.TTS_MODEL?.has_managed_override">待重启覆盖</i></span>
+            <code>TTS_MODEL</code>
+            <select v-model="drafts.TTS_MODEL" class="select-control"><option v-for="model in geminiSpeechModelOptions" :key="model" :value="model">{{ optionLabels[model] }}</option></select>
+            <small>3.1 支持最新 TTS 能力；2.5 Flash / Pro 可用于兼容已有账号与配额。</small>
+          </label>
+          <label v-else-if="drafts.TTS_PROVIDER === 'google_chirp3_hd'" class="config-edit-field">
+            <span class="config-field-head"><strong>Chirp 模型</strong><i v-if="fieldsByKey.TTS_MODEL?.has_managed_override">待重启覆盖</i></span>
+            <code>TTS_MODEL</code><input v-model="drafts.TTS_MODEL" type="text" readonly /><small>Chirp 3 HD 的具体语言和音色由完整声线 ID 决定。</small>
+          </label>
+          <label v-if="['google_gemini_speech', 'google_chirp3_hd'].includes(drafts.TTS_PROVIDER)" class="config-edit-field">
+            <span class="config-field-head"><strong>默认旁白声线</strong><i v-if="fieldsByKey.DEFAULT_NARRATOR_VOICE_ID?.has_managed_override">待重启覆盖</i></span>
+            <code>DEFAULT_NARRATOR_VOICE_ID</code><input v-model="drafts.DEFAULT_NARRATOR_VOICE_ID" type="text" :placeholder="drafts.TTS_PROVIDER === 'google_chirp3_hd' ? 'cmn-CN-Chirp3-HD-Kore' : 'Kore'" spellcheck="false" />
+            <small>角色声线仍可在声音档案审核时分别填写；Gemini 使用短声线名，Chirp 使用完整 locale-model-voice ID。</small>
+          </label>
+        </div>
+        <div class="config-notice managed-config-notice"><ShieldCheck :size="18" /><div><strong>共用语音 API Key</strong><p>请在上方“语音合成”卡片填写 TTS_API_KEY。密钥通过 x-goog-api-key 请求头发送，不会进入 URL、数据库或工作流输出。</p></div><span>{{ secretsByKey.TTS_API_KEY?.configured ? '当前已配置' : '尚未配置' }}</span></div>
       </article>
 
       <article v-for="group in categories" :key="group.name" class="panel padded ai-config-group">

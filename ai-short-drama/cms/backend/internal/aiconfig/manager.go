@@ -64,9 +64,10 @@ var FieldSpecs = []FieldSpec{
 	{Key: "VEO_PROJECT_ID", Label: "Google Cloud Project ID", Category: "Google 视频模型", Kind: "text", Description: "留空时从服务账号 JSON 自动读取。", AllowEmpty: true, Target: "video-adapter"},
 	{Key: "VEO_LOCATION", Label: "Veo 区域", Category: "Google 视频模型", Kind: "text", Description: "Veo 3.1 默认使用 us-central1；Omni 固定使用 global。", Target: "video-adapter"},
 	{Key: "VEO_GCS_OUTPUT_URI", Label: "Cloud Storage 输出目录", Category: "Google 视频模型", Kind: "gcs_uri", Description: "仅在输出存储选择 gcs 时填写，例如 gs://my-private-bucket/short-drama。", AllowEmpty: true, Target: "video-adapter"},
-	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "generic_sync_tts", "generic_async_tts"}},
-	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "text"},
+	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "google_gemini_speech", "google_chirp3_hd", "generic_sync_tts", "generic_async_tts"}},
+	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "suggest", Options: []string{"gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "chirp-3-hd", "mock-tts"}, Description: "Gemini Speech 使用 Gemini TTS 模型 ID；Chirp 3 HD 使用 chirp-3-hd。"},
 	{Key: "TTS_API_BASE_URL", Label: "语音 API 地址", Category: "语音合成", Kind: "url"},
+	{Key: "DEFAULT_NARRATOR_VOICE_ID", Label: "默认旁白声线", Category: "语音合成", Kind: "text", Description: "Gemini 填 Kore 等预置声线；Chirp 中文普通话填 cmn-CN-Chirp3-HD-Kore 等完整声线 ID。", AllowEmpty: true},
 	{Key: "PUBLISH_PROVIDER", Label: "发布供应商", Category: "发布", Kind: "select", Options: []string{"manual_package", "generic_sync_publish", "generic_async_publish"}},
 	{Key: "ALLOW_REAL_PUBLISH", Label: "允许真实发布", Category: "发布", Kind: "boolean"},
 }
