@@ -304,7 +304,7 @@ docker compose exec n8n n8n import:workflow --input=/data/workflows/00-project-o
 
 ### Provider 与并发配置
 
-视频默认 `VIDEO_PROVIDER=mock`、`VIDEO_MODEL=mock-image-to-video`。CMS 的视频模型输入框提供 `gemini-omni-flash-preview`（Gemini Omni）、`veo-3.1-generate-preview`（Veo 3.1）和 `veo-3.1-fast-generate-preview`（Veo 3.1 Fast）预设，同时允许输入兼容网关支持的其他模型 ID；09/09a 会把最终选择的 `model` 写入供应商请求。`generic_sync_video` 期望同步返回媒体 URL，适合返回 URL 的 Gemini Omni 兼容适配层；`generic_async_video` 期望返回 provider task ID，再由 09b 查询状态，适合 Veo 长任务兼容适配层。Google 原生响应若包含 Base64 或需鉴权下载的 URI，应先由安全适配层转换为短期可下载 URL，避免把媒体二进制写入 n8n 执行记录或 PostgreSQL。TTS 默认 `TTS_PROVIDER=mock`、`TTS_MODEL=mock-tts`；`generic_sync_tts` 和 `generic_async_tts` 的平台字段只在 10a 中映射。真实 Key 只放 Credential 或本地 `.env`，不得写入工作流 JSON、test-data、数据库 request/response payload 或日志。
+视频默认 `VIDEO_PROVIDER=mock`、`VIDEO_MODEL=mock-image-to-video`。CMS 提供独立的 Google 视频配置区，可在 `gemini-omni-flash-preview`（Gemini Omni）、`veo-3.1-generate-001`（Veo 3.1）和 `veo-3.1-fast-generate-001`（Veo 3.1 Fast）之间点击切换，并安全填写服务账号 JSON、Project ID、Veo 区域及 GCS 目录。仓库内置的异步 Google 视频适配器会按模型自动选择 Interactions API 或 Veo 长任务协议，部署与最小权限配置见 [`docs/vertex-veo-adapter.md`](docs/vertex-veo-adapter.md)。TTS 默认 `TTS_PROVIDER=mock`、`TTS_MODEL=mock-tts`；`generic_sync_tts` 和 `generic_async_tts` 的平台字段只在 10a 中映射。真实 Key 只放本地托管配置或运行时密钥，不得写入工作流 JSON、test-data、数据库 request/response payload 或日志。
 
 提交前会使用唯一幂等键查询任务。`succeeded` 返回已有结果，`submitting`/`processing` 不重复请求，`failed` 只在最大重试次数内接受 retry，`timeout` 只在显式 retry 时再次提交，regenerate 使用递增版本并保留旧媒体。并发、请求间隔、轮询间隔、批量、最大轮询次数和最大等待时间全部由 `.env` 的 `VIDEO_*`、`TTS_*` 参数限制；TEST_MODE 默认视频最多 10 个镜头、音频最多 30 条对白。
 

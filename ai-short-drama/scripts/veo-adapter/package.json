@@ -1,0 +1,16 @@
+{
+  "name": "ai-short-drama-veo-adapter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vertex AI Veo and Gemini Omni async adapter for the short-drama video provider contract",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.14.0 <23"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check lib.js && node --check server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

@@ -1,5 +1,7 @@
 .env
+veo.env
 cms/config/cms-managed.env
+secrets/*.json
 *.dump
 *.backup
 storage/novels/*

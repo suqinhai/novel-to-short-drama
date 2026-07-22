@@ -88,8 +88,8 @@ func TestManagerSaveAcceptsConnectionPlanAndProviderSelections(t *testing.T) {
 func TestManagerSaveAcceptsRecommendedAndCustomVideoModels(t *testing.T) {
 	for _, model := range []string{
 		"gemini-omni-flash-preview",
-		"veo-3.1-generate-preview",
-		"veo-3.1-fast-generate-preview",
+		"veo-3.1-generate-001",
+		"veo-3.1-fast-generate-001",
 		"compatible-gateway-video-model",
 	} {
 		path := filepath.Join(t.TempDir(), "cms-managed.env")
@@ -115,5 +115,36 @@ func TestSecretConfiguredRejectsPlaceholders(t *testing.T) {
 	}
 	if !secretConfigured("configured-token") {
 		t.Fatal("non-placeholder token should be configured")
+	}
+}
+
+func TestManagerAcceptsAndCanonicalizesServiceAccountJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cms-managed.env")
+	manager := New(path, "unused")
+	credential := `{
+  "type": "service_account",
+  "project_id": "example-project",
+  "client_email": "video@example-project.iam.gserviceaccount.com",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+}`
+	if _, err := manager.Save(nil, map[string]string{"VEO_SERVICE_ACCOUNT_JSON": credential}); err != nil {
+		t.Fatalf("save service account JSON: %v", err)
+	}
+	values, _, err := readEnvFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(values["VEO_SERVICE_ACCOUNT_JSON"], "\n  ") || !strings.Contains(values["VEO_SERVICE_ACCOUNT_JSON"], `"project_id":"example-project"`) {
+		t.Fatalf("credential was not canonicalized: %q", values["VEO_SERVICE_ACCOUNT_JSON"])
+	}
+}
+
+func TestManagerRejectsInvalidServiceAccountJSONAndGCSURI(t *testing.T) {
+	manager := New(filepath.Join(t.TempDir(), "cms-managed.env"), "unused")
+	if _, err := manager.Save(nil, map[string]string{"VEO_SERVICE_ACCOUNT_JSON": `{"type":"service_account"}`}); err != ErrInvalidInput {
+		t.Fatalf("expected invalid service account JSON to be rejected, got %v", err)
+	}
+	if _, err := manager.Save(map[string]string{"VEO_GCS_OUTPUT_URI": "https://example.com/bucket"}, nil); err != ErrInvalidInput {
+		t.Fatalf("expected non-GCS URI to be rejected, got %v", err)
 	}
 }

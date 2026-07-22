@@ -35,7 +35,7 @@ func New(store *store.Store, cfg config.Config) *Handler {
 		store: store, config: cfg,
 		client:          &http.Client{Timeout: cfg.ProbeTimeout},
 		webhookClient:   &http.Client{Timeout: cfg.WebhookTimeout},
-		aiConfigManager: aiconfig.New(cfg.ManagedEnvFile, cfg.N8NContainer),
+		aiConfigManager: aiconfig.New(cfg.ManagedEnvFile, cfg.N8NContainer, cfg.VideoAdapterContainer),
 		diagnosticsRunner: systemdiagnostics.New(
 			cfg.N8NContainer, cfg.PostgresContainer, cfg.MediaContainer,
 			cfg.MediaWorkerContainer, cfg.LiteLLMContainer, cfg.WorkflowDirectory,
@@ -852,8 +852,8 @@ func (h *Handler) updateAIConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"saved_field_count": result.SavedFieldCount, "saved_secret_count": result.SavedSecretCount,
 		"restart_required": true,
-		"restart_command":  "$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }; docker compose --env-file $baseEnv --env-file cms/config/cms-managed.env up -d --force-recreate --no-deps n8n",
-		"message":          "配置已安全写入；重建 n8n 容器后生效。",
+		"restart_command":  "$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }; docker compose --profile veo --env-file $baseEnv --env-file cms/config/cms-managed.env up -d --build --force-recreate --no-deps n8n veo-adapter",
+		"message":          "配置已安全写入；重建 n8n 和 Google 视频适配器后生效。",
 	}})
 }
 

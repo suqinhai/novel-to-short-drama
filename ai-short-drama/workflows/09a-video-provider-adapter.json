@@ -285,14 +285,16 @@
       "parameters": {
         "method": "POST",
         "url": "={{ $json.endpoint }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer '+$env.VIDEO_API_KEY }}"
             },
             {
               "name": "Idempotency-Key",
@@ -331,26 +333,22 @@
         300,
         40
       ],
-      "onError": "continueRegularOutput",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "__VIDEO_PROVIDER_HTTP_HEADER_AUTH_ID__",
-          "name": "Video Provider HTTP Header Auth"
-        }
-      }
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "method": "POST",
         "url": "={{ $json.endpoint }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer '+$env.VIDEO_API_KEY }}"
             },
             {
               "name": "Idempotency-Key",
@@ -389,13 +387,7 @@
         300,
         200
       ],
-      "onError": "continueRegularOutput",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "__VIDEO_PROVIDER_HTTP_HEADER_AUTH_ID__",
-          "name": "Video Provider HTTP Header Auth"
-        }
-      }
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {

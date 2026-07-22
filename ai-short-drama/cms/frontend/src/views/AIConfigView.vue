@@ -19,14 +19,24 @@ const sourceLabels = { native: '原生直连', custom: '自定义接口', gatewa
 const sourceIcons = { native: Building2, custom: Cable, gateway: Network }
 const optionLabels = {
   'gemini-omni-flash-preview': 'Gemini Omni Flash（推荐）',
-  'veo-3.1-generate-preview': 'Veo 3.1',
-  'veo-3.1-fast-generate-preview': 'Veo 3.1 Fast',
+  'veo-3.1-generate-001': 'Veo 3.1',
+  'veo-3.1-fast-generate-001': 'Veo 3.1 Fast（推荐批量生产）',
   'mock-image-to-video': 'Mock 测试模型',
 }
 const defaultPlan = {
   AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
-  VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native',
+  VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native', VIDEO_USE_GENERATED_AUDIO: 'false',
+  VEO_LOCATION: 'us-central1',
 }
+const googleVideoModels = [
+  { id: 'gemini-omni-flash-preview', title: 'Gemini Omni Flash', badge: '推荐', description: '3–10 秒、720p，速度快、角色一致性好；当前为 Preview。' },
+  { id: 'veo-3.1-fast-generate-001', title: 'Veo 3.1 Fast', badge: '批量', description: '适合批量镜头生产，支持 4/6/8 秒与 720p/1080p。' },
+  { id: 'veo-3.1-generate-001', title: 'Veo 3.1', badge: '质量', description: '适合重点镜头，生成速度与成本通常高于 Fast。' },
+]
+const googleVideoFieldKeys = new Set([
+  'VIDEO_PROVIDER', 'VIDEO_MODEL', 'VIDEO_USE_GENERATED_AUDIO',
+  'VEO_PROJECT_ID', 'VEO_LOCATION', 'VEO_GCS_OUTPUT_URI',
+])
 const connectionModes = [
   {
     id: 'hybrid', title: '混合路由', icon: Waypoints, recommended: true,
@@ -77,7 +87,7 @@ const secretsByKey = computed(() => Object.fromEntries((data.value?.secrets || [
 const categories = computed(() => {
   const groups = []
   for (const field of data.value?.fields || []) {
-    if (routedFieldKeys.has(field.key)) continue
+    if (routedFieldKeys.has(field.key) || googleVideoFieldKeys.has(field.key)) continue
     let group = groups.find((item) => item.name === field.category)
     if (!group) {
       group = { name: field.category, fields: [] }
@@ -87,7 +97,8 @@ const categories = computed(() => {
   }
   return groups
 })
-const advancedSecrets = computed(() => (data.value?.secrets || []).filter((secret) => !routedSecretKeys.has(secret.key)))
+const advancedSecrets = computed(() => (data.value?.secrets || []).filter((secret) => !routedSecretKeys.has(secret.key) && secret.key !== 'VEO_SERVICE_ACCOUNT_JSON'))
+const googleCredential = computed(() => secretsByKey.value.VEO_SERVICE_ACCOUNT_JSON)
 const changedValues = computed(() => Object.fromEntries(
   Object.keys(drafts).filter((key) => drafts[key] !== baseline[key]).map((key) => [key, drafts[key]]),
 ))
@@ -108,6 +119,11 @@ function hydrate(response) {
     baseline[field.key] = value
   }
   for (const secret of response.secrets || []) secretDrafts[secret.key] = ''
+  if (googleVideoModels.some((model) => model.id === drafts.VIDEO_MODEL)) {
+    if (!drafts.VIDEO_API_BASE_URL) drafts.VIDEO_API_BASE_URL = 'http://veo-adapter:8091'
+    if (drafts.VIDEO_PROVIDER !== 'generic_async_video') drafts.VIDEO_PROVIDER = 'generic_async_video'
+    if (drafts.VIDEO_API_SOURCE !== 'native') drafts.VIDEO_API_SOURCE = 'native'
+  }
 }
 
 async function load() {
@@ -121,6 +137,13 @@ async function load() {
 function applyMode(mode) {
   drafts.AI_CONNECTION_MODE = mode.id
   for (const [key, value] of Object.entries(mode.sources)) drafts[key] = value
+}
+
+function selectGoogleVideoModel(model) {
+  drafts.VIDEO_API_SOURCE = 'native'
+  drafts.VIDEO_PROVIDER = 'generic_async_video'
+  drafts.VIDEO_MODEL = model
+  drafts.VIDEO_API_BASE_URL = 'http://veo-adapter:8091'
 }
 
 function resetDrafts() {
@@ -158,8 +181,8 @@ onMounted(load)
 
     <div class="config-notice managed-config-notice" :class="{ pending: data?.pending_restart }"><ShieldCheck :size="20" /><div><strong>{{ data?.pending_restart ? '存在待生效配置' : '密钥保护已启用' }}</strong><p>密钥只允许覆盖写入，页面和接口永不返回明文；不同能力可使用不同供应商和 Token。</p></div><span>{{ data?.managed_file || 'cms-managed.env' }}</span></div>
 
-    <div v-if="result" class="config-save-result"><AlertTriangle :size="20" /><div><strong>{{ result.message }}</strong><span>普通 restart 不会重新加载环境变量，请使用以下命令重建 n8n：</span><code>{{ result.restart_command }}</code></div></div>
-    <div v-else-if="data?.pending_restart" class="config-save-result pending"><AlertTriangle :size="20" /><div><strong>CMS 托管文件与当前容器环境不同</strong><span>需要重建 n8n 容器后才会使用待生效值。</span><code>{{ data.restart_command }}</code></div></div>
+    <div v-if="result" class="config-save-result"><AlertTriangle :size="20" /><div><strong>{{ result.message }}</strong><span>普通 restart 不会重新加载环境变量，请执行一次下方命令：</span><code>{{ result.restart_command }}</code></div></div>
+    <div v-else-if="data?.pending_restart" class="config-save-result pending"><AlertTriangle :size="20" /><div><strong>CMS 托管文件与当前容器环境不同</strong><span>需要重建 n8n 与 Google 视频适配器后才会使用待生效值。</span><code>{{ data.restart_command }}</code></div></div>
 
     <div v-if="error" class="error-banner large">{{ error }} <button @click="load">重试</button></div>
     <div v-if="loading" class="config-loading"><span></span><span></span></div>
@@ -167,6 +190,7 @@ onMounted(load)
       <article class="panel config-source-panel">
         <div><Container :size="19" /><span>配置来源</span><strong>{{ data.source }}</strong><code>{{ data.container_name }}</code></div>
         <div><FileCog :size="19" /><span>容器状态</span><strong>{{ data.container_status }}</strong><code>{{ data.managed_file_exists ? '托管文件已创建' : '尚无托管文件' }}</code></div>
+        <div><Video :size="19" /><span>Google 视频适配器</span><strong>{{ data.video_adapter_status }}</strong><code>{{ data.video_adapter_name }}</code></div>
         <div><ShieldCheck :size="19" /><span>密钥响应</span><strong>{{ data.secrets_exposed ? '风险：已暴露' : '已脱敏' }}</strong><code>boolean status only</code></div>
       </article>
 
@@ -189,10 +213,32 @@ onMounted(load)
             <div class="capability-route-head"><span><component :is="capability.icon" :size="19" /></span><div><strong>{{ capability.title }}</strong><small>{{ capability.endpoint }}</small></div></div>
             <label><span>接口来源</span><div class="source-select-wrap"><component :is="sourceIcon(drafts[capability.sourceKey])" :size="15" /><select v-model="drafts[capability.sourceKey]" class="select-control"><option value="native">{{ sourceLabels.native }}</option><option value="custom">{{ sourceLabels.custom }}</option><option value="gateway">{{ sourceLabels.gateway }}</option></select></div></label>
             <label><span>Base URL <i v-if="fieldsByKey[capability.baseKey]?.has_managed_override">待重启覆盖</i></span><input v-model="drafts[capability.baseKey]" type="url" placeholder="https://api.example.com" spellcheck="false" /><small>当前容器：{{ displayCurrent(fieldsByKey[capability.baseKey]) }}</small></label>
-            <label><span>API Key <i v-if="secretsByKey[capability.secretKey]?.managed_override_configured">托管文件已填写</i></span><input v-model="secretDrafts[capability.secretKey]" type="password" autocomplete="new-password" :placeholder="secretsByKey[capability.secretKey]?.configured ? '已配置；留空不修改' : '输入新的 API Key'" spellcheck="false" /><small :class="{ configured: secretsByKey[capability.secretKey]?.configured }">当前容器：{{ secretsByKey[capability.secretKey]?.configured ? '已配置' : '未配置' }}</small></label>
+            <label><span>{{ capability.id === 'video' ? '内部适配器 Key' : 'API Key' }} <i v-if="secretsByKey[capability.secretKey]?.managed_override_configured">托管文件已填写</i></span><input v-model="secretDrafts[capability.secretKey]" type="password" autocomplete="new-password" :placeholder="secretsByKey[capability.secretKey]?.configured ? '已配置；留空不修改' : capability.id === 'video' ? '填写一个长随机内部访问令牌' : '输入新的 API Key'" spellcheck="false" /><small :class="{ configured: secretsByKey[capability.secretKey]?.configured }">当前容器：{{ secretsByKey[capability.secretKey]?.configured ? '已配置' : '未配置' }}</small></label>
             <p><AlertTriangle :size="13" />{{ capability.note }}</p>
           </section>
         </div>
+      </article>
+
+      <article class="panel padded google-video-panel">
+        <div class="section-title"><div><span>GOOGLE VIDEO</span><h3>Google 视频模型</h3></div><div class="section-icon"><Video :size="19" /></div></div>
+        <p class="plan-intro">Veo 3.1 与 Gemini Omni 共用同一个安全适配器和服务账号。点击模型卡即可切换，工作流代码无需修改。</p>
+        <div class="google-model-grid">
+          <button v-for="model in googleVideoModels" :key="model.id" type="button" class="google-model-card" :class="{ active: drafts.VIDEO_MODEL === model.id }" @click="selectGoogleVideoModel(model.id)">
+            <span><Video :size="19" /></span><div><strong>{{ model.title }}<i>{{ model.badge }}</i></strong><code>{{ model.id }}</code><small>{{ model.description }}</small></div><b></b>
+          </button>
+        </div>
+        <div class="google-config-grid">
+          <label class="config-edit-field"><span class="config-field-head"><strong>Google Cloud Project ID</strong><i v-if="fieldsByKey.VEO_PROJECT_ID?.has_managed_override">待重启覆盖</i></span><code>VEO_PROJECT_ID</code><input v-model="drafts.VEO_PROJECT_ID" type="text" placeholder="可留空，从服务账号自动读取" spellcheck="false" /><small>Google Cloud 项目 ID，不是项目名称。</small></label>
+          <label class="config-edit-field"><span class="config-field-head"><strong>Veo 区域</strong><i v-if="fieldsByKey.VEO_LOCATION?.has_managed_override">待重启覆盖</i></span><code>VEO_LOCATION</code><input v-model="drafts.VEO_LOCATION" type="text" placeholder="us-central1" spellcheck="false" /><small>仅用于 Veo；Omni 会自动使用 global。</small></label>
+          <label class="config-edit-field"><span class="config-field-head"><strong>Cloud Storage 输出目录</strong><i v-if="fieldsByKey.VEO_GCS_OUTPUT_URI?.has_managed_override">待重启覆盖</i></span><code>VEO_GCS_OUTPUT_URI</code><input v-model="drafts.VEO_GCS_OUTPUT_URI" type="text" placeholder="gs://bucket/short-drama" spellcheck="false" /><small>服务账号需要对此目录拥有对象创建和读取权限。</small></label>
+          <label class="config-edit-field"><span class="config-field-head"><strong>模型原生音频</strong></span><code>VIDEO_USE_GENERATED_AUDIO</code><select v-model="drafts.VIDEO_USE_GENERATED_AUDIO" class="select-control"><option value="false">关闭（使用系统配音，推荐）</option><option value="true">保留模型生成的音频</option></select><small>关闭后标准化阶段会移除 Omni/Veo 自带音轨，避免双重配音。</small></label>
+        </div>
+        <label class="google-credential-field">
+          <div><strong>Google 服务账号 JSON</strong><span :class="{ configured: googleCredential?.configured || googleCredential?.managed_override_configured }">{{ googleCredential?.managed_override_configured ? '托管文件已填写，等待重启' : googleCredential?.configured ? '当前已配置' : '尚未配置' }}</span></div>
+          <code>VEO_SERVICE_ACCOUNT_JSON</code>
+          <textarea v-model="secretDrafts.VEO_SERVICE_ACCOUNT_JSON" rows="8" autocomplete="off" :placeholder="googleCredential?.configured || googleCredential?.managed_override_configured ? '已安全保存；留空不修改。需要更换时粘贴新的完整 JSON。' : '粘贴从 Google Cloud 下载的完整服务账号 JSON'" spellcheck="false"></textarea>
+          <small><ShieldCheck :size="14" />JSON 只写入权限受限的托管配置，页面与接口永不返回私钥内容。</small>
+        </label>
       </article>
 
       <article v-for="group in categories" :key="group.name" class="panel padded ai-config-group">

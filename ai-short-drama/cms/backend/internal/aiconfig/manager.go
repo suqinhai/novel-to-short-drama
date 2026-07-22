@@ -26,11 +26,15 @@ type FieldSpec struct {
 	AllowEmpty  bool     `json:"allow_empty"`
 	Options     []string `json:"options,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Target      string   `json:"target,omitempty"`
 }
 
 type SecretSpec struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Kind        string `json:"kind,omitempty"`
+	Description string `json:"description,omitempty"`
+	Target      string `json:"target,omitempty"`
 }
 
 var FieldSpecs = []FieldSpec{
@@ -53,8 +57,12 @@ var FieldSpecs = []FieldSpec{
 	{Key: "IMAGE_MODEL", Label: "图片模型", Category: "图片生成", Kind: "text"},
 	{Key: "IMAGE_API_BASE_URL", Label: "图片 API 地址", Category: "图片生成", Kind: "url"},
 	{Key: "VIDEO_PROVIDER", Label: "视频供应商", Category: "视频生成", Kind: "select", Options: []string{"mock", "generic_sync_video", "generic_async_video"}},
-	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "suggest", Options: []string{"gemini-omni-flash-preview", "veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "mock-image-to-video"}, Description: "可选择 Gemini Omni、Veo 3.1 或 Veo 3.1 Fast，也可输入兼容接口支持的其他模型 ID。"},
+	{Key: "VIDEO_MODEL", Label: "视频模型", Category: "视频生成", Kind: "suggest", Options: []string{"gemini-omni-flash-preview", "veo-3.1-generate-001", "veo-3.1-fast-generate-001", "mock-image-to-video"}, Description: "可选择 Gemini Omni、Veo 3.1 或 Veo 3.1 Fast，也可输入兼容接口支持的其他模型 ID。"},
 	{Key: "VIDEO_API_BASE_URL", Label: "视频 API 地址", Category: "视频生成", Kind: "url"},
+	{Key: "VIDEO_USE_GENERATED_AUDIO", Label: "保留模型生成的音频", Category: "视频生成", Kind: "boolean", Description: "关闭时移除模型原生音轨，继续使用系统自己的配音与混音。"},
+	{Key: "VEO_PROJECT_ID", Label: "Google Cloud Project ID", Category: "Google 视频模型", Kind: "text", Description: "留空时从服务账号 JSON 自动读取。", AllowEmpty: true, Target: "video-adapter"},
+	{Key: "VEO_LOCATION", Label: "Veo 区域", Category: "Google 视频模型", Kind: "text", Description: "Veo 3.1 默认使用 us-central1；Omni 固定使用 global。", Target: "video-adapter"},
+	{Key: "VEO_GCS_OUTPUT_URI", Label: "Cloud Storage 输出目录", Category: "Google 视频模型", Kind: "gcs_uri", Description: "例如 gs://my-private-bucket/short-drama；Veo 和 Omni 共用此私有目录。", Target: "video-adapter"},
 	{Key: "TTS_PROVIDER", Label: "语音供应商", Category: "语音合成", Kind: "select", Options: []string{"mock", "generic_sync_tts", "generic_async_tts"}},
 	{Key: "TTS_MODEL", Label: "语音模型", Category: "语音合成", Kind: "text"},
 	{Key: "TTS_API_BASE_URL", Label: "语音 API 地址", Category: "语音合成", Kind: "url"},
@@ -67,6 +75,7 @@ var SecretSpecs = []SecretSpec{
 	{Key: "GLM_API_KEY", Label: "GLM API Key"},
 	{Key: "IMAGE_API_KEY", Label: "图片 API Key"},
 	{Key: "VIDEO_API_KEY", Label: "视频 API Key"},
+	{Key: "VEO_SERVICE_ACCOUNT_JSON", Label: "Google 服务账号 JSON", Kind: "service_account_json", Description: "粘贴从 Google Cloud 下载的完整服务账号 JSON；系统只保存，不回显。", Target: "video-adapter"},
 	{Key: "TTS_API_KEY", Label: "语音 API Key"},
 	{Key: "PUBLISH_API_KEY", Label: "发布 API Key"},
 }
@@ -85,16 +94,18 @@ type SecretState struct {
 }
 
 type Snapshot struct {
-	Fields            []FieldState  `json:"fields"`
-	Secrets           []SecretState `json:"secrets"`
-	ContainerName     string        `json:"container_name"`
-	ContainerStatus   string        `json:"container_status"`
-	Source            string        `json:"source"`
-	ManagedFile       string        `json:"managed_file"`
-	ManagedFileExists bool          `json:"managed_file_exists"`
-	PendingRestart    bool          `json:"pending_restart"`
-	RestartCommand    string        `json:"restart_command"`
-	SecretsExposed    bool          `json:"secrets_exposed"`
+	Fields             []FieldState  `json:"fields"`
+	Secrets            []SecretState `json:"secrets"`
+	ContainerName      string        `json:"container_name"`
+	ContainerStatus    string        `json:"container_status"`
+	VideoAdapterName   string        `json:"video_adapter_name"`
+	VideoAdapterStatus string        `json:"video_adapter_status"`
+	Source             string        `json:"source"`
+	ManagedFile        string        `json:"managed_file"`
+	ManagedFileExists  bool          `json:"managed_file_exists"`
+	PendingRestart     bool          `json:"pending_restart"`
+	RestartCommand     string        `json:"restart_command"`
+	SecretsExposed     bool          `json:"secrets_exposed"`
 }
 
 type SaveResult struct {
@@ -103,13 +114,18 @@ type SaveResult struct {
 }
 
 type Manager struct {
-	filePath      string
-	containerName string
-	mu            sync.Mutex
+	filePath              string
+	containerName         string
+	videoAdapterContainer string
+	mu                    sync.Mutex
 }
 
-func New(filePath, containerName string) *Manager {
-	return &Manager{filePath: filePath, containerName: containerName}
+func New(filePath, containerName string, videoAdapterContainer ...string) *Manager {
+	adapterName := "ai-short-drama-veo-adapter-1"
+	if len(videoAdapterContainer) > 0 && strings.TrimSpace(videoAdapterContainer[0]) != "" {
+		adapterName = videoAdapterContainer[0]
+	}
+	return &Manager{filePath: filePath, containerName: containerName, videoAdapterContainer: adapterName}
 }
 
 func (m *Manager) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -121,17 +137,26 @@ func (m *Manager) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read managed AI configuration: %w", err)
 	}
+	videoEnv, videoStatus, videoErr := inspectContainerEnvironment(ctx, m.videoAdapterContainer)
+	if videoErr != nil {
+		videoEnv = map[string]string{}
+		videoStatus = "not-running"
+	}
 
 	snapshot := Snapshot{
 		Fields: make([]FieldState, 0, len(FieldSpecs)), Secrets: make([]SecretState, 0, len(SecretSpecs)),
-		ContainerName: m.containerName, ContainerStatus: status, Source: "n8n 容器环境",
+		ContainerName: m.containerName, ContainerStatus: status, Source: "n8n 与 Google 视频适配器容器环境",
+		VideoAdapterName: m.videoAdapterContainer, VideoAdapterStatus: videoStatus,
 		ManagedFile: "cms/config/cms-managed.env", ManagedFileExists: exists,
-		RestartCommand: "$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }; docker compose --env-file $baseEnv --env-file cms/config/cms-managed.env up -d --force-recreate --no-deps n8n",
+		RestartCommand: "$baseEnv = if (Test-Path .env) { '.env' } else { '.env.example' }; docker compose --profile veo --env-file $baseEnv --env-file cms/config/cms-managed.env up -d --build --force-recreate --no-deps n8n veo-adapter",
 		SecretsExposed: false,
 	}
 	for _, spec := range FieldSpecs {
 		managedValue, hasOverride := managedEnv[spec.Key]
 		currentValue := containerEnv[spec.Key]
+		if spec.Target == "video-adapter" {
+			currentValue = videoEnv[spec.Key]
+		}
 		snapshot.Fields = append(snapshot.Fields, FieldState{
 			FieldSpec: spec, CurrentValue: currentValue, ManagedValue: managedValue, HasManagedOverride: hasOverride,
 		})
@@ -142,6 +167,9 @@ func (m *Manager) Snapshot(ctx context.Context) (Snapshot, error) {
 	for _, spec := range SecretSpecs {
 		managedValue, hasOverride := managedEnv[spec.Key]
 		currentValue := containerEnv[spec.Key]
+		if spec.Target == "video-adapter" {
+			currentValue = videoEnv[spec.Key]
+		}
 		snapshot.Secrets = append(snapshot.Secrets, SecretState{
 			SecretSpec: spec, Configured: secretConfigured(currentValue),
 			ManagedOverrideConfigured: hasOverride && secretConfigured(managedValue),
@@ -165,9 +193,9 @@ func (m *Manager) Save(values, secrets map[string]string) (SaveResult, error) {
 	for _, spec := range FieldSpecs {
 		fieldByKey[spec.Key] = spec
 	}
-	secretKeys := make(map[string]bool, len(SecretSpecs))
+	secretKeys := make(map[string]SecretSpec, len(SecretSpecs))
 	for _, spec := range SecretSpecs {
-		secretKeys[spec.Key] = true
+		secretKeys[spec.Key] = spec
 	}
 
 	result := SaveResult{}
@@ -180,10 +208,15 @@ func (m *Manager) Save(values, secrets map[string]string) (SaveResult, error) {
 		result.SavedFieldCount++
 	}
 	for key, value := range secrets {
-		if !secretKeys[key] || validateSecretValue(value) != nil {
+		spec, allowed := secretKeys[key]
+		if !allowed || validateSecretValue(spec, value) != nil {
 			return SaveResult{}, ErrInvalidInput
 		}
-		managed[key] = value
+		normalized, err := normalizeSecretValue(spec, value)
+		if err != nil {
+			return SaveResult{}, ErrInvalidInput
+		}
+		managed[key] = normalized
 		result.SavedSecretCount++
 	}
 	if result.SavedFieldCount+result.SavedSecretCount == 0 {
@@ -249,6 +282,15 @@ func validateFieldValue(spec FieldSpec, value string) error {
 		if !valid {
 			return ErrInvalidInput
 		}
+	case "gcs_uri":
+		if !strings.HasPrefix(trimmed, "gs://") {
+			return ErrInvalidInput
+		}
+		withoutScheme := strings.TrimPrefix(trimmed, "gs://")
+		bucket, _, _ := strings.Cut(withoutScheme, "/")
+		if len(bucket) < 3 || len(bucket) > 222 || strings.ContainsAny(bucket, " \\?#") {
+			return ErrInvalidInput
+		}
 	default:
 		if (!spec.AllowEmpty && trimmed == "") || strings.Contains(value, "#") {
 			return ErrInvalidInput
@@ -257,11 +299,44 @@ func validateFieldValue(spec FieldSpec, value string) error {
 	return nil
 }
 
-func validateSecretValue(value string) error {
-	if strings.TrimSpace(value) == "" || len(value) > 8192 || strings.ContainsAny(value, "\x00\r\n") {
+func validateSecretValue(spec SecretSpec, value string) error {
+	maxLength := 8192
+	if spec.Kind == "service_account_json" {
+		maxLength = 32768
+	}
+	if strings.TrimSpace(value) == "" || len(value) > maxLength || strings.ContainsRune(value, '\x00') {
 		return ErrInvalidInput
 	}
-	return nil
+	if spec.Kind != "service_account_json" && strings.ContainsAny(value, "\r\n") {
+		return ErrInvalidInput
+	}
+	_, err := normalizeSecretValue(spec, value)
+	return err
+}
+
+func normalizeSecretValue(spec SecretSpec, value string) (string, error) {
+	if spec.Kind != "service_account_json" {
+		return value, nil
+	}
+	value = strings.TrimPrefix(strings.TrimSpace(value), "\ufeff")
+	var credential struct {
+		Type        string `json:"type"`
+		ProjectID   string `json:"project_id"`
+		ClientEmail string `json:"client_email"`
+		PrivateKey  string `json:"private_key"`
+	}
+	if err := json.Unmarshal([]byte(value), &credential); err != nil || credential.Type != "service_account" || credential.ProjectID == "" || credential.ClientEmail == "" || credential.PrivateKey == "" {
+		return "", ErrInvalidInput
+	}
+	var document any
+	if err := json.Unmarshal([]byte(value), &document); err != nil {
+		return "", ErrInvalidInput
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "", ErrInvalidInput
+	}
+	return string(encoded), nil
 }
 
 func secretConfigured(value string) bool {
@@ -323,7 +398,7 @@ func writeEnvFile(path string, values map[string]string) error {
 	}
 	var content strings.Builder
 	content.WriteString("# Managed by the Short Drama CMS. Do not commit this file.\n")
-	content.WriteString("# Recreate n8n with both .env files for changes to take effect.\n")
+	content.WriteString("# Recreate n8n and the Google video adapter with both .env files for changes to take effect.\n")
 	for _, key := range allowedOrder {
 		value, exists := values[key]
 		if !exists {
@@ -354,6 +429,5 @@ func writeEnvFile(path string, values map[string]string) error {
 }
 
 func encodeEnvValue(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "$", "$$")
-	return "\"" + replacer.Replace(value) + "\""
+	return strconv.Quote(strings.ReplaceAll(value, "$", "$$"))
 }
