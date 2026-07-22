@@ -20,6 +20,14 @@ export const api = {
   getProject(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}`)
   },
+  archiveProject(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirm_project_id: projectId }),
+    })
+  },
+  restoreProject(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/restore`, { method: 'POST' })
+  },
   createProject(payload) {
     return request('/projects', { method: 'POST', body: JSON.stringify(payload) })
   },

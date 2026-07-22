@@ -81,7 +81,7 @@ onMounted(load)
     <div class="panel">
       <div class="panel-toolbar"><div class="search-box"><Search :size="17" /><input v-model="search" placeholder="搜索作品名" /></div><span class="result-count">{{ page.total }} 部作品</span></div>
       <div v-if="error" class="error-banner">{{ error }} <button @click="load()">重试</button></div>
-      <div v-if="loading" class="table-loading"><span v-for="i in 4" :key="i"></span></div>
+      <div v-else-if="loading" class="table-loading"><span v-for="i in 4" :key="i"></span></div>
       <EmptyState v-else-if="works.length === 0" title="资料库还是空的" description="先创建原著作品，再为作品创建和导入版本。" />
       <div v-else class="source-work-grid">
         <RouterLink v-for="work in works" :key="work.work_id" :to="`/library/${work.work_id}`" class="source-work-card">

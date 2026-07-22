@@ -12,7 +12,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("record not found")
+var (
+	ErrNotFound      = errors.New("record not found")
+	ErrUnsafeArchive = errors.New("project cannot be archived safely")
+	ErrNotArchived   = errors.New("project is not archived")
+)
 
 type Store struct {
 	pool   *pgxpool.Pool
@@ -33,6 +37,8 @@ type Project struct {
 	TestMode               bool            `json:"test_mode"`
 	PendingReviews         int             `json:"pending_reviews"`
 	FailedTasks            int             `json:"failed_tasks"`
+	ActiveTasks            int             `json:"active_tasks"`
+	CanArchive             bool            `json:"can_archive"`
 	Config                 json.RawMessage `json:"config,omitempty"`
 	ErrorMessage           *string         `json:"error_message,omitempty"`
 	CreatedAt              time.Time       `json:"created_at"`
@@ -336,6 +342,12 @@ type ListResult struct {
 	Limit int       `json:"limit"`
 }
 
+type ProjectArchiveResult struct {
+	ProjectID string    `json:"project_id"`
+	Status    string    `json:"status"`
+	ChangedAt time.Time `json:"changed_at"`
+}
+
 const mediaAssetsCTE = `WITH media_assets AS (
 	SELECT 'generated_assets'::text asset_type,ga.asset_id,ga.project_id,p.novel_name,
 		NULL::text episode_id,ga.entity_type,ga.entity_id,ga.asset_type subtype,'image'::text media_kind,
@@ -455,7 +467,7 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
 	query = strings.TrimSpace(query)
 	status = strings.TrimSpace(status)
 	where := `WHERE ($1 = '' OR p.novel_name ILIKE '%' || $1 || '%' OR p.project_id ILIKE '%' || $1 || '%')
-        AND ($2 = '' OR p.status = $2)`
+		AND (($2 = '' AND p.status <> 'cancelled') OR ($2 <> '' AND p.status = $2))`
 
 	var total int
 	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM drama.projects p `+where, query, status).Scan(&total); err != nil {
@@ -469,6 +481,7 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
           p.current_stage, p.status, p.test_mode,
           (SELECT COUNT(*) FROM drama.review_tasks r WHERE r.project_id = p.project_id AND r.review_status = 'pending'),
           (SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id = p.project_id AND w.status = 'failed'),
+		  (SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id = p.project_id AND w.status IN ('pending','running')),
           p.error_message, p.created_at, p.updated_at
         FROM drama.projects p `+where+`
         ORDER BY p.updated_at DESC
@@ -484,13 +497,112 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
 		if err := rows.Scan(&project.ProjectID, &project.NovelName, &project.TargetEpisodeCount,
 			&project.GeneratedEpisodeCount, &project.EpisodeDurationSeconds, &project.VisualStyle,
 			&project.AspectRatio, &project.TargetPlatform, &project.CurrentStage, &project.Status,
-			&project.TestMode, &project.PendingReviews, &project.FailedTasks, &project.ErrorMessage,
+			&project.TestMode, &project.PendingReviews, &project.FailedTasks, &project.ActiveTasks, &project.ErrorMessage,
 			&project.CreatedAt, &project.UpdatedAt); err != nil {
 			return ListResult{}, err
 		}
+		project.CanArchive = canArchiveProject(project.Status, project.FailedTasks, project.ActiveTasks, project.PendingReviews, 0)
 		items = append(items, project)
 	}
 	return ListResult{Items: items, Total: total, Page: page, Limit: limit}, rows.Err()
+}
+
+func canArchiveProject(status string, failedTasks, activeTasks, pendingReviews, finalizedOutputs int) bool {
+	if activeTasks > 0 || pendingReviews > 0 || finalizedOutputs > 0 || failedTasks == 0 {
+		return false
+	}
+	return status == "failed" || status == "running" || status == "pending"
+}
+
+func (s *Store) ArchiveProject(ctx context.Context, projectID string) (ProjectArchiveResult, error) {
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status, currentStage string
+	var config json.RawMessage
+	var failedTasks, activeTasks, pendingReviews, finalizedOutputs int
+	err = tx.QueryRow(ctx, `SELECT p.status,p.current_stage,COALESCE(p.config,'{}'::jsonb),
+		(SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id=p.project_id AND w.status='failed'),
+		(SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id=p.project_id AND w.status IN ('pending','running')),
+		(SELECT COUNT(*) FROM drama.review_tasks r WHERE r.project_id=p.project_id AND r.review_status='pending'),
+		(SELECT COUNT(*) FROM drama.episode_masters m WHERE m.project_id=p.project_id AND m.master_type='final' AND m.status='ready')
+		FROM drama.projects p WHERE p.project_id=$1 FOR UPDATE`, projectID).Scan(
+		&status, &currentStage, &config, &failedTasks, &activeTasks, &pendingReviews, &finalizedOutputs,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProjectArchiveResult{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if status == "cancelled" {
+		return ProjectArchiveResult{ProjectID: projectID, Status: status, ChangedAt: time.Now()}, nil
+	}
+	if !canArchiveProject(status, failedTasks, activeTasks, pendingReviews, finalizedOutputs) {
+		return ProjectArchiveResult{}, ErrUnsafeArchive
+	}
+
+	configMap := rawJSONMap(config)
+	changedAt := time.Now().UTC()
+	configMap["cms_archive"] = map[string]any{
+		"archived_at": changedAt.Format(time.RFC3339Nano), "previous_status": status,
+		"previous_stage": currentStage, "reason": "user_deleted_failed_project",
+	}
+	updatedConfig, err := json.Marshal(configMap)
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.projects SET status='cancelled',config=$2::jsonb WHERE project_id=$1`, projectID, updatedConfig); err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	return ProjectArchiveResult{ProjectID: projectID, Status: "cancelled", ChangedAt: changedAt}, nil
+}
+
+func (s *Store) RestoreProject(ctx context.Context, projectID string) (ProjectArchiveResult, error) {
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	var config json.RawMessage
+	err = tx.QueryRow(ctx, `SELECT status,COALESCE(config,'{}'::jsonb) FROM drama.projects WHERE project_id=$1 FOR UPDATE`, projectID).Scan(&status, &config)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProjectArchiveResult{}, ErrNotFound
+	}
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if status != "cancelled" {
+		return ProjectArchiveResult{}, ErrNotArchived
+	}
+
+	configMap := rawJSONMap(config)
+	archive, _ := configMap["cms_archive"].(map[string]any)
+	if archive == nil {
+		archive = make(map[string]any)
+	}
+	changedAt := time.Now().UTC()
+	archive["restored_at"] = changedAt.Format(time.RFC3339Nano)
+	configMap["cms_archive"] = archive
+	updatedConfig, err := json.Marshal(configMap)
+	if err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.projects SET status='failed',config=$2::jsonb WHERE project_id=$1`, projectID, updatedConfig); err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ProjectArchiveResult{}, err
+	}
+	return ProjectArchiveResult{ProjectID: projectID, Status: "failed", ChangedAt: changedAt}, nil
 }
 
 func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, reviewStatus string, page, limit int) (MediaAssetListResult, error) {

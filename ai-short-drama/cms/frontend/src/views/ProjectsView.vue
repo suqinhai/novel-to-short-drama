@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
-import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle, Plus } from 'lucide-vue-next'
+import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle, Plus, Trash2, ArchiveRestore, X, LoaderCircle } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -12,6 +12,11 @@ const loading = ref(true)
 const error = ref('')
 const search = ref('')
 const status = ref('')
+const archiveTarget = ref(null)
+const archiveConfirmation = ref('')
+const archiving = ref(false)
+const restoringId = ref('')
+const notice = ref('')
 
 const summary = computed(() => ({
   all: total.value,
@@ -39,6 +44,46 @@ onMounted(loadProjects)
 
 const formatTime = (value) => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const progress = (item) => Math.min(100, Math.round((item.generated_episode_count / Math.max(item.target_episode_count, 1)) * 100))
+
+function openArchive(item) {
+  archiveTarget.value = item
+  archiveConfirmation.value = ''
+}
+
+function closeArchive() {
+  if (!archiving.value) archiveTarget.value = null
+}
+
+async function archiveProject() {
+  if (!archiveTarget.value || archiveConfirmation.value.trim() !== archiveTarget.value.project_id) return
+  archiving.value = true
+  error.value = ''
+  try {
+    await api.archiveProject(archiveTarget.value.project_id)
+    notice.value = `项目“${archiveTarget.value.novel_name}”已移入回收站，生产记录和审核链均已保留。`
+    archiveTarget.value = null
+    await loadProjects()
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    archiving.value = false
+  }
+}
+
+async function restoreProject(item) {
+  if (restoringId.value) return
+  restoringId.value = item.project_id
+  error.value = ''
+  try {
+    await api.restoreProject(item.project_id)
+    notice.value = `项目“${item.novel_name}”已恢复为异常状态，可进入详情检查后再重试。`
+    await loadProjects()
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    restoringId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -58,12 +103,13 @@ const progress = (item) => Math.min(100, Math.round((item.generated_episode_coun
     <div class="panel">
       <div class="panel-toolbar">
         <div class="search-box"><Search :size="17" /><input v-model="search" placeholder="搜索项目名称或项目 ID" /></div>
-        <select v-model="status" class="select-control"><option value="">全部状态</option><option value="running">生产中</option><option value="waiting_review">待审核</option><option value="completed">已完成</option><option value="failed">异常</option></select>
+        <select v-model="status" class="select-control"><option value="">全部状态</option><option value="running">生产中</option><option value="waiting_review">待审核</option><option value="completed">已完成</option><option value="failed">异常</option><option value="cancelled">回收站</option></select>
         <span class="result-count">{{ total }} 个项目</span>
       </div>
 
+      <div v-if="notice" class="success-banner project-list-notice"><CircleCheckBig :size="17" />{{ notice }}<button aria-label="关闭提示" @click="notice = ''"><X :size="15" /></button></div>
       <div v-if="error" class="error-banner">{{ error }} <button @click="loadProjects">重试</button></div>
-      <div v-if="loading" class="table-loading"><span v-for="i in 4" :key="i"></span></div>
+      <div v-else-if="loading" class="table-loading"><span v-for="i in 4" :key="i"></span></div>
       <EmptyState v-else-if="projects.length === 0" title="没有匹配的项目" description="请调整搜索条件，或通过现有 n8n 项目入口创建项目。" />
       <div v-else class="table-wrap">
         <table>
@@ -76,10 +122,20 @@ const progress = (item) => Math.min(100, Math.round((item.generated_episode_coun
               <td><div class="progress-label"><span>{{ item.generated_episode_count }} / {{ item.target_episode_count }} 集</span><b>{{ progress(item) }}%</b></div><div class="progress-track"><i :style="{ width: `${progress(item)}%` }"></i></div></td>
               <td><span v-if="item.error_message" class="error-message-cell" :title="item.error_message">{{ item.error_message }}</span><span v-else class="no-error">—</span></td>
               <td><span class="date-text">{{ formatTime(item.updated_at) }}</span></td>
-              <td><RouterLink class="row-action" :to="`/projects/${item.project_id}`" aria-label="查看详情"><ArrowUpRight :size="17" /></RouterLink></td>
+              <td><div class="project-row-actions"><button v-if="item.status === 'cancelled'" class="row-action restore-action" :disabled="restoringId === item.project_id" aria-label="恢复项目" title="从回收站恢复" @click="restoreProject(item)"><LoaderCircle v-if="restoringId === item.project_id" :size="16" class="spin" /><ArchiveRestore v-else :size="16" /></button><button v-else-if="item.can_archive" class="row-action delete-action" aria-label="删除项目" title="移入回收站" @click="openArchive(item)"><Trash2 :size="16" /></button><RouterLink class="row-action" :to="`/projects/${item.project_id}`" aria-label="查看详情"><ArrowUpRight :size="17" /></RouterLink></div></td>
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <div v-if="archiveTarget" class="modal-backdrop" @click.self="closeArchive">
+      <div class="review-modal project-archive-modal" role="dialog" aria-modal="true" aria-label="删除项目确认">
+        <div class="modal-head"><div><span>SAFE DELETE</span><h3>将项目移入回收站</h3></div><button aria-label="关闭" @click="closeArchive"><X :size="18" /></button></div>
+        <div class="archive-warning"><AlertTriangle :size="19" /><div><strong>不会清除生产记录</strong><p>项目将从默认列表隐藏，但任务、错误、审核记录和已生成内容都会保留，可随时恢复。</p></div></div>
+        <div class="decision-target"><strong>{{ archiveTarget.novel_name }}</strong><code>{{ archiveTarget.project_id }}</code><span>{{ archiveTarget.failed_tasks }} 个失败任务 · {{ archiveTarget.active_tasks }} 个活跃任务</span></div>
+        <label class="field"><span>输入完整 Project ID 确认 <i>*</i></span><input v-model="archiveConfirmation" autocomplete="off" :placeholder="archiveTarget.project_id" /></label>
+        <div class="modal-actions"><button class="button button-secondary" :disabled="archiving" @click="closeArchive">取消</button><button class="button button-danger" :disabled="archiving || archiveConfirmation.trim() !== archiveTarget.project_id" @click="archiveProject"><LoaderCircle v-if="archiving" :size="16" class="spin" /><Trash2 v-else :size="16" />确认移入回收站</button></div>
       </div>
     </div>
   </section>

@@ -52,6 +52,8 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/projects", h.listProjects)
 	api.POST("/projects", h.createProject)
 	api.GET("/projects/:projectID", h.getProject)
+	api.DELETE("/projects/:projectID", h.archiveProject)
+	api.POST("/projects/:projectID/restore", h.restoreProject)
 	api.POST("/projects/:projectID/actions", h.advanceProject)
 	api.GET("/reviews", h.listReviews)
 	api.GET("/reviews/:reviewID/content", h.getReviewContent)
@@ -674,6 +676,50 @@ func (h *Handler) getProject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": detail})
+}
+
+type archiveProjectRequest struct {
+	ConfirmProjectID string `json:"confirm_project_id"`
+}
+
+func (h *Handler) archiveProject(c *gin.Context) {
+	projectID := strings.TrimSpace(c.Param("projectID"))
+	var input archiveProjectRequest
+	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.ConfirmProjectID) != projectID {
+		respondError(c, http.StatusBadRequest, "PROJECT_CONFIRMATION_REQUIRED", "请输入完整项目 ID 确认删除")
+		return
+	}
+	result, err := h.store.ArchiveProject(c.Request.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "PROJECT_NOT_FOUND", "项目不存在")
+		return
+	}
+	if errors.Is(err, store.ErrUnsafeArchive) {
+		respondError(c, http.StatusConflict, "PROJECT_ARCHIVE_BLOCKED", "仅可删除没有活跃任务、待审核或最终成片的失败项目")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "PROJECT_ARCHIVE_FAILED", "项目移入回收站失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (h *Handler) restoreProject(c *gin.Context) {
+	result, err := h.store.RestoreProject(c.Request.Context(), strings.TrimSpace(c.Param("projectID")))
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "PROJECT_NOT_FOUND", "项目不存在")
+		return
+	}
+	if errors.Is(err, store.ErrNotArchived) {
+		respondError(c, http.StatusConflict, "PROJECT_NOT_ARCHIVED", "项目不在回收站中")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "PROJECT_RESTORE_FAILED", "项目恢复失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 type componentStatus struct {

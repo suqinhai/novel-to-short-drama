@@ -41,7 +41,7 @@ npm run dev
 
 ## 已有页面
 
-- 项目列表
+- 项目列表（失败且无活跃任务的项目可安全移入回收站，并支持恢复）
 - 新建项目（粘贴 `novel_text`，通过 n8n webhook 创建）
 - 项目详情
 - 审核中心（项目/阶段/状态筛选，直接预览故事圣经、大纲、剧本、分镜和音视频产物，再通过 n8n 执行 approved/rejected）
@@ -51,7 +51,7 @@ npm run dev
 
 项目详情会读取 `workflow_tasks`、`review_tasks`、`novels`、`story_bibles`、`episode_outlines`、`episode_scripts` 和 `storyboards`。
 
-CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。所有数据库访问均为查询，并为 PostgreSQL 连接设置 `default_transaction_read_only=on`，从数据库会话层阻止 CMS 直接写入。
+CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。生产内容查询使用只读连接；原著版本化操作和项目回收站使用独立写连接。回收站只更新项目状态和审计元数据，不删除任务、审核记录或生成资产。
 
 业务提交接口只负责校验和转发，CMS 自身不执行数据库写入：
 
