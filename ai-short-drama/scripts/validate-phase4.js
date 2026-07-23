@@ -123,6 +123,7 @@ const videoGenerationWorkflow = fs.readFileSync(path.join(workflowDir, '09-image
 const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-provider-adapter.json'), 'utf8');
 const ttsAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '10a-tts-provider-adapter.json'), 'utf8');
 const voiceAudioWorkflow = fs.readFileSync(path.join(workflowDir, '10-voice-audio.json'), 'utf8');
+const audioPollerWorkflow = fs.readFileSync(path.join(workflowDir, '10b-audio-task-poller-process.json'), 'utf8');
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
 assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
 assert(videoGenerationWorkflow.includes('Rate Limit Video Submissions'), '09-image-to-video.json: provider dispatch is missing quota-safe request pacing');
@@ -133,16 +134,26 @@ assert(videoAdapterWorkflow.includes("createHash('sha256')") && videoAdapterWork
 for (const provider of ['google_gemini_speech', 'google_chirp3_hd']) {
   assert(ttsAdapterWorkflow.includes(provider), `10a-tts-provider-adapter.json: missing ${provider} route`);
 }
-assert(ttsAdapterWorkflow.includes('generativelanguage.googleapis.com') && ttsAdapterWorkflow.includes(':generateContent'), '10a-tts-provider-adapter.json: Gemini Speech endpoint missing');
+assert(ttsAdapterWorkflow.includes('generativelanguage.googleapis.com') && ttsAdapterWorkflow.includes('/v1beta/interactions'), '10a-tts-provider-adapter.json: Gemini Speech Interactions endpoint missing');
+assert(ttsAdapterWorkflow.includes('response_format') && ttsAdapterWorkflow.includes('output_audio'), '10a-tts-provider-adapter.json: Gemini Speech Interactions payload or response handling missing');
+assert(ttsAdapterWorkflow.includes('"name": "Google Gemini Speech Submit"') && ttsAdapterWorkflow.includes('"type": "n8n-nodes-base.httpRequest"'), '10a-tts-provider-adapter.json: Gemini Speech submit must use the n8n HTTP Request node');
+assert(ttsAdapterWorkflow.includes('"Build Gemini Speech Request Body"') && ttsAdapterWorkflow.includes('"jsonBody": "={{$json.gemini_body}}"'), '10a-tts-provider-adapter.json: Gemini Speech HTTP body must be prebuilt before submit');
+assert(!ttsAdapterWorkflow.includes('AbortController') && !ttsAdapterWorkflow.includes('fetch('), '10a-tts-provider-adapter.json: Gemini Speech code must avoid sandbox-only HTTP globals');
 assert(ttsAdapterWorkflow.includes('texttospeech.googleapis.com') && ttsAdapterWorkflow.includes('/v1/text:synthesize'), '10a-tts-provider-adapter.json: Chirp 3 HD endpoint missing');
 assert(ttsAdapterWorkflow.includes('x-goog-api-key') && !ttsAdapterWorkflow.includes('?key='), '10a-tts-provider-adapter.json: Google credentials must use a header, never a URL query');
 assert(ttsAdapterWorkflow.includes("Buffer.from(compact,'base64')") && ttsAdapterWorkflow.includes('fs.writeFileSync'), '10a-tts-provider-adapter.json: Google audio must be decoded to media storage');
 assert(!ttsAdapterWorkflow.includes('"jsonBody": "={{ (()=>'), '10a-tts-provider-adapter.json: HTTP JSON body expressions must avoid parser-sensitive IIFEs');
-assert(ttsAdapterWorkflow.includes("status='failed'AND $14 IN('retry','resume','regenerate')"), '10a-tts-provider-adapter.json: failed TTS tasks must be resumable');
+assert(ttsAdapterWorkflow.includes("status='failed'AND $14 IN('retry','regenerate')") && ttsAdapterWorkflow.includes("$14='resume'AND drama.tts_generation_tasks.status IN('failed','timeout')"), '10a-tts-provider-adapter.json: failed TTS tasks must be resumable');
 assert(ttsAdapterWorkflow.includes("typeof err==='string'?err"), '10a-tts-provider-adapter.json: provider error strings must be preserved');
 assert(voiceAudioWorkflow.includes("output_data->>'status'") && voiceAudioWorkflow.includes("'voice_profiles_created'"), '10-voice-audio.json: waiting-review voice profile cache must be resumable');
 assert(voiceAudioWorkflow.includes("'audio_processing'"), '10-voice-audio.json: incomplete audio-processing cache must be resumable');
 assert(!voiceAudioWorkflow.includes("THEN NULL ELSE drama.workflow_tasks.output_data"), '10-voice-audio.json: workflow task output_data must stay non-null when resuming');
+assert(ttsAdapterWorkflow.includes("$14='resume'AND drama.tts_generation_tasks.status IN('failed','timeout')"), '10a-tts-provider-adapter.json: manual resume must retry failed TTS tasks even after automatic retry budget is exhausted');
+assert(voiceAudioWorkflow.includes("status='failed'AND($4='resume'OR($4 IN('retry','regenerate')"), '10-voice-audio.json: manual resume must reopen failed voice-audio workflow tasks even after retry budget is exhausted');
+assert(voiceAudioWorkflow.includes("(SELECT failed_count>0 FROM stats)audio_failed") && voiceAudioWorkflow.includes("'TTS_TASKS_FAILED'"), '10-voice-audio.json: failed dialogue audio must surface stage_4_failed instead of audio_processing');
+assert(voiceAudioWorkflow.includes("status=CASE WHEN(SELECT audio_failed FROM flags)THEN'failed'ELSE'completed'END"), '10-voice-audio.json: failed audio aggregate must mark the workflow task failed for retry');
+assert(audioPollerWorkflow.includes("current_stage='stage_4_failed'") && audioPollerWorkflow.includes("audio poll or processing failed"), '10b-audio-task-poller-process.json: failed audio polling must mark project stage_4_failed');
+assert(videoGenerationWorkflow.includes("'audio_plan_completed','stage_4_failed'"), '09-image-to-video.json: video finalization must preserve stage_4_failed from the audio branch');
 
 const envPath = path.join(root, '.env.example');
 const envLines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
