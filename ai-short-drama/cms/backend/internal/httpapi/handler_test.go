@@ -105,6 +105,7 @@ func TestReviewWebhookRoute(t *testing.T) {
 		{"storyboard_image", "storyboard_image", "stage3", ""},
 		{"shot_video", "shot_video", "stage4", "image_to_video"},
 		{"dialogue_audio", "dialogue_audio", "stage4", "voice_audio"},
+		{"voice_profile", "voice_profile", "stage4", "voice_audio"},
 		{"final_review", "final_review", "stage5", ""},
 		{"publication_metadata", "publication_metadata", "stage5", ""},
 	}
@@ -116,6 +117,28 @@ func TestReviewWebhookRoute(t *testing.T) {
 	}
 	if _, _, ok := reviewWebhookRoute("unknown", "unknown"); ok {
 		t.Fatal("unknown review route should be rejected")
+	}
+}
+
+func TestN8NReturnedFailure(t *testing.T) {
+	failed, message := n8nReturnedFailure(map[string]any{
+		"success": false,
+		"status":  "failed",
+		"error": map[string]any{
+			"code":    "VOICE_NOT_SUPPORTED",
+			"message": "voice profile is missing, unapproved, or has no provider voice",
+		},
+	})
+	if !failed {
+		t.Fatal("success=false response should be treated as failed")
+	}
+	if !strings.Contains(message, "VOICE_NOT_SUPPORTED") {
+		t.Fatalf("unexpected failure message %q", message)
+	}
+
+	failed, _ = n8nReturnedFailure(map[string]any{"success": true})
+	if failed {
+		t.Fatal("success=true response should not be treated as failed")
 	}
 }
 

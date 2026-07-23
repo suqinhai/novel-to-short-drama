@@ -406,6 +406,17 @@ func (h *Handler) decideReview(c *gin.Context) {
 
 	metadata := map[string]any{}
 	_ = json.Unmarshal(review.Metadata, &metadata)
+	generationVersion := metadataInt(metadata, "generation_version", metadataInt(metadata, "version", 1))
+	reviewPayload := map[string]any{
+		"project_id": review.ProjectID, "action": "review", "review_id": review.ReviewID,
+		"review_status": input.ReviewStatus, "review_comment": input.ReviewComment,
+		"reviewer_comment": input.ReviewComment, "rejection_reason": input.RejectionReason,
+		"revision_instruction": input.RevisionInstruction, "prompt_adjustment": input.PromptAdjustment,
+		"provider_voice_id":   input.ProviderVoiceID,
+		"selected_as_primary": input.SelectedAsPrimary, "lock_after_approval": input.LockAfterApproval,
+		"entity_type": review.EntityType, "entity_id": review.EntityID, "test_mode": review.TestMode,
+		"generation_version": generationVersion,
+	}
 	payload := map[string]any{
 		"project_id": review.ProjectID, "action": "review", "review_id": review.ReviewID,
 		"review_status": input.ReviewStatus, "review_comment": input.ReviewComment,
@@ -414,17 +425,21 @@ func (h *Handler) decideReview(c *gin.Context) {
 		"provider_voice_id":   input.ProviderVoiceID,
 		"selected_as_primary": input.SelectedAsPrimary, "lock_after_approval": input.LockAfterApproval,
 		"entity_type": review.EntityType, "entity_id": review.EntityID, "test_mode": review.TestMode,
-		"generation_version": metadataInt(metadata, "generation_version", metadataInt(metadata, "version", 1)),
+		"generation_version": generationVersion,
+		"payload":            reviewPayload,
 	}
 	if requestedStage != "" {
 		payload["stage"] = requestedStage
+		reviewPayload["stage"] = requestedStage
 	}
 	if review.EpisodeID != nil && *review.EpisodeID != "" {
 		payload["episode_id"] = *review.EpisodeID
+		reviewPayload["episode_id"] = *review.EpisodeID
 	}
 	for _, key := range []string{"shot_id", "dialogue_id", "master_id", "qc_report_id", "metadata_id"} {
 		if value, exists := metadata[key]; exists {
 			payload[key] = value
+			reviewPayload[key] = value
 		}
 	}
 
@@ -439,10 +454,75 @@ func (h *Handler) decideReview(c *gin.Context) {
 		}})
 		return
 	}
+	if failed, message := n8nReturnedFailure(n8nResponse); failed {
+		if message == "" {
+			message = "n8n review workflow returned success=false"
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "N8N_REVIEW_FAILED", "message": message, "response": n8nResponse,
+		}})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"review_id": review.ReviewID, "project_id": review.ProjectID, "webhook_stage": webhookStage,
 		"n8n_response": n8nResponse,
 	}})
+}
+
+func n8nReturnedFailure(value any) (bool, string) {
+	switch item := value.(type) {
+	case map[string]any:
+		if success, exists := item["success"]; exists && !truthy(success) {
+			return true, n8nErrorMessage(item)
+		}
+		for _, key := range []string{"data", "response"} {
+			if nested, exists := item[key]; exists {
+				if failed, message := n8nReturnedFailure(nested); failed {
+					return true, message
+				}
+			}
+		}
+	case []any:
+		for _, nested := range item {
+			if failed, message := n8nReturnedFailure(nested); failed {
+				return true, message
+			}
+		}
+	}
+	return false, ""
+}
+
+func truthy(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return value != nil
+	}
+}
+
+func n8nErrorMessage(response map[string]any) string {
+	if rawError, ok := response["error"].(map[string]any); ok {
+		code, _ := rawError["code"].(string)
+		message, _ := rawError["message"].(string)
+		switch {
+		case code != "" && message != "":
+			return code + ": " + message
+		case message != "":
+			return message
+		case code != "":
+			return code
+		}
+	}
+	if message, ok := response["message"].(string); ok {
+		return strings.TrimSpace(message)
+	}
+	if status, ok := response["status"].(string); ok {
+		return "n8n review workflow returned failed status: " + status
+	}
+	return ""
 }
 
 func (h *Handler) reviewWebhook(stage, entityType string) (webhookStage, requestedStage, webhookURL string, ok bool) {
