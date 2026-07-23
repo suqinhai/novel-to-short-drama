@@ -137,7 +137,11 @@ assert(ttsAdapterWorkflow.includes('generativelanguage.googleapis.com') && ttsAd
 assert(ttsAdapterWorkflow.includes('texttospeech.googleapis.com') && ttsAdapterWorkflow.includes('/v1/text:synthesize'), '10a-tts-provider-adapter.json: Chirp 3 HD endpoint missing');
 assert(ttsAdapterWorkflow.includes('x-goog-api-key') && !ttsAdapterWorkflow.includes('?key='), '10a-tts-provider-adapter.json: Google credentials must use a header, never a URL query');
 assert(ttsAdapterWorkflow.includes("Buffer.from(compact,'base64')") && ttsAdapterWorkflow.includes('fs.writeFileSync'), '10a-tts-provider-adapter.json: Google audio must be decoded to media storage');
+assert(!ttsAdapterWorkflow.includes('"jsonBody": "={{ (()=>'), '10a-tts-provider-adapter.json: HTTP JSON body expressions must avoid parser-sensitive IIFEs');
+assert(ttsAdapterWorkflow.includes("status='failed'AND $14 IN('retry','resume','regenerate')"), '10a-tts-provider-adapter.json: failed TTS tasks must be resumable');
+assert(ttsAdapterWorkflow.includes("typeof err==='string'?err"), '10a-tts-provider-adapter.json: provider error strings must be preserved');
 assert(voiceAudioWorkflow.includes("output_data->>'status'") && voiceAudioWorkflow.includes("'voice_profiles_created'"), '10-voice-audio.json: waiting-review voice profile cache must be resumable');
+assert(voiceAudioWorkflow.includes("'audio_processing'"), '10-voice-audio.json: incomplete audio-processing cache must be resumable');
 assert(!voiceAudioWorkflow.includes("THEN NULL ELSE drama.workflow_tasks.output_data"), '10-voice-audio.json: workflow task output_data must stay non-null when resuming');
 
 const envPath = path.join(root, '.env.example');
