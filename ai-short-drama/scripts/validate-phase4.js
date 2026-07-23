@@ -122,6 +122,7 @@ for (const [file, workflow] of parsed) {
 const videoGenerationWorkflow = fs.readFileSync(path.join(workflowDir, '09-image-to-video.json'), 'utf8');
 const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-provider-adapter.json'), 'utf8');
 const ttsAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '10a-tts-provider-adapter.json'), 'utf8');
+const voiceAudioWorkflow = fs.readFileSync(path.join(workflowDir, '10-voice-audio.json'), 'utf8');
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
 assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
 assert(videoGenerationWorkflow.includes('Rate Limit Video Submissions'), '09-image-to-video.json: provider dispatch is missing quota-safe request pacing');
@@ -136,6 +137,8 @@ assert(ttsAdapterWorkflow.includes('generativelanguage.googleapis.com') && ttsAd
 assert(ttsAdapterWorkflow.includes('texttospeech.googleapis.com') && ttsAdapterWorkflow.includes('/v1/text:synthesize'), '10a-tts-provider-adapter.json: Chirp 3 HD endpoint missing');
 assert(ttsAdapterWorkflow.includes('x-goog-api-key') && !ttsAdapterWorkflow.includes('?key='), '10a-tts-provider-adapter.json: Google credentials must use a header, never a URL query');
 assert(ttsAdapterWorkflow.includes("Buffer.from(compact,'base64')") && ttsAdapterWorkflow.includes('fs.writeFileSync'), '10a-tts-provider-adapter.json: Google audio must be decoded to media storage');
+assert(voiceAudioWorkflow.includes("output_data->>'status'") && voiceAudioWorkflow.includes("'voice_profiles_created'"), '10-voice-audio.json: waiting-review voice profile cache must be resumable');
+assert(!voiceAudioWorkflow.includes("THEN NULL ELSE drama.workflow_tasks.output_data"), '10-voice-audio.json: workflow task output_data must stay non-null when resuming');
 
 const envPath = path.join(root, '.env.example');
 const envLines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
