@@ -76,16 +76,23 @@ type ChapterRevisionHistoryItem struct {
 }
 
 type NarrativeIRRevisionSummary struct {
-	IRRevisionID      string          `json:"ir_revision_id"`
-	SourceVersionID   string          `json:"source_version_id"`
-	RevisionNumber    int             `json:"revision_number"`
-	Status            string          `json:"status"`
-	RevisionScope     string          `json:"revision_scope"`
-	ExtractorVersion  string          `json:"extractor_version"`
-	ChangedChapterIDs json.RawMessage `json:"changed_chapter_ids"`
-	ValidationSummary json.RawMessage `json:"validation_summary"`
-	CreatedAt         time.Time       `json:"created_at"`
-	PublishedAt       *time.Time      `json:"published_at"`
+	IRRevisionID            string          `json:"ir_revision_id"`
+	OperationID             string          `json:"operation_id"`
+	OperationStatus         string          `json:"operation_status"`
+	CheckpointStage         string          `json:"checkpoint_stage"`
+	RetryCount              int             `json:"retry_count"`
+	OperationErrorCode      *string         `json:"operation_error_code,omitempty"`
+	OperationErrorMessage   *string         `json:"operation_error_message,omitempty"`
+	OperationErrorRetryable *bool           `json:"operation_error_retryable,omitempty"`
+	SourceVersionID         string          `json:"source_version_id"`
+	RevisionNumber          int             `json:"revision_number"`
+	Status                  string          `json:"status"`
+	RevisionScope           string          `json:"revision_scope"`
+	ExtractorVersion        string          `json:"extractor_version"`
+	ChangedChapterIDs       json.RawMessage `json:"changed_chapter_ids"`
+	ValidationSummary       json.RawMessage `json:"validation_summary"`
+	CreatedAt               time.Time       `json:"created_at"`
+	PublishedAt             *time.Time      `json:"published_at"`
 }
 
 type StoryArcSummary struct {

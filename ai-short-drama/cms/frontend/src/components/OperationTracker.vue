@@ -60,7 +60,7 @@ onBeforeUnmount(stop)
       <span>异步操作 · {{ getDisplayValueLabel(current.operation_type) }}</span>
       <strong>{{ getStatusLabel(current.status) }}</strong>
       <code>{{ current.operation_id }}</code>
-      <p v-if="current.checkpoint?.stage">{{ current.checkpoint.stage }} · {{ current.checkpoint.completed_items || 0 }} / {{ current.checkpoint.total_items || '—' }}</p>
+      <p v-if="current.checkpoint?.stage">{{ getDisplayValueLabel(current.checkpoint.stage) }} · {{ current.checkpoint.completed_items || 0 }} / {{ current.checkpoint.total_items || '—' }}</p>
       <p v-if="current.error">{{ current.error.message }}</p>
       <p v-if="error" class="operation-error">状态刷新失败：{{ error }}</p>
     </div>

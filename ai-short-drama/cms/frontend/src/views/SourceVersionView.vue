@@ -5,7 +5,11 @@ import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, FileSta
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
-import { getDisplayValueLabel } from '../services/displayLabels'
+import {
+  getIRProgressSummary,
+  getIRRevisionDisplayStatus,
+  getIRScopeSummary,
+} from '../services/irRevisionDisplay'
 
 const MAX_IR_CHAPTERS = 30
 const route = useRoute()
@@ -259,7 +263,7 @@ onMounted(initialize)
           <button class="button button-primary" :disabled="submitting || !irTestAcknowledged || !irRun.extractor_version.trim() || !irRun.chapter_ids.length || irRun.chapter_ids.length > MAX_IR_CHAPTERS"><BrainCircuit :size="16" />{{ submitting ? '提交中…' : `提取这 ${irRun.chapter_ids.length} 章` }}</button>
         </form>
         <div v-if="!irRevisions.length" class="compact-empty">当前版本还没有 Narrative IR 修订。</div>
-        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ getDisplayValueLabel(item.revision_scope) }}<template v-if="item.changed_chapter_ids?.length"> · {{ item.changed_chapter_ids.length }} 个变更章节</template></small></div><StatusBadge :status="item.status" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
+        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ getIRScopeSummary(item) }}</small><small v-if="getIRProgressSummary(item)" class="ir-operation-progress">{{ getIRProgressSummary(item) }}</small></div><StatusBadge :status="getIRRevisionDisplayStatus(item)" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
       </article>
 
       <article class="panel chapter-list-panel">

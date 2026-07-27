@@ -84,6 +84,12 @@ const workflowText = JSON.stringify(workflow);
 for (const marker of ['assert_operation_claim', 'compiler_checkpoints', 'artifact_dependencies', 'artifact_source_evidence', 'finish_operation']) {
   assert(workflowText.includes(marker), `atomic compiler persistence marker ${marker} missing`);
 }
+const emptyClaimGuard = workflow.nodes.find((node) => node.name === 'Stop When No Compiler Operation Claimed');
+assert(emptyClaimGuard?.parameters?.jsCode?.includes('return []'), 'empty compiler polls must stop before compilation');
+assert(
+  workflow.connections['Claim and Load Frozen Compiler Inputs']?.main?.[0]?.some((edge) => edge.node === 'Stop When No Compiler Operation Claimed'),
+  'claim output must pass through the empty-operation guard',
+);
 const generated = execFileSync(process.execPath, [path.join(__dirname, 'build-adaptation-compiler-workflow.js')], {encoding: 'utf8'});
 assert(generated === fs.readFileSync(workflowPath, 'utf8'), 'generated workflow drifted from compiler source/builder');
 

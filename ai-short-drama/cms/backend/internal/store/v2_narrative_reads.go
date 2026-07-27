@@ -38,9 +38,13 @@ func (s *Store) ListChapterRevisions(ctx context.Context, chapterID string) ([]C
 }
 
 func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID string) ([]NarrativeIRRevisionSummary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT ir_revision_id,source_version_id,revision_number,status,revision_scope,extractor_version,
-		changed_chapter_ids,validation_summary,created_at,published_at FROM drama.narrative_ir_revisions
-		WHERE source_version_id=$1 ORDER BY revision_number DESC,created_at DESC`, sourceVersionID)
+	rows, err := s.pool.Query(ctx, `SELECT ir.ir_revision_id,operation.operation_id,operation.status,
+		operation.checkpoint_stage,operation.retry_count,operation.error_code,operation.error_message,operation.error_retryable,
+		ir.source_version_id,ir.revision_number,ir.status,ir.revision_scope,ir.extractor_version,
+		ir.changed_chapter_ids,ir.validation_summary,ir.created_at,ir.published_at
+		FROM drama.narrative_ir_revisions ir
+		JOIN drama.operations operation ON operation.operation_id=ir.operation_id
+		WHERE ir.source_version_id=$1 ORDER BY ir.revision_number DESC,ir.created_at DESC`, sourceVersionID)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +52,9 @@ func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID st
 	items := make([]NarrativeIRRevisionSummary, 0)
 	for rows.Next() {
 		var item NarrativeIRRevisionSummary
-		if err := rows.Scan(&item.IRRevisionID, &item.SourceVersionID, &item.RevisionNumber,
+		if err := rows.Scan(&item.IRRevisionID, &item.OperationID, &item.OperationStatus,
+			&item.CheckpointStage, &item.RetryCount, &item.OperationErrorCode, &item.OperationErrorMessage, &item.OperationErrorRetryable,
+			&item.SourceVersionID, &item.RevisionNumber,
 			&item.Status, &item.RevisionScope, &item.ExtractorVersion, &item.ChangedChapterIDs, &item.ValidationSummary, &item.CreatedAt, &item.PublishedAt); err != nil {
 			return nil, err
 		}

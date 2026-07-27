@@ -69,6 +69,12 @@ export const statusTones = {
 }
 
 const valueLabels = {
+  queued: '已排队',
+  retry_queued: '等待重试',
+  calling_model: '正在调用模型',
+  window_validated: '章节窗口已校验',
+  ready_for_reconcile: '等待合并发布',
+  finished: '已结束',
   run: '执行',
   resume: '继续流程',
   retry: '重试',

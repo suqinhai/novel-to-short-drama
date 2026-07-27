@@ -213,10 +213,14 @@ for (const workflowPath of workflowPaths) {
 
 const extract = readJson(workflowPaths[0]);
 if (extract) {
-  for (const name of ['Claim IR Operation', 'Load One Bounded Chapter Window', 'Call Narrative Extraction Model', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Checkpoint Validated Window']) requireNode(extract, name);
+  for (const name of ['Claim IR Operation', 'Load One Bounded Chapter Window', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Checkpoint Validated Window', 'Sanitize IR Extraction Failure', 'Atomically Quarantine Failed IR Run']) requireNode(extract, name);
   if (!connected(extract, 'Parse Model JSON', 'JSON Schema Validate') || !connected(extract, 'JSON Schema Validate', 'Business Validate Provenance and References')) fail('02a: JSON Schema validation must precede business validation');
+  for (const source of ['Verify Claimed Operation', 'Load One Bounded Chapter Window', 'Build Codepoint-bounded Slice', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'Parse Model JSON', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Checkpoint Validated Window', 'Checkpoint Ready Without More Windows', 'Execute 02b Narrative IR Reconcile']) {
+    if (!connected(extract, source, 'Sanitize IR Extraction Failure')) fail(`02a: ${source} error output must finalize the operation`);
+  }
   const text = JSON.stringify(extract);
-  for (const marker of ['IR_WINDOW_MAX_CODEPOINTS', 'narrative-extraction.v1', 'json_schema', 'claim_operation', 'checkpoint_operation', "checkpoint_data->'chapter_ids'", 'last_selected_ordinal', 'chapter_total_codepoints', 'selected_chapter_ids']) if (!text.includes(marker)) fail(`02a: missing ${marker}`);
+  if (!text.includes("typeof err==='string'")) fail('02a failure sanitizer must preserve string-form n8n errors');
+  for (const marker of ['IR_WINDOW_MAX_CODEPOINTS', 'MODEL_TIMEOUT_MS', 'narrative-extraction.v1', 'json_schema', 'claim_operation', 'checkpoint_operation', 'finish_operation', "checkpoint_data->'chapter_ids'", 'last_selected_ordinal', 'chapter_total_codepoints', 'selected_chapter_ids', 'calling_model']) if (!text.includes(marker)) fail(`02a: missing ${marker}`);
   if (!/LIMIT 1/i.test(text)) fail('02a: chapter selection must be bounded to one chapter');
 }
 
