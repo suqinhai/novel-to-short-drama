@@ -65,6 +65,18 @@ type ChapterRevision struct {
 	CharCount         int    `json:"char_count"`
 }
 
+type VersionChapterContent struct {
+	ChapterID         string `json:"chapter_id"`
+	ChapterRevisionID string `json:"chapter_revision_id"`
+	SourceVersionID   string `json:"source_version_id"`
+	Ordinal           int    `json:"ordinal"`
+	RevisionNumber    int    `json:"revision_number"`
+	Title             string `json:"title"`
+	Content           string `json:"content"`
+	ContentHash       string `json:"content_hash"`
+	CharCount         int    `json:"char_count"`
+}
+
 type ChapterRevisionHistoryItem struct {
 	ChapterID         string    `json:"chapter_id"`
 	ChapterRevisionID string    `json:"chapter_revision_id"`

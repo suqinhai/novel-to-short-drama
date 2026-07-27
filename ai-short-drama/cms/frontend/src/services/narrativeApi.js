@@ -107,6 +107,9 @@ export const narrativeApi = {
   listChapters(sourceVersionId) {
     return request(`/source-versions/${id(sourceVersionId)}/chapters`)
   },
+  getVersionChapter(sourceVersionId, chapterId) {
+    return request(`/source-versions/${id(sourceVersionId)}/chapters/${id(chapterId)}`)
+  },
   listChapterRevisions(chapterId) {
     return request(`/source-chapters/${id(chapterId)}/revisions`)
   },

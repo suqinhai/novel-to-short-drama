@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, FileStack, FlaskConical, History, PencilLine, RefreshCw, Send, Upload } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, Eye, FileStack, FlaskConical, History, PencilLine, RefreshCw, Send, Upload, X } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
@@ -27,6 +27,7 @@ const operation = ref(null)
 const historyChapterId = ref('')
 const historyLoading = ref(false)
 const historyError = ref('')
+const chapterReader = reactive({ open: false, loading: false, error: '', chapter: null })
 const irTestAcknowledged = ref(false)
 const irRun = reactive({ extractor_version: 'cms-manual-test-v1', chapter_ids: [] })
 const commandKeys = new Map()
@@ -172,6 +173,27 @@ async function showChapterHistory(chapterId) {
   }
 }
 
+async function showChapterContent(chapter) {
+  chapterReader.open = true
+  chapterReader.loading = true
+  chapterReader.error = ''
+  chapterReader.chapter = { ...chapter, content: '' }
+  try {
+    chapterReader.chapter = (await narrativeApi.getVersionChapter(route.params.versionId, chapter.chapter_id)).data
+  } catch (err) {
+    chapterReader.error = err.message
+  } finally {
+    chapterReader.loading = false
+  }
+}
+
+function closeChapterReader() {
+  chapterReader.open = false
+  chapterReader.loading = false
+  chapterReader.error = ''
+  chapterReader.chapter = null
+}
+
 async function operationFinished() {
   await load()
   if (historyChapterId.value) await showChapterHistory(historyChapterId.value)
@@ -269,7 +291,7 @@ onMounted(initialize)
       <article class="panel chapter-list-panel">
         <div class="production-data-head"><div><span>ORDERED SNAPSHOT</span><h3>版本章节</h3></div><p>{{ chapters.length }} 章</p></div>
         <div v-if="!chapters.length" class="compact-empty">当前版本尚无章节。</div>
-        <div v-else class="table-wrap"><table><thead><tr><th>序号</th><th>标题</th><th>修订</th><th>字符数</th><th>内容哈希</th><th>Chapter ID</th><th></th></tr></thead><tbody><tr v-for="chapter in chapters" :key="chapter.chapter_revision_id"><td><b>{{ chapter.ordinal }}</b></td><td>{{ chapter.title }}</td><td>r{{ chapter.revision_number }}</td><td>{{ Number(chapter.char_count).toLocaleString('zh-CN') }}</td><td><code class="hash-code">{{ chapter.content_hash }}</code></td><td><code>{{ chapter.chapter_id }}</code></td><td><button class="row-action" aria-label="查看修订历史" @click="showChapterHistory(chapter.chapter_id)"><History :size="16" /></button></td></tr></tbody></table></div>
+        <div v-else class="table-wrap"><table><thead><tr><th>序号</th><th>标题</th><th>修订</th><th>字符数</th><th>内容哈希</th><th>Chapter ID</th><th>操作</th></tr></thead><tbody><tr v-for="chapter in chapters" :key="chapter.chapter_revision_id"><td><b>{{ chapter.ordinal }}</b></td><td><button class="chapter-title-button" @click="showChapterContent(chapter)">{{ chapter.title }}</button></td><td>r{{ chapter.revision_number }}</td><td>{{ Number(chapter.char_count).toLocaleString('zh-CN') }}</td><td><code class="hash-code">{{ chapter.content_hash }}</code></td><td><code>{{ chapter.chapter_id }}</code></td><td><div class="chapter-row-actions"><button class="row-action" aria-label="查看正文" title="查看正文" @click="showChapterContent(chapter)"><Eye :size="16" /></button><button class="row-action" aria-label="查看修订历史" title="查看修订历史" @click="showChapterHistory(chapter.chapter_id)"><History :size="16" /></button></div></td></tr></tbody></table></div>
       </article>
 
       <article v-if="historyChapterId" class="panel chapter-history-panel">
@@ -279,5 +301,22 @@ onMounted(initialize)
         <div v-else class="revision-history-list"><article v-for="item in chapterRevisions" :key="item.chapter_revision_id"><b>r{{ item.revision_number }}</b><div><strong>{{ item.title }}</strong><code>{{ item.chapter_revision_id }}</code></div><span>{{ Number(item.char_count).toLocaleString('zh-CN') }} 字符</span><code class="hash-code">{{ item.content_hash }}</code><time>{{ new Date(item.created_at).toLocaleString('zh-CN') }}</time></article></div>
       </article>
     </template>
+
+    <div v-if="chapterReader.open" class="review-drawer-backdrop" @click.self="closeChapterReader">
+      <aside class="review-drawer chapter-reader" role="dialog" aria-modal="true" aria-label="章节正文">
+        <header class="review-drawer-head">
+          <div><span>VERSION SNAPSHOT · 第 {{ chapterReader.chapter?.ordinal }} 章 · r{{ chapterReader.chapter?.revision_number }}</span><h2>{{ chapterReader.chapter?.title || '章节正文' }}</h2><p>{{ chapterReader.chapter?.chapter_revision_id }}</p></div>
+          <button aria-label="关闭正文" @click="closeChapterReader"><X :size="18" /></button>
+        </header>
+        <div class="review-drawer-body chapter-reader-body">
+          <div v-if="chapterReader.loading" class="review-content-loading"><span>正在读取该版本快照中的正文……</span></div>
+          <div v-else-if="chapterReader.error" class="review-content-error"><AlertTriangle :size="24" /><strong>正文读取失败</strong><span>{{ chapterReader.error }}</span><button class="button button-secondary" @click="showChapterContent(chapterReader.chapter)">重试</button></div>
+          <article v-else class="chapter-reader-content">
+            <div class="chapter-reader-meta"><span>{{ Number(chapterReader.chapter?.char_count || 0).toLocaleString('zh-CN') }} 字符</span><code>{{ chapterReader.chapter?.content_hash }}</code></div>
+            <pre>{{ chapterReader.chapter?.content }}</pre>
+          </article>
+        </div>
+      </aside>
+    </div>
   </section>
 </template>

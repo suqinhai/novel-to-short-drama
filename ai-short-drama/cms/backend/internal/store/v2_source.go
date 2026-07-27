@@ -242,6 +242,24 @@ func (s *Store) ListVersionChapters(ctx context.Context, versionID string) ([]Ch
 	return items, rows.Err()
 }
 
+func (s *Store) GetVersionChapterContent(ctx context.Context, versionID, chapterID string) (VersionChapterContent, error) {
+	var item VersionChapterContent
+	err := s.pool.QueryRow(ctx, `SELECT svc.chapter_id,svc.chapter_revision_id,svc.source_version_id,svc.ordinal,
+			cr.revision_number,cr.title,cr.content,cr.content_hash,cr.char_count
+		FROM drama.source_version_chapters svc
+		JOIN drama.chapter_revisions cr ON cr.chapter_revision_id=svc.chapter_revision_id
+		WHERE svc.source_version_id=$1 AND svc.chapter_id=$2`, versionID, chapterID).
+		Scan(&item.ChapterID, &item.ChapterRevisionID, &item.SourceVersionID, &item.Ordinal,
+			&item.RevisionNumber, &item.Title, &item.Content, &item.ContentHash, &item.CharCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VersionChapterContent{}, ErrNotFound
+	}
+	if err != nil {
+		return VersionChapterContent{}, err
+	}
+	return item, nil
+}
+
 func (s *Store) ApplyImport(ctx context.Context, versionID string, expectedRevision int, key string, input ImportInput) (Operation, int, error) {
 	inputHash, err := hashJSON(input)
 	if err != nil {

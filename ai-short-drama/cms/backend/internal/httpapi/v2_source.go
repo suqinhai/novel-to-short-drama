@@ -24,6 +24,7 @@ type sourceV2Service interface {
 	CreateSourceVersion(context.Context, string, string, store.CreateSourceVersionInput) (store.SourceVersion, bool, error)
 	GetSourceVersion(context.Context, string) (store.SourceVersion, error)
 	ListVersionChapters(context.Context, string) ([]store.ChapterRevision, error)
+	GetVersionChapterContent(context.Context, string, string) (store.VersionChapterContent, error)
 	ListChapterRevisions(context.Context, string) ([]store.ChapterRevisionHistoryItem, error)
 	ListNarrativeIRRevisions(context.Context, string) ([]store.NarrativeIRRevisionSummary, error)
 	ListStoryArcs(context.Context, string) ([]store.StoryArcSummary, error)
@@ -80,6 +81,10 @@ func (h *sourceV2Handler) dispatchSourceVersionGet(c *gin.Context) {
 	case len(parts) == 2 && parts[1] == "chapters":
 		setParam(c, "versionID", parts[0])
 		h.listChapters(c)
+	case len(parts) == 3 && parts[1] == "chapters":
+		setParam(c, "versionID", parts[0])
+		setParam(c, "chapterID", parts[2])
+		h.getVersionChapterContent(c)
 	case len(parts) == 2 && parts[1] == "ir-revisions":
 		setParam(c, "versionID", parts[0])
 		h.listNarrativeIRRevisions(c)
@@ -264,6 +269,19 @@ func (h *sourceV2Handler) listChapters(c *gin.Context) {
 		return
 	}
 	v2Response(c, http.StatusOK, traceID(c), items, nil)
+}
+
+func (h *sourceV2Handler) getVersionChapterContent(c *gin.Context) {
+	if !publicIDPattern.MatchString(c.Param("versionID")) || !publicIDPattern.MatchString(c.Param("chapterID")) {
+		v2InputError(c, "INVALID_CHAPTER", "source_version_id or chapter_id is invalid")
+		return
+	}
+	item, err := h.service.GetVersionChapterContent(c.Request.Context(), c.Param("versionID"), c.Param("chapterID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), item, nil)
 }
 
 func (h *sourceV2Handler) listChapterRevisions(c *gin.Context) {

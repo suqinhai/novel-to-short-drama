@@ -20,6 +20,7 @@ type fakeSourceV2 struct {
 	adaptationSpecCalls int
 	lastImport          store.ImportInput
 	lastAdaptationSpec  store.AdaptationSpecInput
+	versionChapter      store.VersionChapterContent
 }
 
 func (f *fakeSourceV2) ListSourceWorks(context.Context, string, int, int) (store.SourceWorkList, error) {
@@ -42,6 +43,9 @@ func (f *fakeSourceV2) GetSourceVersion(context.Context, string) (store.SourceVe
 }
 func (f *fakeSourceV2) ListVersionChapters(context.Context, string) ([]store.ChapterRevision, error) {
 	return nil, nil
+}
+func (f *fakeSourceV2) GetVersionChapterContent(context.Context, string, string) (store.VersionChapterContent, error) {
+	return f.versionChapter, nil
 }
 func (f *fakeSourceV2) ListChapterRevisions(context.Context, string) ([]store.ChapterRevisionHistoryItem, error) {
 	return []store.ChapterRevisionHistoryItem{}, nil
@@ -218,6 +222,24 @@ func TestIRRunReturnsPendingIRRevisionTarget(t *testing.T) {
 	}
 	if body.Data.Status != "pending" || body.Data.TargetType != "ir_revision" || body.Data.TargetID != "ir_test" {
 		t.Fatalf("IR run must target a staging IR revision: %#v", body.Data)
+	}
+}
+
+func TestGetVersionChapterContentReturnsSnapshottedRevision(t *testing.T) {
+	fake := &fakeSourceV2{versionChapter: store.VersionChapterContent{
+		SourceVersionID: "sv_test", ChapterID: "ch_test", ChapterRevisionID: "chr_test",
+		Ordinal: 2, RevisionNumber: 3, Title: "第二章", Content: "这是版本快照中的正文。",
+		ContentHash: "abc123", CharCount: 12,
+	}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/source-versions/sv_test/chapters/ch_test", nil)
+	newSourceV2TestRouter(fake).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"chapter_revision_id":"chr_test"`)) ||
+		!bytes.Contains(recorder.Body.Bytes(), []byte(`"content":"这是版本快照中的正文。"`)) {
+		t.Fatalf("response does not contain snapshotted chapter content: %s", recorder.Body.String())
 	}
 }
 
