@@ -5,14 +5,27 @@ const path = require('node:path');
 const workflowPath = path.resolve(__dirname, '..', 'workflows', '01-novel-import-clean.json');
 const workflow = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
 const cleanNode = workflow.nodes.find((node) => node.id === '01-clean');
+const persistNode = workflow.nodes.find((node) => node.id === '01-persist');
 
 assert(cleanNode, '01-clean node is missing');
+assert(persistNode, '01-persist node is missing');
 const code = cleanNode.parameters?.jsCode || '';
 assert(!code.includes('/[锟斤拷�]{2,}/'), 'ambiguous encoding detector must not be restored');
 assert(code.includes('/(?:锟斤拷|�{2,})/'), 'exact mojibake detector is missing');
 assert.equal(cleanNode.onError, 'continueErrorOutput', 'cleaning errors must use the failure output');
 const cleanOutputs = workflow.connections?.['Clean Detect and Split Chapters']?.main || [];
 assert.equal(cleanOutputs[1]?.[0]?.node, 'Failure Response', 'cleaning errors must update the workflow task as failed');
+
+const persistQuery = persistNode.parameters?.query || '';
+assert(
+  persistQuery.includes('n.novel_id') && persistQuery.includes('CROSS JOIN n'),
+  'chapter writes must depend on the novel insert CTE',
+);
+assert(
+  persistQuery.includes('RETURNING chapter_id')
+    && persistQuery.includes('FROM (SELECT count(*) AS written_chapters FROM c) AS imported'),
+  'task completion must depend on all chapter writes',
+);
 
 const detector = /(?:锟斤拷|�{2,})/;
 assert.equal(detector.test('他不会因为小事斤斤计较。'), false, 'normal Chinese text was misclassified');
