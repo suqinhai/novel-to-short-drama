@@ -28,6 +28,7 @@ services:
       - ./database/09-phase5-contract-corrections.sql:/opt/drama/09-phase5-contract-corrections.sql:ro
       - ./database/09-verify-phase5-contract-corrections.sql:/opt/drama/09-verify-phase5-contract-corrections.sql:ro
       - ./database/09-rollback-phase5-contract-corrections.sql:/opt/drama/09-rollback-phase5-contract-corrections.sql:ro
+      - ./database/11-pgcrypto-runtime-prerequisite.sql:/opt/drama/11-pgcrypto-runtime-prerequisite.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
