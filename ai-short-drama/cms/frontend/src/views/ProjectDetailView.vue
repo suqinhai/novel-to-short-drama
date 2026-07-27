@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle, SlidersHorizontal, GitCompareArrows } from 'lucide-vue-next'
 import { api } from '../services/api'
-import { getPipelineStageIndex, pipelineStages } from '../services/pipelineStage'
+import { getPipelineProgress, getPipelineStageIndex, getPipelineStageLabel, pipelineStages } from '../services/pipelineStage'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
 
@@ -21,6 +21,10 @@ const stages = pipelineStages
 const currentIndex = computed(() => {
   if (!project.value) return -1
   return getPipelineStageIndex(project.value.current_stage, project.value.status)
+})
+const productionProgress = computed(() => {
+  if (!project.value) return getPipelineProgress('', '')
+  return getPipelineProgress(project.value.current_stage, project.value.status)
 })
 
 const formatShortDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
@@ -137,7 +141,11 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
       <div class="detail-grid">
         <div class="main-column">
           <article class="panel padded">
-            <div class="section-title"><div><span>PRODUCTION PIPELINE</span><h3>生产流程</h3></div><strong>{{ project.current_stage.replaceAll('_', ' ') }}</strong></div>
+            <div class="section-title pipeline-title"><div><span>PRODUCTION PIPELINE</span><h3>生产流程</h3></div><div class="pipeline-current"><span>当前：{{ getPipelineStageLabel(project.current_stage, project.status) }}</span><strong>{{ productionProgress.percentage }}%</strong></div></div>
+            <div class="pipeline-progress-summary">
+              <div><span>总体生产进度</span><strong>已完成 {{ productionProgress.completedStages }} / {{ productionProgress.totalStages }} 个阶段</strong></div>
+              <div class="pipeline-progress-track" role="progressbar" aria-label="总体生产进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="productionProgress.percentage"><i :style="{ width: `${productionProgress.percentage}%` }"></i></div>
+            </div>
             <div class="pipeline">
               <div v-for="(stage, index) in stages" :key="stage[0]" class="pipeline-step" :class="{ done: index < currentIndex, current: index === currentIndex }">
                 <i>{{ index < currentIndex ? '✓' : index + 1 }}</i><span>{{ stage[1] }}</span>

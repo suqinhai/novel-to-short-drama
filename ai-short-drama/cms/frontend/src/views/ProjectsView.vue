@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle, Plus, Trash2, ArchiveRestore, X, LoaderCircle } from 'lucide-vue-next'
 import { api } from '../services/api'
+import { getPipelineProgress, getPipelineStageLabel } from '../services/pipelineStage'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -18,12 +19,20 @@ const archiving = ref(false)
 const restoringId = ref('')
 const notice = ref('')
 
-const summary = computed(() => ({
-  all: total.value,
-  active: projects.value.filter((item) => ['running', 'pending'].includes(item.status)).length,
-  review: projects.value.reduce((sum, item) => sum + item.pending_reviews, 0),
-  failed: projects.value.filter((item) => item.status === 'failed' || item.failed_tasks > 0).length,
-}))
+const summary = computed(() => {
+  const activeProjects = projects.value.filter((item) => ['running', 'pending'].includes(item.status))
+  const activeProgress = activeProjects.length
+    ? Math.round(activeProjects.reduce((sum, item) => sum + getPipelineProgress(item.current_stage, item.status).percentage, 0) / activeProjects.length)
+    : 0
+
+  return {
+    all: total.value,
+    active: activeProjects.length,
+    activeProgress,
+    review: projects.value.reduce((sum, item) => sum + item.pending_reviews, 0),
+    failed: projects.value.filter((item) => item.status === 'failed' || item.failed_tasks > 0).length,
+  }
+})
 
 async function loadProjects() {
   loading.value = true
@@ -43,7 +52,7 @@ watch([search, status], useDebounceFn(loadProjects, 260))
 onMounted(loadProjects)
 
 const formatTime = (value) => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
-const progress = (item) => Math.min(100, Math.round((item.generated_episode_count / Math.max(item.target_episode_count, 1)) * 100))
+const productionProgress = (item) => getPipelineProgress(item.current_stage, item.status)
 
 function openArchive(item) {
   archiveTarget.value = item
@@ -95,7 +104,7 @@ async function restoreProject(item) {
 
     <div class="metric-grid">
       <article class="metric-card"><div class="metric-icon blue"><Layers3 :size="20" /></div><div><span>全部项目</span><strong>{{ summary.all }}</strong><small>数据库累计项目</small></div></article>
-      <article class="metric-card"><div class="metric-icon violet"><Clock3 :size="20" /></div><div><span>生产进行中</span><strong>{{ summary.active }}</strong><small>等待或正在执行</small></div></article>
+      <article class="metric-card"><div class="metric-icon violet"><Clock3 :size="20" /></div><div><span>生产进行中</span><strong>{{ summary.active }}</strong><small>{{ summary.active ? `当前列表平均完成 ${summary.activeProgress}%` : '当前没有进行中项目' }}</small></div></article>
       <article class="metric-card"><div class="metric-icon green"><CircleCheckBig :size="20" /></div><div><span>待人工审核</span><strong>{{ summary.review }}</strong><small>当前审核任务</small></div></article>
       <article class="metric-card"><div class="metric-icon amber"><AlertTriangle :size="20" /></div><div><span>需要关注</span><strong>{{ summary.failed }}</strong><small>项目或任务异常</small></div></article>
     </div>
@@ -113,13 +122,17 @@ async function restoreProject(item) {
       <EmptyState v-else-if="projects.length === 0" title="没有匹配的项目" description="请调整搜索条件，或通过现有 n8n 项目入口创建项目。" />
       <div v-else class="table-wrap">
         <table>
-          <thead><tr><th>项目 / Project ID</th><th>状态</th><th>当前阶段</th><th>集数进度</th><th>错误信息</th><th>更新时间</th><th></th></tr></thead>
+          <thead><tr><th>项目 / Project ID</th><th>状态</th><th>当前阶段</th><th>生产进度</th><th>错误信息</th><th>更新时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="item in projects" :key="item.project_id">
               <td><div class="project-cell"><div class="project-cover">{{ item.novel_name.slice(0, 1) }}</div><div><strong>{{ item.novel_name }}</strong><span>{{ item.project_id }}</span></div></div></td>
               <td><StatusBadge :status="item.status" /></td>
-              <td><span class="stage-text">{{ item.current_stage.replaceAll('_', ' ') }}</span><small v-if="item.pending_reviews">{{ item.pending_reviews }} 项待审核</small></td>
-              <td><div class="progress-label"><span>{{ item.generated_episode_count }} / {{ item.target_episode_count }} 集</span><b>{{ progress(item) }}%</b></div><div class="progress-track"><i :style="{ width: `${progress(item)}%` }"></i></div></td>
+              <td><span class="stage-text">{{ getPipelineStageLabel(item.current_stage, item.status) }}</span><small v-if="item.pending_reviews">{{ item.pending_reviews }} 项待审核</small></td>
+              <td>
+                <div class="progress-label"><span>已完成 {{ productionProgress(item).completedStages }} / {{ productionProgress(item).totalStages }} 阶段</span><b>{{ productionProgress(item).percentage }}%</b></div>
+                <div class="progress-track" role="progressbar" aria-label="生产进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="productionProgress(item).percentage"><i :style="{ width: `${productionProgress(item).percentage}%` }"></i></div>
+                <small class="progress-meta">已生成 {{ item.generated_episode_count }} / {{ item.target_episode_count }} 集</small>
+              </td>
               <td><span v-if="item.error_message" class="error-message-cell" :title="item.error_message">{{ item.error_message }}</span><span v-else class="no-error">—</span></td>
               <td><span class="date-text">{{ formatTime(item.updated_at) }}</span></td>
               <td><div class="project-row-actions"><button v-if="item.status === 'cancelled'" class="row-action restore-action" :disabled="restoringId === item.project_id" aria-label="恢复项目" title="从回收站恢复" @click="restoreProject(item)"><LoaderCircle v-if="restoringId === item.project_id" :size="16" class="spin" /><ArchiveRestore v-else :size="16" /></button><button v-else-if="item.can_archive" class="row-action delete-action" aria-label="删除项目" title="移入回收站" @click="openArchive(item)"><Trash2 :size="16" /></button><RouterLink class="row-action" :to="`/projects/${item.project_id}`" aria-label="查看详情"><ArrowUpRight :size="17" /></RouterLink></div></td>
