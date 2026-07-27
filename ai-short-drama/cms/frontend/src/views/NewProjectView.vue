@@ -2,7 +2,7 @@
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, BookOpenText, Clapperboard, Sparkles, Send, ShieldCheck, LoaderCircle } from 'lucide-vue-next'
-import { api } from '../services/api'
+import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
 
 const router = useRouter()
 const submitting = ref(false)
@@ -26,18 +26,36 @@ async function submit() {
   submitting.value = true
   error.value = ''
   try {
-    const result = await api.createProject({
-      ...form,
-      novel_text: form.novel_text.trim(),
-      novel_name: form.novel_name.trim(),
-      visual_style: form.visual_style.trim(),
+    const productionIntent = {
+      production_mode: 'rolling_episode',
       target_episode_count: Number(form.target_episode_count),
       episode_duration_seconds: Number(form.episode_duration_seconds),
+      visual_style: form.visual_style.trim(),
+      aspect_ratio: form.aspect_ratio,
+      target_platform: form.target_platform,
+      test_mode: Boolean(form.test_mode),
+    }
+    const workResponse = await narrativeApi.createWork({
+      title: form.novel_name.trim(),
+      author: null,
+      metadata: productionIntent,
+    }, createIdempotencyKey('rolling-source-work'))
+    const versionResponse = await narrativeApi.createVersion(workResponse.data.work_id, {
+      parent_source_version_id: null,
+      normalization_version: 'unicode-nfc-v1',
+      metadata: productionIntent,
+    }, createIdempotencyKey('rolling-source-version'))
+    const versionId = versionResponse.data.source_version_id
+    await narrativeApi.getVersion(versionId)
+    const importResponse = await narrativeApi.startImport(versionId, {
+      mode: 'whole_book',
+      text: form.novel_text.trim(),
+    }, createIdempotencyKey('rolling-whole-book'))
+    await router.push({
+      name: 'source-version-detail',
+      params: { versionId },
+      query: { operation_id: importResponse.data.operation_id, rolling: '1' },
     })
-    try {
-      sessionStorage.setItem(`cms:create-result:${result.project_id}`, JSON.stringify(result.n8n_response))
-    } catch { /* 浏览器禁用 sessionStorage 时仍可正常跳转 */ }
-    await router.push({ name: 'project-detail', params: { projectId: result.project_id }, query: { created: '1' } })
   } catch (err) {
     error.value = err.message
   } finally {
@@ -49,7 +67,7 @@ async function submit() {
 <template>
   <section class="view-stack new-project-view">
     <RouterLink to="/projects" class="back-link"><ArrowLeft :size="16" />返回项目列表</RouterLink>
-    <div class="hero-row"><div><h2>创建短剧项目</h2><p>粘贴小说正文并配置生产规格，提交后由 n8n 启动现有工作流。</p></div></div>
+    <div class="hero-row"><div><h2>导入小说，准备滚动生产</h2><p>整本小说只负责存档和拆章，不再自动启动 120 章分析或整季视频生成。</p></div></div>
 
     <form class="create-layout" @submit.prevent="submit">
       <div class="create-main">
@@ -75,13 +93,13 @@ async function submit() {
           <label class="switch-field"><div><span>测试模式</span><small>使用当前工作流的测试范围与 Mock 配置</small></div><input v-model="form.test_mode" type="checkbox" /><i></i></label>
         </article>
 
-        <div class="webhook-notice"><ShieldCheck :size="19" /><div><strong>通过 n8n 创建</strong><span>CMS 不直接写入 PostgreSQL</span></div></div>
+        <div class="webhook-notice"><ShieldCheck :size="19" /><div><strong>安全导入模式</strong><span>导入后先选择 5–30 章故事弧，再逐集生产</span></div></div>
         <div v-if="error" class="error-banner large create-error">{{ error }}</div>
         <button class="button button-primary submit-project" type="submit" :disabled="!canSubmit">
           <LoaderCircle v-if="submitting" :size="17" class="spin" /><Send v-else :size="17" />
-          {{ submitting ? '正在创建项目…' : '提交并创建项目' }}
+          {{ submitting ? '正在导入并拆章…' : '仅导入小说并拆章' }}
         </button>
-        <p class="submit-hint"><Sparkles :size="13" />项目创建后立即跳转，n8n 会在后台继续执行生产流程。</p>
+        <p class="submit-hint"><Sparkles :size="13" />此操作不会调用文本分析模型，也不会生成图片或视频。</p>
       </aside>
     </form>
   </section>

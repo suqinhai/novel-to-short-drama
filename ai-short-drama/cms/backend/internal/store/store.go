@@ -39,6 +39,8 @@ type Project struct {
 	NovelName              string          `json:"novel_name"`
 	TargetEpisodeCount     int             `json:"target_episode_count"`
 	GeneratedEpisodeCount  int             `json:"generated_episode_count"`
+	ChunkCount             int             `json:"chunk_count"`
+	CompletedChunkCount    int             `json:"completed_chunk_count"`
 	EpisodeDurationSeconds int             `json:"episode_duration_seconds"`
 	VisualStyle            string          `json:"visual_style"`
 	AspectRatio            string          `json:"aspect_ratio"`
@@ -59,6 +61,7 @@ type Project struct {
 type ProjectCounts struct {
 	Chapters        int `json:"chapters"`
 	Chunks          int `json:"chunks"`
+	CompletedChunks int `json:"completed_chunks"`
 	Episodes        int `json:"episodes"`
 	Scenes          int `json:"scenes"`
 	Shots           int `json:"shots"`
@@ -70,14 +73,15 @@ type ProjectCounts struct {
 
 type ProjectDetail struct {
 	Project
-	Counts        ProjectCounts   `json:"counts"`
-	WorkflowTasks []WorkflowTask  `json:"workflow_tasks"`
-	ReviewTasks   []ReviewTask    `json:"review_tasks"`
-	Novels        []Novel         `json:"novels"`
-	StoryBibles   []StoryBible    `json:"story_bibles"`
-	Episodes      []Episode       `json:"episodes"`
-	Scripts       []EpisodeScript `json:"scripts"`
-	Storyboards   []Storyboard    `json:"storyboards"`
+	Counts            ProjectCounts     `json:"counts"`
+	WorkflowTasks     []WorkflowTask    `json:"workflow_tasks"`
+	ReviewTasks       []ReviewTask      `json:"review_tasks"`
+	Novels            []Novel           `json:"novels"`
+	StoryBibles       []StoryBible      `json:"story_bibles"`
+	Episodes          []Episode         `json:"episodes"`
+	Scripts           []EpisodeScript   `json:"scripts"`
+	Storyboards       []Storyboard      `json:"storyboards"`
+	RollingProduction RollingProduction `json:"rolling_production"`
 }
 
 type WorkflowTask struct {
@@ -282,6 +286,8 @@ type FlowActionContext struct {
 	CurrentStage           string             `json:"current_stage"`
 	Status                 string             `json:"status"`
 	TestMode               bool               `json:"test_mode"`
+	ActiveTasks            int                `json:"active_tasks"`
+	PendingReviews         int                `json:"pending_reviews"`
 	EpisodeID              *string            `json:"episode_id,omitempty"`
 	OriginalInput          json.RawMessage    `json:"original_input"`
 	Task                   *FailedTaskContext `json:"task,omitempty"`
@@ -556,6 +562,8 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
 	rows, err := s.pool.Query(ctx, `
         SELECT p.project_id, p.novel_name, p.target_episode_count,
 		  (SELECT COUNT(DISTINCT e.episode_id) FROM drama.episode_outlines e WHERE e.project_id = p.project_id),
+		  (SELECT COUNT(*) FROM drama.novel_chunks c WHERE c.project_id = p.project_id),
+		  (SELECT COUNT(*) FROM drama.novel_chunks c WHERE c.project_id = p.project_id AND c.analysis_status = 'completed'),
           p.episode_duration_seconds, p.visual_style, p.aspect_ratio, p.target_platform,
           p.current_stage, p.status, p.test_mode,
           (SELECT COUNT(*) FROM drama.review_tasks r WHERE r.project_id = p.project_id AND r.review_status = 'pending'),
@@ -574,7 +582,8 @@ func (s *Store) ListProjects(ctx context.Context, query, status string, page, li
 	for rows.Next() {
 		var project Project
 		if err := rows.Scan(&project.ProjectID, &project.NovelName, &project.TargetEpisodeCount,
-			&project.GeneratedEpisodeCount, &project.EpisodeDurationSeconds, &project.VisualStyle,
+			&project.GeneratedEpisodeCount, &project.ChunkCount, &project.CompletedChunkCount,
+			&project.EpisodeDurationSeconds, &project.VisualStyle,
 			&project.AspectRatio, &project.TargetPlatform, &project.CurrentStage, &project.Status,
 			&project.TestMode, &project.PendingReviews, &project.FailedTasks, &project.ActiveTasks, &project.ErrorMessage,
 			&project.CreatedAt, &project.UpdatedAt); err != nil {
@@ -780,6 +789,7 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail
       SELECT
         (SELECT COUNT(*) FROM drama.novel_chapters WHERE project_id = $1),
         (SELECT COUNT(*) FROM drama.novel_chunks WHERE project_id = $1),
+        (SELECT COUNT(*) FROM drama.novel_chunks WHERE project_id = $1 AND analysis_status = 'completed'),
 		(SELECT COUNT(DISTINCT episode_id) FROM drama.episode_outlines WHERE project_id = $1),
 		(SELECT COUNT(*) FROM drama.script_scenes WHERE project_id = $1),
 		(SELECT COUNT(*) FROM drama.storyboard_shots WHERE project_id = $1),
@@ -787,13 +797,16 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail
         (SELECT COUNT(*) FROM drama.shot_videos WHERE project_id = $1),
         (SELECT COUNT(*) FROM drama.workflow_tasks WHERE project_id = $1 AND status = 'completed'),
         (SELECT COUNT(*) FROM drama.review_tasks WHERE project_id = $1 AND review_status = 'pending')`, projectID).Scan(
-		&detail.Counts.Chapters, &detail.Counts.Chunks, &detail.Counts.Episodes, &detail.Counts.Scenes,
+		&detail.Counts.Chapters, &detail.Counts.Chunks, &detail.Counts.CompletedChunks,
+		&detail.Counts.Episodes, &detail.Counts.Scenes,
 		&detail.Counts.Shots, &detail.Counts.GeneratedImages, &detail.Counts.GeneratedVideos,
 		&detail.Counts.CompletedTasks, &detail.Counts.PendingReviews,
 	)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
+	detail.ChunkCount = detail.Counts.Chunks
+	detail.CompletedChunkCount = detail.Counts.CompletedChunks
 	if detail.WorkflowTasks, err = s.workflowTasks(ctx, projectID); err != nil {
 		return ProjectDetail{}, err
 	}
@@ -813,6 +826,9 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail
 		return ProjectDetail{}, err
 	}
 	if detail.Storyboards, err = s.storyboards(ctx, projectID); err != nil {
+		return ProjectDetail{}, err
+	}
+	if detail.RollingProduction, err = s.GetRollingProduction(ctx, projectID); err != nil {
 		return ProjectDetail{}, err
 	}
 	return detail, nil
@@ -1165,6 +1181,8 @@ func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID stri
 	err := s.pool.QueryRow(ctx, `SELECT p.project_id,p.novel_name,p.target_episode_count,
 		p.episode_duration_seconds,p.visual_style,p.aspect_ratio,p.target_platform,p.current_stage,
 		p.status,p.test_mode,
+		(SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id=p.project_id AND w.status IN ('pending','running')),
+		(SELECT COUNT(*) FROM drama.review_tasks r WHERE r.project_id=p.project_id AND r.review_status='pending'),
 		(SELECT episode_id FROM drama.episode_outlines e WHERE e.project_id=p.project_id
 		 ORDER BY CASE e.status WHEN 'approved' THEN 0 ELSE 1 END,e.episode_number,e.version DESC LIMIT 1),
 		COALESCE((SELECT input_data FROM drama.workflow_tasks w WHERE w.project_id=p.project_id
@@ -1172,7 +1190,8 @@ func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID stri
 		FROM drama.projects p WHERE p.project_id=$1`, projectID).Scan(
 		&action.ProjectID, &action.NovelName, &action.TargetEpisodeCount, &action.EpisodeDurationSeconds,
 		&action.VisualStyle, &action.AspectRatio, &action.TargetPlatform, &action.CurrentStage,
-		&action.Status, &action.TestMode, &action.EpisodeID, &action.OriginalInput,
+		&action.Status, &action.TestMode, &action.ActiveTasks, &action.PendingReviews,
+		&action.EpisodeID, &action.OriginalInput,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return FlowActionContext{}, ErrNotFound

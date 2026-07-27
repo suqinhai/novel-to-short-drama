@@ -590,6 +590,14 @@ func (s *Store) StartIRRun(ctx context.Context, versionID, key string, input IRR
 	if status != "published" {
 		return Operation{}, ErrConflict
 	}
+	var versionChapterCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM drama.source_version_chapters
+		WHERE source_version_id=$1`, versionID).Scan(&versionChapterCount); err != nil {
+		return Operation{}, err
+	}
+	if len(input.ChapterIDs) > 30 || (len(input.ChapterIDs) == 0 && versionChapterCount > 30) {
+		return Operation{}, ErrConflict
+	}
 	if len(input.ChapterIDs) > 0 {
 		var count int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM drama.source_version_chapters WHERE source_version_id=$1 AND chapter_id=ANY($2)`, versionID, input.ChapterIDs).Scan(&count); err != nil {

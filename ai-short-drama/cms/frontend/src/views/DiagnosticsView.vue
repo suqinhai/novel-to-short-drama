@@ -4,6 +4,8 @@ import { Activity, AlertTriangle, BrainCircuit, CircleCheckBig, Clock3, Containe
 import { api } from '../services/api'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import { getDisplayValueLabel } from '../services/displayLabels'
+import { getPipelineStageLabel } from '../services/pipelineStage'
 
 const data = ref(null)
 const loading = ref(true)
@@ -41,6 +43,10 @@ const formatBytes = (value) => {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
   return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+}
+const formatProductionStage = (value) => {
+  const generalLabel = getDisplayValueLabel(value)
+  return generalLabel === '其他' ? getPipelineStageLabel(value) : generalLabel
 }
 const overallTitle = computed(() => ({ healthy: '全部诊断项正常', degraded: '系统可运行，但存在需要处理的警告', unhealthy: '发现阻断性系统问题' }[data.value?.status] || '诊断结果未知'))
 
@@ -133,7 +139,7 @@ async function resetAllData() {
       <article class="panel failed-task-panel">
         <div class="failed-task-head"><div><span>RECENT FAILURES</span><h3>最近 20 条失败 workflow_tasks</h3><p>{{ data.failed_tasks.message }}</p></div><StatusBadge :status="data.failed_tasks.status" /></div>
         <EmptyState v-if="failedItems.length === 0" title="最近没有失败任务" description="workflow_tasks 当前没有 failed 记录。" />
-        <div v-else class="failed-task-list"><article v-for="item in failedItems" :key="item.task_id"><div class="failed-task-icon"><AlertTriangle :size="17" /></div><div class="failed-task-main"><div><strong>{{ item.workflow_stage }}</strong><code>{{ item.task_id }}</code></div><p>{{ item.error_message || '未记录错误信息' }}</p><span>{{ item.error_code || 'NO_ERROR_CODE' }} · {{ item.entity_type }} / {{ item.entity_id }}</span></div><div class="failed-task-project"><span>{{ item.novel_name }}</span><RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></div><div class="failed-task-time"><strong>{{ formatTime(item.updated_at) }}</strong><span>重试 {{ item.retry_count }} / {{ item.max_retries }}</span></div></article></div>
+        <div v-else class="failed-task-list"><article v-for="item in failedItems" :key="item.task_id"><div class="failed-task-icon"><AlertTriangle :size="17" /></div><div class="failed-task-main"><div><strong>{{ formatProductionStage(item.workflow_stage) }}</strong><code>{{ item.task_id }}</code></div><p>{{ item.error_message || '未记录错误信息' }}</p><span>{{ item.error_code || '未记录错误代码' }} · {{ getDisplayValueLabel(item.entity_type) }} / {{ item.entity_id }}</span></div><div class="failed-task-project"><span>{{ item.novel_name }}</span><RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></div><div class="failed-task-time"><strong>{{ formatTime(item.updated_at) }}</strong><span>重试 {{ item.retry_count }} / {{ item.max_retries }}</span></div></article></div>
       </article>
 
       <article class="panel padded">

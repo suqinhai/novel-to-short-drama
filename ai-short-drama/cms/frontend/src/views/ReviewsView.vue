@@ -5,6 +5,7 @@ import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ReviewContentViewer from '../components/ReviewContentViewer.vue'
+import { getDisplayValueLabel } from '../services/displayLabels'
 
 const data = ref(null)
 const loading = ref(true)
@@ -44,10 +45,10 @@ function resetFilters() {
 }
 
 function webhookStage(item) {
-  if (['story_bible', 'season_outline', 'episode_script', 'storyboard'].includes(item.stage)) return 'stage2'
-  if (['visual_asset', 'storyboard_image'].includes(item.stage)) return 'stage3'
-  if (['shot_video', 'dialogue_audio', 'voice_profile', 'video', 'audio'].includes(item.stage)) return 'stage4'
-  return 'stage5'
+  if (['story_bible', 'season_outline', 'episode_script', 'storyboard'].includes(item.stage)) return '剧本与分镜阶段'
+  if (['visual_asset', 'storyboard_image'].includes(item.stage)) return '图片阶段'
+  if (['shot_video', 'dialogue_audio', 'voice_profile', 'video', 'audio'].includes(item.stage)) return '视频与音频阶段'
+  return '剪辑与发布阶段'
 }
 
 function openDecision(item, status) {
@@ -139,7 +140,7 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
       <div v-else class="review-list">
         <article v-for="item in items" :key="item.review_id" class="review-row">
           <div class="review-stage-icon"><ClipboardCheck :size="18" /></div>
-          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || item.stage }}</strong><StatusBadge :status="item.review_status" /><span>{{ webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ item.entity_type }}</code><span>{{ item.entity_id }}</span></div></div>
+          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || '其他审核阶段' }}</strong><StatusBadge :status="item.review_status" /><span>{{ webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ getDisplayValueLabel(item.entity_type) }}</code><span>{{ item.entity_id }}</span></div></div>
           <div class="review-history"><span>创建时间</span><strong>{{ formatTime(item.created_at) }}</strong><small v-if="item.reviewed_at">审核于 {{ formatTime(item.reviewed_at) }}</small></div>
           <div class="review-actions"><button class="review-open-button" @click="openPreview(item)"><Eye :size="15" />查看内容</button></div>
         </article>
@@ -169,7 +170,7 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
 
     <div v-if="decision.open" class="modal-backdrop" @click.self="closeDecision">
       <div class="review-modal" role="dialog" aria-modal="true" :aria-label="decision.review_status === 'approved' ? '通过审核' : '拒绝审核'">
-        <div class="modal-head"><div><span>N8N {{ decision.item ? webhookStage(decision.item) : '' }} REVIEW</span><h3>{{ decision.review_status === 'approved' ? '通过审核' : '拒绝审核' }}</h3></div><button aria-label="关闭审核窗口" @click="closeDecision"><X :size="18" /></button></div>
+        <div class="modal-head"><div><span>{{ decision.item ? webhookStage(decision.item) : '' }}审核</span><h3>{{ decision.review_status === 'approved' ? '通过审核' : '拒绝审核' }}</h3></div><button aria-label="关闭审核窗口" @click="closeDecision"><X :size="18" /></button></div>
         <div class="decision-target"><strong>{{ stageLabels[decision.item?.stage] || decision.item?.stage }}</strong><code>{{ decision.item?.review_id }}</code><span>{{ decision.item?.entity_id }}</span></div>
         <label class="field"><span>审核意见</span><textarea v-model="decision.review_comment" rows="3" placeholder="可选：记录本次审核意见"></textarea></label>
         <label v-if="decision.review_status === 'rejected'" class="field"><span>拒绝原因 <i>*</i></span><textarea v-model="decision.rejection_reason" rows="3" placeholder="请说明需要修改的问题" required></textarea></label>

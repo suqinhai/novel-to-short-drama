@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCircle2, CircleAlert, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { narrativeApi } from '../services/narrativeApi'
 import { createTerminalNotifier, isTerminalOperation } from '../services/operationTerminal'
+import { getDisplayValueLabel, getStatusLabel } from '../services/displayLabels'
 
 const props = defineProps({ operation: { type: Object, default: null } })
 const emit = defineEmits(['terminal'])
@@ -56,8 +57,8 @@ onBeforeUnmount(stop)
       <LoaderCircle v-else :size="20" class="spin" />
     </div>
     <div class="operation-main">
-      <span>异步操作 · {{ current.operation_type }}</span>
-      <strong>{{ current.status }}</strong>
+      <span>异步操作 · {{ getDisplayValueLabel(current.operation_type) }}</span>
+      <strong>{{ getStatusLabel(current.status) }}</strong>
       <code>{{ current.operation_id }}</code>
       <p v-if="current.checkpoint?.stage">{{ current.checkpoint.stage }} · {{ current.checkpoint.completed_items || 0 }} / {{ current.checkpoint.total_items || '—' }}</p>
       <p v-if="current.error">{{ current.error.message }}</p>

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowUpRight, GitBranch, Plus, RefreshCw } from 'lucide-vue-next'
 import StatusBadge from '../components/StatusBadge.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
+import { getStatusLabel } from '../services/displayLabels'
 
 const route = useRoute()
 const router = useRouter()
@@ -72,7 +73,7 @@ onMounted(load)
           <div class="production-data-head"><div><span>SOURCE VERSIONS</span><h3>作品版本</h3></div><p>{{ versions.length }} 个版本</p></div>
           <div v-if="versions.length" class="version-list">
             <RouterLink v-for="version in versions" :key="version.source_version_id" :to="`/library/versions/${version.source_version_id}`" class="version-row">
-              <b>v{{ version.version_number }}</b><div><strong>{{ version.status }}</strong><code>{{ version.source_version_id }}</code><small>{{ version.chapter_count }} 章 · {{ Number(version.total_chars).toLocaleString('zh-CN') }} 字符</small></div><StatusBadge :status="version.status" /><ArrowUpRight :size="17" />
+              <b>v{{ version.version_number }}</b><div><strong>{{ getStatusLabel(version.status) }}</strong><code>{{ version.source_version_id }}</code><small>{{ version.chapter_count }} 章 · {{ Number(version.total_chars).toLocaleString('zh-CN') }} 字符</small></div><StatusBadge :status="version.status" /><ArrowUpRight :size="17" />
             </RouterLink>
           </div>
           <div v-else class="compact-empty">还没有版本，请在右侧创建第一个草稿版本。</div>

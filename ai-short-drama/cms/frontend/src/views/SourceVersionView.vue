@@ -5,7 +5,9 @@ import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, FileSta
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
+import { getDisplayValueLabel } from '../services/displayLabels'
 
+const MAX_IR_CHAPTERS = 30
 const route = useRoute()
 const version = ref(null)
 const work = ref(null)
@@ -65,6 +67,9 @@ async function load() {
     version.value = versionResponse.data
     chapters.value = chapterResponse.data
     irRevisions.value = irResponse.data
+    if (!irRun.chapter_ids.length) {
+      irRun.chapter_ids = chapters.value.slice(0, Math.min(10, MAX_IR_CHAPTERS)).map((item) => item.chapter_id)
+    }
     single.ordinal = nextOrdinal.value
     if (!work.value || work.value.work_id !== version.value.work_id) {
       work.value = (await narrativeApi.getWork(version.value.work_id)).data
@@ -126,7 +131,8 @@ async function publishVersion() {
 }
 
 async function startTestIR() {
-  if (version.value?.status !== 'published' || !irTestAcknowledged.value || !irRun.extractor_version.trim()) return
+  if (version.value?.status !== 'published' || !irTestAcknowledged.value || !irRun.extractor_version.trim() ||
+    !irRun.chapter_ids.length || irRun.chapter_ids.length > MAX_IR_CHAPTERS) return
   const payload = {
     schema_version: 'narrative-extraction.v1',
     extractor_version: irRun.extractor_version.trim(),
@@ -171,7 +177,20 @@ watch(() => revision.chapter_id, (chapterId) => {
   revision.title = chapters.value.find((item) => item.chapter_id === chapterId)?.title || ''
   revision.content = ''
 })
-onMounted(load)
+async function initialize() {
+  await load()
+  if (route.query.operation_id) {
+    try {
+      operation.value = (await narrativeApi.getOperation(route.query.operation_id)).data
+      if (route.query.rolling === '1') {
+        notice.value = '整本小说只在资料库中拆章。导入完成并发布后，请选择 5–30 章提取本次故事弧。'
+      }
+    } catch (err) {
+      error.value = err.message
+    }
+  }
+}
+onMounted(initialize)
 </script>
 
 <template>
@@ -232,14 +251,15 @@ onMounted(load)
       <article class="panel narrative-ir-panel">
         <div class="production-data-head"><div><span>NARRATIVE IR</span><h3>叙事中间层提取</h3></div><p>{{ irRevisions.length }} 个修订</p></div>
         <form v-if="version.status === 'published'" class="ir-test-form" @submit.prevent="startTestIR">
-          <div class="contract-notice warning"><FlaskConical :size="17" /><div><strong>手工测试模式</strong><span>仅用于验证已发布版本的 IR 提取。空章节范围表示完整版本；非空范围仅处理明确选中的章节。请求不会额外发送 <code>test_mode</code> 字段。</span></div></div>
+          <div class="contract-notice warning"><FlaskConical :size="17" /><div><strong>按故事弧提取，禁止整本长任务</strong><span>每次必须明确选择 1–{{ MAX_IR_CHAPTERS }} 章；推荐先选 5–15 章验证。120 章应拆成多个故事弧，避免一次失败导致整批 Token 与时间浪费。</span></div></div>
           <label class="field"><span>Extractor 版本 <i>*</i></span><input v-model="irRun.extractor_version" maxlength="200" required /></label>
-          <div class="ir-chapter-scope"><strong>测试章节范围</strong><span>已选 {{ irRun.chapter_ids.length }} 章；不选则提取完整版本</span><div><label v-for="chapter in chapters" :key="chapter.chapter_id"><input v-model="irRun.chapter_ids" type="checkbox" :value="chapter.chapter_id" /><span>{{ chapter.ordinal }} · {{ chapter.title }}</span></label></div></div>
+          <div class="ir-chapter-scope"><strong>本次故事弧章节</strong><span>已选 {{ irRun.chapter_ids.length }} 章；上限 {{ MAX_IR_CHAPTERS }} 章</span><div><label v-for="chapter in chapters" :key="chapter.chapter_id"><input v-model="irRun.chapter_ids" type="checkbox" :value="chapter.chapter_id" :disabled="!irRun.chapter_ids.includes(chapter.chapter_id) && irRun.chapter_ids.length >= MAX_IR_CHAPTERS" /><span>{{ chapter.ordinal }} · {{ chapter.title }}</span></label></div></div>
+          <div v-if="!irRun.chapter_ids.length || irRun.chapter_ids.length > MAX_IR_CHAPTERS" class="contract-notice warning">请选择 1–{{ MAX_IR_CHAPTERS }} 章后再启动，系统不会再把空范围解释为整本提取。</div>
           <label class="test-ack"><input v-model="irTestAcknowledged" type="checkbox" /><span>我确认这是测试提取操作，会创建可审计的 IR operation。</span></label>
-          <button class="button button-primary" :disabled="submitting || !irTestAcknowledged || !irRun.extractor_version.trim()"><BrainCircuit :size="16" />{{ submitting ? '提交中…' : '启动测试 IR' }}</button>
+          <button class="button button-primary" :disabled="submitting || !irTestAcknowledged || !irRun.extractor_version.trim() || !irRun.chapter_ids.length || irRun.chapter_ids.length > MAX_IR_CHAPTERS"><BrainCircuit :size="16" />{{ submitting ? '提交中…' : `提取这 ${irRun.chapter_ids.length} 章` }}</button>
         </form>
         <div v-if="!irRevisions.length" class="compact-empty">当前版本还没有 Narrative IR 修订。</div>
-        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ item.revision_scope }}<template v-if="item.changed_chapter_ids?.length"> · {{ item.changed_chapter_ids.length }} 个变更章节</template></small></div><StatusBadge :status="item.status" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
+        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ getDisplayValueLabel(item.revision_scope) }}<template v-if="item.changed_chapter_ids?.length"> · {{ item.changed_chapter_ids.length }} 个变更章节</template></small></div><StatusBadge :status="item.status" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
       </article>
 
       <article class="panel chapter-list-panel">

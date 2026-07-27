@@ -4,6 +4,7 @@ import { useDebounceFn } from '@vueuse/core'
 import { ArrowUpRight, BookOpen, Plus, RefreshCw, Search, X } from 'lucide-vue-next'
 import EmptyState from '../components/EmptyState.vue'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
+import { getStatusLabel } from '../services/displayLabels'
 
 const works = ref([])
 const page = reactive({ number: 1, limit: 50, total: 0 })
@@ -87,7 +88,7 @@ onMounted(load)
         <RouterLink v-for="work in works" :key="work.work_id" :to="`/library/${work.work_id}`" class="source-work-card">
           <span class="source-work-cover"><BookOpen :size="23" /></span>
           <div><strong>{{ work.title }}</strong><p>{{ work.author || '作者未填写' }}</p><code>{{ work.work_id }}</code></div>
-          <div class="source-work-state"><i>{{ work.status }}</i><small>revision {{ work.resource_revision }}</small><ArrowUpRight :size="17" /></div>
+          <div class="source-work-state"><i>{{ getStatusLabel(work.status) }}</i><small>修订 {{ work.resource_revision }}</small><ArrowUpRight :size="17" /></div>
         </RouterLink>
       </div>
       <div v-if="totalPages > 1" class="pager"><button :disabled="page.number <= 1" @click="page.number--; load()">上一页</button><span>{{ page.number }} / {{ totalPages }}</span><button :disabled="page.number >= totalPages" @click="page.number++; load()">下一页</button></div>

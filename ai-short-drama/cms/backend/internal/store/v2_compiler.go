@@ -100,7 +100,8 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 	var plan json.RawMessage
 	var traceID string
 	err := s.pool.QueryRow(ctx, `SELECT operation.trace_id,jsonb_build_object(
-		'schema_version','compiler-plan.v2','compiler_run_id',run.compiler_run_id,
+		'schema_version','compiler-plan.v2','adaptation_plan_id',plan.adaptation_plan_id,
+		'project_id',plan.project_id,'status',plan.status,'compiler_run_id',run.compiler_run_id,
 		'episodes',COALESCE((SELECT jsonb_agg(jsonb_build_object(
 			'episode_number',episode.episode_number,'title',episode.title,'logline',episode.logline,
 			'estimated_duration_seconds',episode.estimated_duration_seconds,'opening_hook',episode.opening_hook,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getPipelineProgress, getPipelineStageIndex, getPipelineStageLabel, pipelineStages } from '../src/services/pipelineStage.js'
+import { getPipelineProgress, getPipelineStageIndex, getPipelineStageLabel, getStageUnitProgress, pipelineStages } from '../src/services/pipelineStage.js'
 
 test('maps stage 4 video and audio states to their visible pipeline steps', () => {
   assert.equal(getPipelineStageIndex('video_processing'), 8)
@@ -24,9 +24,12 @@ test('reports completed production stages as a stable overall percentage', () =>
   assert.deepEqual(getPipelineProgress('episode_script', 'running'), {
     currentIndex: 4,
     completedStages: 4,
+    remainingStages: 8,
     totalStages: pipelineStages.length,
     percentage: 33,
+    remainingPercentage: 67,
     currentStageLabel: '单集剧本',
+    nextPendingStageLabel: '单集剧本',
   })
   assert.equal(getPipelineProgress('published', 'completed').percentage, 100)
   assert.equal(getPipelineProgress('unknown_stage', 'running').percentage, 0)
@@ -35,10 +38,30 @@ test('reports completed production stages as a stable overall percentage', () =>
 })
 
 test('uses readable labels for known, completed and unknown stages', () => {
-  assert.equal(getPipelineStageLabel('storyboard_image_review'), '分镜图片')
+  assert.equal(getPipelineStageLabel('storyboard_image_review'), '分镜图片审核')
   assert.equal(getPipelineStageLabel('edit_compose'), '剪辑合成')
-  assert.equal(getPipelineStageLabel('review'), '故事圣经')
-  assert.equal(getPipelineStageLabel('publishing'), '质检发布')
+  assert.equal(getPipelineStageLabel('review'), '故事圣经审核')
+  assert.equal(getPipelineStageLabel('publishing'), '发布中')
   assert.equal(getPipelineStageLabel('published', 'completed'), '生产完成')
-  assert.equal(getPipelineStageLabel('custom_stage'), 'custom stage')
+  assert.equal(getPipelineStageLabel('custom_stage'), '未识别阶段')
+})
+
+test('reports remaining stages and exact current-stage unit progress', () => {
+  const pipeline = getPipelineProgress('chunk_analysis', 'running')
+  assert.equal(pipeline.completedStages, 1)
+  assert.equal(pipeline.remainingStages, 11)
+  assert.equal(pipeline.nextPendingStageLabel, '文本拆解')
+
+  assert.deepEqual(getStageUnitProgress({
+    current_stage: 'chunk_analysis',
+    status: 'running',
+    chunk_count: 24,
+    completed_chunk_count: 18,
+  }), {
+    completed: 18,
+    total: 24,
+    remaining: 6,
+    percentage: 75,
+    unit: '个文本分块',
+  })
 })

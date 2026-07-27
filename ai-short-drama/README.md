@@ -2,6 +2,22 @@
 
 本目录提供项目总控、小说导入与分析、故事圣经、分集策划、单集剧本、分镜设计、视觉资产、分镜图片、单镜头视频、对白音频、整集剪辑合成、质量检查、人工终审和发布物料工作流。第五阶段把第四阶段已审核素材写成结构化时间线，由隔离的 media-worker 执行 FFmpeg，并在自动质检与两次人工门禁后生成官方 API 发布任务或 `manual_package`；默认禁止真实发布。
 
+## 单集滚动生产（推荐）
+
+CMS 的“新建项目”现在只把整本小说写入原著资料库并拆章，不会自动分析全书或生成整季视频。发布来源版本后，每次明确选择 1–30 章提取 Narrative IR，再把一个故事弧编译为最多 12 集的适配计划。
+
+批准适配计划只会创建 `story_arc_runs` 与 `episode_production_runs` 队列。项目页一次只允许激活一集；当前集完成质检发布后，下一集按钮才会解锁。每集可设置 Token、费用预算和 `max_video_batch`（1–20，默认 5）；预算在每次继续流程前检查，图生视频工作流只取本次批次范围内尚未完成的镜头。
+
+升级已有数据库并部署视频批次限制：
+
+```powershell
+docker compose exec -T postgres psql -U <业务库用户> -d short_drama -v ON_ERROR_STOP=1 -f /opt/drama/12-rolling-episode-production.sql
+docker compose exec n8n n8n import:workflow --input=/data/workflows/09-image-to-video.json
+docker compose exec n8n n8n publish:workflow --id=wf_image_to_video
+```
+
+导入工作流后重启 n8n，使发布版本立即生效。CMS API 的滚动接口为 `POST /api/v1/projects/{project_id}/rolling-plans/{adaptation_plan_id}/adopt`；推进单集时向项目 action 同时发送 `episode_run_id`。
+
 第三阶段增加视觉档案、定妆/场景参考图与分镜关键帧，范围止于单图审核；仍不包含图生视频、配音、剪辑和发布。
 
 ## 第三阶段视觉资产与分镜图片

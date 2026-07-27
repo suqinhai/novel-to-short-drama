@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { ArrowUpRight, Search, RefreshCw, Layers3, Clock3, CircleCheckBig, AlertTriangle, Plus, Trash2, ArchiveRestore, X, LoaderCircle } from 'lucide-vue-next'
 import { api } from '../services/api'
-import { getPipelineProgress, getPipelineStageLabel } from '../services/pipelineStage'
+import { getPipelineProgress, getPipelineStageLabel, getStageUnitProgress } from '../services/pipelineStage'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -53,6 +53,7 @@ onMounted(loadProjects)
 
 const formatTime = (value) => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const productionProgress = (item) => getPipelineProgress(item.current_stage, item.status)
+const stageUnitProgress = (item) => getStageUnitProgress(item)
 
 function openArchive(item) {
   archiveTarget.value = item
@@ -131,7 +132,8 @@ async function restoreProject(item) {
               <td>
                 <div class="progress-label"><span>已完成 {{ productionProgress(item).completedStages }} / {{ productionProgress(item).totalStages }} 阶段</span><b>{{ productionProgress(item).percentage }}%</b></div>
                 <div class="progress-track" role="progressbar" aria-label="生产进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="productionProgress(item).percentage"><i :style="{ width: `${productionProgress(item).percentage}%` }"></i></div>
-                <small class="progress-meta">已生成 {{ item.generated_episode_count }} / {{ item.target_episode_count }} 集</small>
+                <small v-if="stageUnitProgress(item)" class="progress-meta">{{ getPipelineStageLabel(item.current_stage, item.status) }}：已完成 {{ stageUnitProgress(item).completed }} / {{ stageUnitProgress(item).total }}，还剩 {{ stageUnitProgress(item).remaining }} {{ stageUnitProgress(item).unit }}</small>
+                <small v-else class="progress-meta">距离全部完成还剩 {{ productionProgress(item).remainingStages }} 个阶段</small>
               </td>
               <td><span v-if="item.error_message" class="error-message-cell" :title="item.error_message">{{ item.error_message }}</span><span v-else class="no-error">—</span></td>
               <td><span class="date-text">{{ formatTime(item.updated_at) }}</span></td>

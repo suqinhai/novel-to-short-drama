@@ -4,9 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, ArrowLeft, BookOpenCheck, CheckCircle2, CirclePlus, Layers3, LoaderCircle, Play, Trash2 } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import { api } from '../services/api'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
 import { buildAdaptationScope, isScopeComplete, selectCurrentFullIR } from '../services/adaptationScope'
 
+const MAX_ARC_CHAPTERS = 30
+const MAX_ARC_EPISODES = 12
 const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => route.params.projectId || '')
@@ -27,10 +30,12 @@ const adaptationPlan = ref(null)
 const compilingSpecId = ref('')
 const compilerVersion = ref('constraint-compiler-v1')
 const planLoading = ref(false)
+const adopting = ref(false)
 let pendingSubmit = null
 let pendingCompile = null
 const selection = reactive({ work_id: '', source_version_id: '', ir_revision_id: '', scope_mode: 'chapters_only', chapter_ids: [], story_arc_revision_ids: [] })
-const form = reactive({ display_name: '', platform: '抖音', audience: '', audience_tags: '', target_episode_count: 24, episode_duration_seconds: 120 })
+const form = reactive({ display_name: '', platform: '抖音', audience: '', audience_tags: '', target_episode_count: 6, episode_duration_seconds: 120 })
+const rollingForm = reactive({ max_video_batch: 5, token_budget: '', cost_budget: '' })
 const rules = ref([
   { rule_type: 'must_preserve', enforcement: 'hard', target_type: 'chapter', target_id: '', priority: 100, text: '', rationale: '' },
   { rule_type: 'merge_allowed', enforcement: 'soft', target_type: 'free_text', target_id: null, priority: 50, text: '相邻且叙事功能相同的次要事件允许合并。', rationale: '' },
@@ -38,15 +43,18 @@ const rules = ref([
 ])
 const publishedVersions = computed(() => versions.value.filter((item) => item.status === 'published'))
 const currentFullIR = computed(() => selectCurrentFullIR(irRevisions.value))
-const allSelected = computed(() => chapters.value.length > 0 && selection.chapter_ids.length === chapters.value.length)
+const allSelected = computed(() => chapters.value.length > 0 &&
+  selection.chapter_ids.length === Math.min(chapters.value.length, MAX_ARC_CHAPTERS))
 const allArcsSelected = computed(() => storyArcs.value.length > 0 && selection.story_arc_revision_ids.length === storyArcs.value.length)
 const rulesComplete = computed(() => rules.value.length && rules.value.every((rule) => {
   if (rule.target_type === 'chapter') return selection.scope_mode !== 'arcs_only' && selection.chapter_ids.includes(rule.target_id)
   if (rule.target_type === 'story_arc') return selection.scope_mode !== 'chapters_only' && selection.story_arc_revision_ids.includes(rule.target_id)
   return rule.target_type !== 'free_text' || rule.text.trim()
 }))
+const scopeTooLarge = computed(() => selection.scope_mode !== 'arcs_only' && selection.chapter_ids.length > MAX_ARC_CHAPTERS)
 const canSubmit = computed(() => selection.source_version_id && selection.ir_revision_id &&
   isScopeComplete(selection.scope_mode, selection.chapter_ids, selection.story_arc_revision_ids) && rulesComplete.value &&
+  !scopeTooLarge.value && form.target_episode_count <= MAX_ARC_EPISODES &&
   (projectId.value || form.display_name.trim()))
 const planValidationPassed = computed(() => adaptationPlan.value && Object.values(adaptationPlan.value.validation || {}).every(Boolean))
 
@@ -103,7 +111,7 @@ async function loadChapters() {
     ])
     chapters.value = chapterResponse.data
     irRevisions.value = irResponse.data
-    selection.chapter_ids = chapters.value.map((item) => item.chapter_id)
+    selection.chapter_ids = chapters.value.slice(0, MAX_ARC_CHAPTERS).map((item) => item.chapter_id)
     selection.ir_revision_id = currentFullIR.value?.ir_revision_id || ''
     if (selection.ir_revision_id) {
       storyArcs.value = (await narrativeApi.listStoryArcs(selection.ir_revision_id)).data
@@ -113,7 +121,8 @@ async function loadChapters() {
 }
 
 function toggleAll() {
-  selection.chapter_ids = allSelected.value ? [] : chapters.value.map((item) => item.chapter_id)
+  const boundedChapterIds = chapters.value.slice(0, MAX_ARC_CHAPTERS).map((item) => item.chapter_id)
+  selection.chapter_ids = selection.chapter_ids.length === boundedChapterIds.length ? [] : boundedChapterIds
 }
 
 function toggleAllArcs() {
@@ -239,6 +248,27 @@ async function handleCompilerTerminal(terminalOperation) {
   }
 }
 
+async function adoptPlan() {
+  if (!projectId.value || !adaptationPlan.value?.adaptation_plan_id || !planValidationPassed.value || adopting.value) return
+  adopting.value = true
+  error.value = ''
+  try {
+    await api.adoptRollingPlan(projectId.value, adaptationPlan.value.adaptation_plan_id, {
+      title: `${form.display_name || '当前故事弧'} · 滚动生产`,
+      max_video_batch: Number(rollingForm.max_video_batch),
+      token_budget: rollingForm.token_budget === '' ? null : Number(rollingForm.token_budget),
+      cost_budget: rollingForm.cost_budget === '' ? null : Number(rollingForm.cost_budget),
+      currency: 'CNY',
+    })
+    success.value = '单集生产队列已建立；系统不会自动生成，已返回项目页等待你启动第 1 集。'
+    await router.push(`/projects/${projectId.value}`)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    adopting.value = false
+  }
+}
+
 watch(() => selection.work_id, loadVersions)
 watch(() => selection.source_version_id, loadChapters)
 watch(() => selection.chapter_ids, () => {
@@ -278,7 +308,8 @@ onMounted(load)
           <div v-else-if="currentFullIR" class="current-ir-summary"><div><span>当前完整 IR</span><strong>IR r{{ currentFullIR.revision_number }} · {{ currentFullIR.extractor_version }}</strong><code>{{ currentFullIR.ir_revision_id }}</code></div><StatusBadge :status="currentFullIR.status" /></div>
           <label class="field scope-mode-field"><span>改编范围模式 <i>*</i></span><select v-model="selection.scope_mode" :disabled="!currentFullIR" @change="changeScopeMode"><option value="chapters_only">仅章节</option><option value="arcs_only" :disabled="!storyArcs.length">仅故事弧</option><option value="union">章节与故事弧并集</option></select><small>范围中的章节和故事弧会按冻结契约分别提交。</small></label>
           <div v-if="chapters.length && selection.scope_mode !== 'arcs_only'" class="chapter-picker">
-            <div class="chapter-picker-head"><div><strong>选择章节</strong><span>已选 {{ selection.chapter_ids.length }} / {{ chapters.length }}</span></div><button type="button" class="button button-secondary" @click="toggleAll">{{ allSelected ? '取消全选' : '选择全部' }}</button></div>
+            <div class="chapter-picker-head"><div><strong>选择本次故事弧章节</strong><span>已选 {{ selection.chapter_ids.length }} / {{ chapters.length }}；单次最多 {{ MAX_ARC_CHAPTERS }} 章</span></div><button type="button" class="button button-secondary" @click="toggleAll">{{ allSelected ? '取消选择' : `选择前 ${Math.min(chapters.length, MAX_ARC_CHAPTERS)} 章` }}</button></div>
+            <div v-if="scopeTooLarge" class="contract-notice warning">当前选择超过 {{ MAX_ARC_CHAPTERS }} 章。请拆成多个故事弧分别编译，避免超长上下文和整批返工。</div>
             <label v-for="chapter in chapters" :key="chapter.chapter_id" class="chapter-option"><input v-model="selection.chapter_ids" type="checkbox" :value="chapter.chapter_id" /><span><b>{{ chapter.ordinal }}</b><strong>{{ chapter.title }}</strong><small>r{{ chapter.revision_number }} · {{ Number(chapter.char_count).toLocaleString('zh-CN') }} 字符</small></span></label>
           </div>
           <div v-if="currentFullIR && selection.scope_mode !== 'chapters_only'" class="story-arc-picker">
@@ -292,7 +323,7 @@ onMounted(load)
           <div class="section-title"><div><span>DELIVERY PROFILE</span><h3>2. 平台、受众与体量</h3></div><Layers3 :size="19" /></div>
           <div class="field-pair"><label class="field"><span>平台 <i>*</i></span><input v-model="form.platform" maxlength="200" required /></label><label class="field"><span>目标受众</span><input v-model="form.audience" placeholder="例如：18–35 岁都市女性" /></label></div>
           <label class="field"><span>受众标签</span><input v-model="form.audience_tags" placeholder="爽剧，情感，都市（逗号分隔）" /></label>
-          <div class="field-pair"><label class="field"><span>目标集数 <i>*</i></span><input v-model.number="form.target_episode_count" type="number" min="1" max="1000" required /></label><label class="field"><span>单集时长（秒） <i>*</i></span><input v-model.number="form.episode_duration_seconds" type="number" min="1" max="7200" required /></label></div>
+          <div class="field-pair"><label class="field"><span>本故事弧目标集数 <i>*</i></span><input v-model.number="form.target_episode_count" type="number" min="1" :max="MAX_ARC_EPISODES" required /><small>建议 3–8 集，单个故事弧最多 {{ MAX_ARC_EPISODES }} 集。</small></label><label class="field"><span>单集时长（秒） <i>*</i></span><input v-model.number="form.episode_duration_seconds" type="number" min="1" max="7200" required /></label></div>
         </article>
 
         <article class="panel padded rules-panel">
@@ -332,6 +363,13 @@ onMounted(load)
           <div class="version-stats"><div><span>分集</span><strong>{{ adaptationPlan.episodes?.length || 0 }}</strong></div><div><span>诊断</span><strong>{{ adaptationPlan.diagnostics?.length || 0 }}</strong></div><div><span>硬规则</span><strong>{{ adaptationPlan.validation?.hard_rules_satisfied ? '通过' : '未通过' }}</strong></div><div><span>时间线 / 因果</span><strong>{{ adaptationPlan.validation?.timeline_valid && adaptationPlan.validation?.causality_valid ? '通过' : '检查失败' }}</strong></div></div>
           <div v-if="adaptationPlan.diagnostics?.length" class="compiler-diagnostics"><article v-for="(item, index) in adaptationPlan.diagnostics" :key="`${item.code}-${index}`" :class="item.severity"><strong>{{ item.severity }} · {{ item.code }}</strong><p>{{ item.message }}</p></article></div>
           <div class="compiler-episodes"><article v-for="episode in adaptationPlan.episodes || []" :key="episode.episode_number"><b>第 {{ episode.episode_number }} 集</b><div><strong>{{ episode.title }}</strong><p>{{ episode.logline }}</p><small>{{ episode.estimated_duration_seconds }} 秒 · {{ episode.source_event_ids.length }} 个原著事件 · {{ episode.source_chapter_ids.length }} 章</small></div></article></div>
+          <div class="rolling-adopt-panel">
+            <div><strong>批准后只建立队列，不会自动生成全部视频</strong><p>每次只启动一集；本集完成并审核后，才会开放“生成下一集”。</p></div>
+            <label class="field"><span>每批视频镜头</span><input v-model.number="rollingForm.max_video_batch" type="number" min="1" max="20" /></label>
+            <label class="field"><span>每集 Token 预算（可选）</span><input v-model="rollingForm.token_budget" type="number" min="1" placeholder="留空则不设硬预算" /></label>
+            <label class="field"><span>每集费用预算 CNY（可选）</span><input v-model="rollingForm.cost_budget" type="number" min="0.01" step="0.01" placeholder="留空则不设硬预算" /></label>
+            <button class="button button-primary" :disabled="adopting || !planValidationPassed || adaptationPlan.status === 'approved'" @click="adoptPlan"><LoaderCircle v-if="adopting" :size="16" class="spin" /><CheckCircle2 v-else :size="16" />{{ adopting ? '建立队列中…' : adaptationPlan.status === 'approved' ? '已建立生产队列' : '批准并建立单集队列' }}</button>
+          </div>
         </template>
       </article>
     </template>

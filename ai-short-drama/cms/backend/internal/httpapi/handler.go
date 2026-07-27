@@ -73,6 +73,8 @@ func (h *Handler) Router() *gin.Engine {
 	api.DELETE("/projects/:projectID", h.archiveProject)
 	api.POST("/projects/:projectID/restore", h.restoreProject)
 	api.POST("/projects/:projectID/actions", h.advanceProject)
+	api.POST("/projects/:projectID/rolling-plans/:planID/adopt", h.adoptRollingPlan)
+	api.POST("/projects/:projectID/episode-runs/:episodeRunID/activate", h.activateEpisodeRun)
 	api.GET("/reviews", h.listReviews)
 	api.GET("/reviews/:reviewID/content", h.getReviewContent)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
@@ -135,8 +137,46 @@ func (h *Handler) resetAllData(c *gin.Context) {
 }
 
 type projectActionRequest struct {
-	Action string `json:"action"`
-	TaskID string `json:"task_id"`
+	Action       string `json:"action"`
+	TaskID       string `json:"task_id"`
+	EpisodeRunID string `json:"episode_run_id"`
+}
+
+func (h *Handler) adoptRollingPlan(c *gin.Context) {
+	var input store.AdoptRollingPlanInput
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "滚动生产配置格式无效")
+		return
+	}
+	result, err := h.store.AdoptAdaptationPlan(
+		c.Request.Context(), c.Param("projectID"), c.Param("planID"), input,
+	)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		respondError(c, http.StatusNotFound, "ADAPTATION_PLAN_NOT_FOUND", "适配计划不存在")
+	case errors.Is(err, store.ErrConflict):
+		respondError(c, http.StatusConflict, "ROLLING_PLAN_CONFLICT", err.Error())
+	case err != nil:
+		respondError(c, http.StatusInternalServerError, "ROLLING_PLAN_ADOPT_FAILED", "无法建立单集生产队列："+err.Error())
+	default:
+		c.JSON(http.StatusCreated, gin.H{"data": result})
+	}
+}
+
+func (h *Handler) activateEpisodeRun(c *gin.Context) {
+	result, err := h.store.ActivateEpisodeProductionRun(
+		c.Request.Context(), c.Param("projectID"), c.Param("episodeRunID"),
+	)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		respondError(c, http.StatusNotFound, "EPISODE_RUN_NOT_FOUND", "单集生产任务不存在")
+	case errors.Is(err, store.ErrConflict):
+		respondError(c, http.StatusConflict, "EPISODE_RUN_CONFLICT", err.Error())
+	case err != nil:
+		respondError(c, http.StatusInternalServerError, "EPISODE_RUN_ACTIVATE_FAILED", "无法激活本集："+err.Error())
+	default:
+		c.JSON(http.StatusOK, gin.H{"data": result})
+	}
 }
 
 func (h *Handler) advanceProject(c *gin.Context) {
@@ -147,6 +187,7 @@ func (h *Handler) advanceProject(c *gin.Context) {
 	}
 	input.Action = strings.ToLower(strings.TrimSpace(input.Action))
 	input.TaskID = strings.TrimSpace(input.TaskID)
+	input.EpisodeRunID = strings.TrimSpace(input.EpisodeRunID)
 	if input.Action != "resume" && input.Action != "retry" {
 		respondError(c, http.StatusBadRequest, "INVALID_ACTION", "流程操作只允许 resume 或 retry")
 		return
@@ -165,9 +206,49 @@ func (h *Handler) advanceProject(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "FLOW_CONTEXT_FAILED", "流程上下文读取失败")
 		return
 	}
+	if input.EpisodeRunID == "" {
+		rolling, rollingErr := h.store.GetRollingProduction(c.Request.Context(), actionContext.ProjectID)
+		if rollingErr != nil {
+			respondError(c, http.StatusInternalServerError, "FLOW_CONTEXT_FAILED", "单集队列读取失败")
+			return
+		}
+		if len(rolling.Arcs) > 0 {
+			respondError(c, http.StatusUnprocessableEntity, "EPISODE_RUN_REQUIRED", "滚动生产项目必须明确选择要生成的单集")
+			return
+		}
+	}
 	if input.Action == "retry" && (actionContext.Task == nil || actionContext.Task.Status != "failed") {
 		respondError(c, http.StatusConflict, "TASK_NOT_FAILED", "只有失败任务可以重试")
 		return
+	}
+	if actionContext.ActiveTasks > 0 {
+		respondError(c, http.StatusConflict, "PROJECT_BUSY", "项目当前有生产任务正在执行，请等待任务结束后再操作")
+		return
+	}
+	if input.Action == "resume" && actionContext.PendingReviews > 0 {
+		respondError(c, http.StatusConflict, "REVIEW_REQUIRED", "项目当前有内容等待审核，请先完成审核")
+		return
+	}
+
+	var episodeRun *store.EpisodeProductionRun
+	if input.EpisodeRunID != "" {
+		run, activateErr := h.store.ActivateEpisodeProductionRun(
+			c.Request.Context(), actionContext.ProjectID, input.EpisodeRunID,
+		)
+		switch {
+		case errors.Is(activateErr, store.ErrNotFound):
+			respondError(c, http.StatusNotFound, "EPISODE_RUN_NOT_FOUND", "单集生产任务不存在")
+			return
+		case errors.Is(activateErr, store.ErrConflict):
+			respondError(c, http.StatusConflict, "EPISODE_RUN_CONFLICT", activateErr.Error())
+			return
+		case activateErr != nil:
+			respondError(c, http.StatusInternalServerError, "EPISODE_RUN_ACTIVATE_FAILED", "无法激活本集："+activateErr.Error())
+			return
+		}
+		episodeRun = &run
+		actionContext.EpisodeID = &run.EpisodeID
+		actionContext.CurrentStage = run.CurrentStage
 	}
 
 	webhookStage, requestedStage, webhookURL, ok := h.projectFlowWebhook(actionContext.CurrentStage)
@@ -199,6 +280,25 @@ func (h *Handler) advanceProject(c *gin.Context) {
 	}
 	if actionContext.EpisodeID != nil && *actionContext.EpisodeID != "" {
 		payload["episode_id"] = *actionContext.EpisodeID
+	}
+	if episodeRun != nil {
+		payload["episode_run_id"] = episodeRun.EpisodeRunID
+		payload["max_video_batch"] = episodeRun.MaxVideoBatch
+		rollingPayload, _ := payload["payload"].(map[string]any)
+		if rollingPayload == nil {
+			rollingPayload = map[string]any{}
+		}
+		rollingPayload["episode_run_id"] = episodeRun.EpisodeRunID
+		rollingPayload["max_video_batch"] = episodeRun.MaxVideoBatch
+		if episodeRun.TokenBudget != nil {
+			payload["token_budget"] = *episodeRun.TokenBudget
+			rollingPayload["token_budget"] = *episodeRun.TokenBudget
+		}
+		if episodeRun.CostBudget != nil {
+			payload["cost_budget"] = *episodeRun.CostBudget
+			rollingPayload["cost_budget"] = *episodeRun.CostBudget
+		}
+		payload["payload"] = rollingPayload
 	}
 	if requestedStage != "" {
 		payload["stage"] = requestedStage
@@ -236,8 +336,20 @@ func (h *Handler) advanceProject(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "PROJECT_REFRESH_FAILED", "n8n 已返回，但最新项目状态读取失败")
 		return
 	}
+	if episodeRun != nil {
+		if err = h.store.SyncEpisodeProductionRun(c.Request.Context(), actionContext.ProjectID,
+			episodeRun.EpisodeRunID, latestProject.CurrentStage, latestProject.Status); err != nil {
+			respondError(c, http.StatusInternalServerError, "EPISODE_RUN_SYNC_FAILED", "工作流已返回，但单集状态同步失败："+err.Error())
+			return
+		}
+		latestProject, err = h.store.GetProject(c.Request.Context(), actionContext.ProjectID)
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "PROJECT_REFRESH_FAILED", "单集状态已同步，但项目刷新失败")
+			return
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"action": input.Action, "task_id": input.TaskID, "webhook_stage": webhookStage,
+		"action": input.Action, "task_id": input.TaskID, "episode_run_id": input.EpisodeRunID, "webhook_stage": webhookStage,
 		"n8n_response": n8nResponse, "project": latestProject,
 	}})
 }
@@ -530,6 +642,26 @@ func (h *Handler) decideReview(c *gin.Context) {
 			"code": "N8N_REVIEW_FAILED", "message": message, "response": n8nResponse,
 		}})
 		return
+	}
+	if review.EpisodeID != nil && *review.EpisodeID != "" {
+		run, runErr := h.store.GetEpisodeProductionRunByEpisodeID(
+			c.Request.Context(), review.ProjectID, *review.EpisodeID,
+		)
+		if runErr == nil {
+			projectContext, contextErr := h.store.GetFlowActionContext(c.Request.Context(), review.ProjectID, "")
+			if contextErr != nil {
+				respondError(c, http.StatusInternalServerError, "EPISODE_RUN_SYNC_FAILED", "审核已完成，但无法读取最新项目状态")
+				return
+			}
+			if syncErr := h.store.SyncEpisodeProductionRun(c.Request.Context(), review.ProjectID,
+				run.EpisodeRunID, projectContext.CurrentStage, projectContext.Status); syncErr != nil {
+				respondError(c, http.StatusInternalServerError, "EPISODE_RUN_SYNC_FAILED", "审核已完成，但单集队列状态同步失败："+syncErr.Error())
+				return
+			}
+		} else if !errors.Is(runErr, store.ErrNotFound) {
+			respondError(c, http.StatusInternalServerError, "EPISODE_RUN_SYNC_FAILED", "审核已完成，但单集队列读取失败")
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"review_id": review.ReviewID, "project_id": review.ProjectID, "webhook_stage": webhookStage,

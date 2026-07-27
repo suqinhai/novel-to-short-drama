@@ -34,6 +34,16 @@ export const api = {
   runProjectAction(projectId, payload) {
     return request(`/projects/${encodeURIComponent(projectId)}/actions`, { method: 'POST', body: JSON.stringify(payload) })
   },
+  adoptRollingPlan(projectId, planId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/rolling-plans/${encodeURIComponent(planId)}/adopt`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  activateEpisodeRun(projectId, episodeRunId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/activate`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
   getReviews(params = {}) {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/reviews?${query}`)

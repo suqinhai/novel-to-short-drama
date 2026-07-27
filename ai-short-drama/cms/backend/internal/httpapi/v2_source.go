@@ -415,7 +415,7 @@ func (h *sourceV2Handler) startIRRun(c *gin.Context) {
 		ExtractorVersion string   `json:"extractor_version"`
 		ChapterIDs       []string `json:"chapter_ids"`
 	}
-	if !decodeStrictJSON(c, &request) || request.SchemaVersion != "narrative-extraction.v1" || strings.TrimSpace(request.ExtractorVersion) == "" || len(request.ExtractorVersion) > 200 || hasDuplicates(request.ChapterIDs) {
+	if !decodeStrictJSON(c, &request) || request.SchemaVersion != "narrative-extraction.v1" || strings.TrimSpace(request.ExtractorVersion) == "" || len(request.ExtractorVersion) > 200 || len(request.ChapterIDs) > 30 || hasDuplicates(request.ChapterIDs) {
 		if !c.IsAborted() {
 			v2InputError(c, "INVALID_IR_RUN", "IR run input does not satisfy narrative-extraction.v1")
 		}
