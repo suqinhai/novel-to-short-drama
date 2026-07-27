@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { Activity, AlertTriangle, BrainCircuit, CircleCheckBig, Clock3, Container, Database, ExternalLink, HardDrive, Layers3, RefreshCw, Server, ShieldCheck, Table2, TerminalSquare, Workflow, Wrench } from 'lucide-vue-next'
+import { Activity, AlertTriangle, BrainCircuit, CircleCheckBig, Clock3, Container, Database, ExternalLink, HardDrive, Layers3, LoaderCircle, RefreshCw, Server, ShieldCheck, Table2, TerminalSquare, Trash2, Workflow, Wrench, X } from 'lucide-vue-next'
 import { api } from '../services/api'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -8,20 +8,71 @@ import StatusBadge from '../components/StatusBadge.vue'
 const data = ref(null)
 const loading = ref(true)
 const error = ref('')
+const resetPreview = ref(null)
+const resetPreviewError = ref('')
+const resetModal = ref(false)
+const resetConfirmation = ref('')
+const preserveAIConfig = ref(true)
+const resetting = ref(false)
+const resetError = ref('')
+const resetResult = ref(null)
 const serviceIcons = { n8n: Workflow, postgres: Database, media: HardDrive, 'media-worker': Server, litellm: BrainCircuit }
 const failedItems = computed(() => data.value?.failed_tasks?.items || [])
+const canReset = computed(() => !resetting.value && preserveAIConfig.value && resetConfirmation.value.trim() === resetPreview.value?.confirmation_phrase)
 
 async function load() {
   loading.value = true
   error.value = ''
-  try { data.value = await api.getDiagnostics() }
+  resetPreviewError.value = ''
+  try {
+    data.value = await api.getDiagnostics()
+    try { resetPreview.value = await api.getDataResetPreview() }
+    catch (err) { resetPreviewError.value = err.message }
+  }
   catch (err) { error.value = err.message }
   finally { loading.value = false }
 }
 
 onMounted(load)
 const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
+const formatBytes = (value) => {
+  const bytes = Number(value || 0)
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+}
 const overallTitle = computed(() => ({ healthy: '全部诊断项正常', degraded: '系统可运行，但存在需要处理的警告', unhealthy: '发现阻断性系统问题' }[data.value?.status] || '诊断结果未知'))
+
+function openResetModal() {
+  resetConfirmation.value = ''
+  preserveAIConfig.value = true
+  resetError.value = ''
+  resetModal.value = true
+}
+
+function closeResetModal() {
+  if (!resetting.value) resetModal.value = false
+}
+
+async function resetAllData() {
+  if (!canReset.value) return
+  resetting.value = true
+  resetError.value = ''
+  resetResult.value = null
+  try {
+    resetResult.value = await api.resetAllData({
+      confirmation: resetConfirmation.value.trim(),
+      preserve_ai_config: true,
+    })
+    resetModal.value = false
+    await load()
+  } catch (err) {
+    resetError.value = err.message
+  } finally {
+    resetting.value = false
+  }
+}
 </script>
 
 <template>
@@ -90,6 +141,32 @@ const overallTitle = computed(() => ({ healthy: '全部诊断项正常', degrade
         <div class="db-stats"><div><Table2 :size="18" /><span>业务表</span><strong>{{ data.database.schema_table_count }}</strong></div><div><Layers3 :size="18" /><span>生产项目</span><strong>{{ data.database.project_count }}</strong></div><div><Activity :size="18" /><span>活跃任务</span><strong>{{ data.database.active_tasks }}</strong></div><div><Clock3 :size="18" /><span>待审核</span><strong>{{ data.database.pending_reviews }}</strong></div></div>
         <p class="version-line">PostgreSQL {{ data.database.version }}</p>
       </article>
+
+      <article class="panel padded data-reset-panel">
+        <div class="data-reset-copy">
+          <div class="section-title"><div><span>DANGER ZONE</span><h3>删除全部生产数据</h3></div><div class="section-icon danger"><Trash2 :size="19" /></div></div>
+          <p>清空项目、原著、任务、审核、媒体记录、n8n 执行历史、Redis 缓存和所有生成文件。AI 配置、工作流、凭证、账号及数据库结构保持不变。</p>
+          <div v-if="resetResult" class="reset-success"><CircleCheckBig :size="17" /><span>清理完成：删除 {{ resetResult.deleted_business_rows }} 条业务记录和 {{ resetResult.deleted_storage_files }} 个文件，AI 配置已校验保留。</span></div>
+          <div v-if="resetPreviewError" class="error-banner">{{ resetPreviewError }}</div>
+        </div>
+        <div v-if="resetPreview" class="data-reset-summary">
+          <div><span>业务记录</span><strong>{{ resetPreview.business.row_count }}</strong></div>
+          <div><span>生成文件</span><strong>{{ resetPreview.storage.file_count }}</strong><small>{{ formatBytes(resetPreview.storage.total_size) }}</small></div>
+          <button class="button button-danger" :disabled="resetting" @click="openResetModal"><Trash2 :size="16" />删除全部数据</button>
+        </div>
+      </article>
     </template>
+
+    <div v-if="resetModal && resetPreview" class="modal-backdrop" @click.self="closeResetModal">
+      <div class="review-modal data-reset-modal" role="dialog" aria-modal="true" aria-label="删除全部数据确认">
+        <div class="modal-head"><div><span>IRREVERSIBLE ACTION</span><h3>永久删除全部生产数据</h3></div><button aria-label="关闭" :disabled="resetting" @click="closeResetModal"><X :size="18" /></button></div>
+        <div class="archive-warning destructive"><AlertTriangle :size="20" /><div><strong>此操作无法撤销</strong><p>将删除 {{ resetPreview.business.row_count }} 条业务记录和 {{ resetPreview.storage.file_count }} 个生成文件，并短暂停止 n8n 与媒体工作进程。</p></div></div>
+        <div class="preserved-list"><strong>以下内容会保留</strong><span v-for="item in resetPreview.preserved" :key="item"><ShieldCheck :size="14" />{{ item }}</span></div>
+        <label class="field"><span>输入“{{ resetPreview.confirmation_phrase }}”确认 <i>*</i></span><input v-model="resetConfirmation" autocomplete="off" :placeholder="resetPreview.confirmation_phrase" /></label>
+        <label class="reset-preserve-check"><input v-model="preserveAIConfig" type="checkbox" /><span>我确认必须保留 AI 配置与密钥</span></label>
+        <div v-if="resetError" class="error-banner large">{{ resetError }}</div>
+        <div class="modal-actions"><button class="button button-secondary" :disabled="resetting" @click="closeResetModal">取消</button><button class="button button-danger" :disabled="!canReset" @click="resetAllData"><LoaderCircle v-if="resetting" :size="16" class="spin" /><Trash2 v-else :size="16" />{{ resetting ? '正在清理并恢复服务…' : '确认永久删除' }}</button></div>
+      </div>
+    </div>
   </section>
 </template>

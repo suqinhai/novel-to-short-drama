@@ -81,7 +81,9 @@ services:
       CMS_MEDIA_HEALTH_URL: http://media/healthz
       CMS_WORKFLOW_DIR: /app/workflows
       CMS_MANAGED_ENV_FILE: /app/config/cms-managed.env
+      CMS_STORAGE_DIR: /app/storage
       CMS_VIDEO_ADAPTER_CONTAINER_NAME: ai-short-drama-veo-adapter-1
+      CMS_REDIS_CONTAINER_NAME: ai-short-drama-redis-1
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${POSTGRES_USER}
@@ -92,6 +94,7 @@ services:
     volumes:
       - ./workflows:/app/workflows:ro
       - ./cms/config:/app/config
+      - ./storage:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       postgres:

@@ -17,9 +17,15 @@ import (
 
 	"short-drama-cms/backend/internal/aiconfig"
 	"short-drama-cms/backend/internal/config"
+	"short-drama-cms/backend/internal/datacleanup"
 	systemdiagnostics "short-drama-cms/backend/internal/diagnostics"
 	"short-drama-cms/backend/internal/store"
 )
+
+type dataCleaner interface {
+	Preview(context.Context) (datacleanup.Preview, error)
+	Reset(context.Context) (datacleanup.Result, error)
+}
 
 type Handler struct {
 	store             *store.Store
@@ -28,10 +34,11 @@ type Handler struct {
 	webhookClient     *http.Client
 	aiConfigManager   *aiconfig.Manager
 	diagnosticsRunner *systemdiagnostics.Runner
+	dataCleaner       dataCleaner
 }
 
 func New(store *store.Store, cfg config.Config) *Handler {
-	return &Handler{
+	handler := &Handler{
 		store: store, config: cfg,
 		client:          &http.Client{Timeout: cfg.ProbeTimeout},
 		webhookClient:   &http.Client{Timeout: cfg.WebhookTimeout},
@@ -41,6 +48,14 @@ func New(store *store.Store, cfg config.Config) *Handler {
 			cfg.MediaWorkerContainer, cfg.LiteLLMContainer, cfg.WorkflowDirectory,
 		),
 	}
+	if store != nil {
+		handler.dataCleaner = datacleanup.New(store, datacleanup.Config{
+			StorageDirectory: cfg.StorageDirectory, ManagedEnvFile: cfg.ManagedEnvFile,
+			N8NContainer: cfg.N8NContainer, MediaWorkerContainer: cfg.MediaWorkerContainer,
+			PostgresContainer: cfg.PostgresContainer, RedisContainer: cfg.RedisContainer,
+		})
+	}
+	return handler
 }
 
 func (h *Handler) Router() *gin.Engine {
@@ -62,8 +77,58 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	api.PUT("/ai-config", h.updateAIConfig)
+	api.GET("/data-reset", h.dataResetPreview)
+	api.POST("/data-reset", h.resetAllData)
 	registerSourceV2(router, h.store)
 	return router
+}
+
+type dataResetRequest struct {
+	Confirmation     string `json:"confirmation"`
+	PreserveAIConfig bool   `json:"preserve_ai_config"`
+}
+
+func (h *Handler) dataResetPreview(c *gin.Context) {
+	if h.dataCleaner == nil {
+		respondError(c, http.StatusServiceUnavailable, "DATA_RESET_UNAVAILABLE", "数据清理服务不可用")
+		return
+	}
+	preview, err := h.dataCleaner.Preview(c.Request.Context())
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "DATA_RESET_PREVIEW_FAILED", "无法读取待清理数据："+err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": preview})
+}
+
+func (h *Handler) resetAllData(c *gin.Context) {
+	if h.dataCleaner == nil {
+		respondError(c, http.StatusServiceUnavailable, "DATA_RESET_UNAVAILABLE", "数据清理服务不可用")
+		return
+	}
+	if c.GetHeader("X-Data-Reset-Intent") != "permanent" {
+		respondError(c, http.StatusBadRequest, "DATA_RESET_INTENT_REQUIRED", "缺少永久删除操作标记")
+		return
+	}
+	var input dataResetRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "数据清理请求格式无效")
+		return
+	}
+	if strings.TrimSpace(input.Confirmation) != datacleanup.ConfirmationPhrase || !input.PreserveAIConfig {
+		respondError(c, http.StatusBadRequest, "DATA_RESET_CONFIRMATION_FAILED", "确认短语不匹配，或未确认保留 AI 配置")
+		return
+	}
+	result, err := h.dataCleaner.Reset(c.Request.Context())
+	if errors.Is(err, datacleanup.ErrInProgress) {
+		respondError(c, http.StatusConflict, "DATA_RESET_IN_PROGRESS", "已有数据清理任务正在执行")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "DATA_RESET_FAILED", "数据清理未完整完成："+err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 type projectActionRequest struct {
@@ -951,7 +1016,7 @@ func (h *Handler) cors() gin.HandlerFunc {
 		if allowed[origin] {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
-			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, If-Match, X-Trace-ID")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, If-Match, X-Trace-ID, X-Data-Reset-Intent")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, OPTIONS")
 		}
 		if c.Request.Method == http.MethodOptions {

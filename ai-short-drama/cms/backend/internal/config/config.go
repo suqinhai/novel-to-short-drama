@@ -29,8 +29,10 @@ type Config struct {
 	MediaContainer        string
 	MediaWorkerContainer  string
 	LiteLLMContainer      string
+	RedisContainer        string
 	WorkflowDirectory     string
 	ManagedEnvFile        string
+	StorageDirectory      string
 	ProbeTimeout          time.Duration
 	WebhookTimeout        time.Duration
 }
@@ -79,8 +81,10 @@ func Load() (Config, error) {
 		MediaContainer:        env("CMS_MEDIA_CONTAINER_NAME", "ai-short-drama-media-1"),
 		MediaWorkerContainer:  env("CMS_MEDIA_WORKER_CONTAINER_NAME", "ai-short-drama-media-worker-1"),
 		LiteLLMContainer:      env("CMS_LITELLM_CONTAINER_NAME", "ai-short-drama-litellm-1"),
+		RedisContainer:        env("CMS_REDIS_CONTAINER_NAME", "ai-short-drama-redis-1"),
 		WorkflowDirectory:     workflowDirectoryPath(),
 		ManagedEnvFile:        managedEnvFilePath(),
+		StorageDirectory:      storageDirectoryPath(),
 		ProbeTimeout:          time.Duration(timeoutSeconds) * time.Second,
 		WebhookTimeout:        time.Duration(webhookTimeoutSeconds) * time.Second,
 	}, nil
@@ -118,6 +122,28 @@ func managedEnvFilePath() string {
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(filepath.Dir(candidate)); err == nil && info.IsDir() {
+			if absolute, absErr := filepath.Abs(candidate); absErr == nil {
+				return absolute
+			}
+		}
+	}
+	absolute, _ := filepath.Abs(candidates[0])
+	return absolute
+}
+
+func storageDirectoryPath() string {
+	if explicit := strings.TrimSpace(os.Getenv("CMS_STORAGE_DIR")); explicit != "" {
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return absolute
+		}
+		return explicit
+	}
+	candidates := []string{
+		filepath.Join("..", "..", "storage"),
+		"storage",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			if absolute, absErr := filepath.Abs(candidate); absErr == nil {
 				return absolute
 			}

@@ -23,6 +23,17 @@ type Store struct {
 	writer *pgxpool.Pool
 }
 
+type BusinessDataSummary struct {
+	TableCount int   `json:"table_count"`
+	RowCount   int64 `json:"row_count"`
+}
+
+var preservedBusinessTables = map[string]struct{}{
+	"artifact_types":    {},
+	"migration_audit":   {},
+	"schema_migrations": {},
+}
+
 type Project struct {
 	ProjectID              string          `json:"project_id"`
 	NovelName              string          `json:"novel_name"`
@@ -433,6 +444,74 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() {
 	s.pool.Close()
 	s.writer.Close()
+}
+
+func (s *Store) BusinessDataSummary(ctx context.Context) (BusinessDataSummary, error) {
+	tables, err := s.businessDataTables(ctx)
+	if err != nil {
+		return BusinessDataSummary{}, err
+	}
+	summary := BusinessDataSummary{TableCount: len(tables)}
+	if len(tables) == 0 {
+		return summary, nil
+	}
+	counts := make([]string, 0, len(tables))
+	for _, table := range tables {
+		counts = append(counts, "SELECT count(*)::bigint AS count FROM "+pgx.Identifier{"drama", table}.Sanitize())
+	}
+	query := "SELECT COALESCE(sum(count),0)::bigint FROM (" + strings.Join(counts, " UNION ALL ") + ") business_counts"
+	if err := s.writer.QueryRow(ctx, query).Scan(&summary.RowCount); err != nil {
+		return BusinessDataSummary{}, fmt.Errorf("count business data: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *Store) ResetBusinessData(ctx context.Context) (BusinessDataSummary, error) {
+	summary, err := s.BusinessDataSummary(ctx)
+	if err != nil {
+		return BusinessDataSummary{}, err
+	}
+	tables, err := s.businessDataTables(ctx)
+	if err != nil {
+		return BusinessDataSummary{}, err
+	}
+	if len(tables) == 0 {
+		return summary, nil
+	}
+	identifiers := make([]string, 0, len(tables))
+	for _, table := range tables {
+		identifiers = append(identifiers, pgx.Identifier{"drama", table}.Sanitize())
+	}
+	if _, err := s.writer.Exec(ctx, "TRUNCATE TABLE "+strings.Join(identifiers, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		return BusinessDataSummary{}, fmt.Errorf("truncate business data: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *Store) businessDataTables(ctx context.Context) ([]string, error) {
+	rows, err := s.writer.Query(ctx, `
+		SELECT tablename
+		FROM pg_tables
+		WHERE schemaname='drama'
+		ORDER BY tablename`)
+	if err != nil {
+		return nil, fmt.Errorf("list business tables: %w", err)
+	}
+	defer rows.Close()
+	tables := make([]string, 0, 96)
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, fmt.Errorf("scan business table: %w", err)
+		}
+		if _, preserved := preservedBusinessTables[table]; !preserved {
+			tables = append(tables, table)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list business tables: %w", err)
+	}
+	return tables, nil
 }
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }

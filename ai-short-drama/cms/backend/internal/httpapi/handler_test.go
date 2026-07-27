@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,25 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"short-drama-cms/backend/internal/config"
+	"short-drama-cms/backend/internal/datacleanup"
 )
+
+type fakeDataCleaner struct {
+	resetCalls int
+}
+
+func (f *fakeDataCleaner) Preview(context.Context) (datacleanup.Preview, error) {
+	return datacleanup.Preview{
+		ConfirmationPhrase: datacleanup.ConfirmationPhrase,
+		AIConfigFileExists: true,
+		Destructive:        true,
+	}, nil
+}
+
+func (f *fakeDataCleaner) Reset(context.Context) (datacleanup.Result, error) {
+	f.resetCalls++
+	return datacleanup.Result{DeletedBusinessRows: 42, AIConfigPreserved: true}, nil
+}
 
 func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
 	handler := &Handler{config: config.Config{AllowedOrigins: []string{"http://localhost:5173"}}}
@@ -28,7 +47,7 @@ func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("unexpected preflight status %d", recorder.Code)
 	}
-	for _, expected := range []string{"Idempotency-Key", "If-Match", "X-Trace-ID"} {
+	for _, expected := range []string{"Idempotency-Key", "If-Match", "X-Trace-ID", "X-Data-Reset-Intent"} {
 		if !strings.Contains(recorder.Header().Get("Access-Control-Allow-Headers"), expected) {
 			t.Fatalf("missing CORS header %s: %s", expected, recorder.Header().Get("Access-Control-Allow-Headers"))
 		}
@@ -211,5 +230,55 @@ func TestUpdateAIConfigDoesNotEchoSecrets(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"saved_secret_count":1`) || !strings.Contains(recorder.Body.String(), `"restart_required":true`) {
 		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+}
+
+func TestDataResetRequiresIntentAndExactConfirmation(t *testing.T) {
+	cleaner := &fakeDataCleaner{}
+	handler := &Handler{dataCleaner: cleaner}
+	router := handler.Router()
+
+	for name, test := range map[string]struct {
+		intent string
+		body   string
+	}{
+		"missing intent": {"", `{"confirmation":"永久删除全部数据","preserve_ai_config":true}`},
+		"wrong phrase":   {"permanent", `{"confirmation":"删除数据","preserve_ai_config":true}`},
+		"AI not kept":    {"permanent", `{"confirmation":"永久删除全部数据","preserve_ai_config":false}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/data-reset", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			if test.intent != "" {
+				request.Header.Set("X-Data-Reset-Intent", test.intent)
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	if cleaner.resetCalls != 0 {
+		t.Fatalf("unsafe request invoked reset %d times", cleaner.resetCalls)
+	}
+}
+
+func TestDataResetWithExactConfirmation(t *testing.T) {
+	cleaner := &fakeDataCleaner{}
+	handler := &Handler{dataCleaner: cleaner}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/data-reset", strings.NewReader(`{
+		"confirmation":"永久删除全部数据",
+		"preserve_ai_config":true
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Data-Reset-Intent", "permanent")
+	handler.Router().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if cleaner.resetCalls != 1 || !strings.Contains(recorder.Body.String(), `"ai_config_preserved":true`) {
+		t.Fatalf("unexpected reset response: %s", recorder.Body.String())
 	}
 }

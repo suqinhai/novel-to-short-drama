@@ -46,12 +46,12 @@ npm run dev
 - 项目详情
 - 审核中心（项目/阶段/状态筛选，直接预览故事圣经、大纲、剧本、分镜和音视频产物，再通过 n8n 执行 approved/rejected）
 - 媒体资产库（只读浏览图片、视频、音频和剧集成片）
-- 系统诊断（Docker 健康、workflow active、Postgres Credential、executeCommand 扫描和最近失败任务）
+- 系统诊断（Docker 健康、workflow active、Postgres Credential、executeCommand 扫描、最近失败任务，以及带双重确认的全量生产数据清理）
 - AI 配置管理（可选择原生直连、自定义接口、兼容网关或推荐的混合路由；文本、图片、视频和 TTS 分能力配置 Base URL 与只写密钥，白名单写入 CMS 托管 env）
 
 项目详情会读取 `workflow_tasks`、`review_tasks`、`novels`、`story_bibles`、`episode_outlines`、`episode_scripts` 和 `storyboards`。
 
-CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。生产内容查询使用只读连接；原著版本化操作和项目回收站使用独立写连接。回收站只更新项目状态和审计元数据，不删除任务、审核记录或生成资产。
+CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流。常规生产内容查询使用只读连接；原著版本化操作、项目回收站和显式确认的全量数据清理使用独立写连接。回收站只更新项目状态和审计元数据，不删除任务、审核记录或生成资产。
 
 业务提交接口只负责校验和转发，CMS 自身不执行数据库写入：
 
@@ -62,6 +62,8 @@ CMS 代码完全位于 `cms/`，不会修改 `workflows/` 下的 n8n 工作流�
 - `GET /api/v1/ai-config` 从当前 n8n 容器读取模型与 Provider 配置；敏感项只返回是否已配置。
 - `PUT /api/v1/ai-config` 只接受预定义白名单字段，将非敏感覆盖值和新密钥写入被 Git 忽略的 `cms/config/cms-managed.env`。响应不会包含任何密钥值。
 - `GET /api/v1/diagnostics` 只读检查 n8n、postgres、media、media-worker、litellm 容器，核对 n8n 数据库中的 workflow active 状态与 `POSTGRES_CREDENTIAL_ID`，扫描本地 workflow 节点，并读取最近 20 条失败 `workflow_tasks`。
+- `GET /api/v1/data-reset` 只读统计即将删除的业务记录和生成文件。
+- `POST /api/v1/data-reset` 必须同时提交 `X-Data-Reset-Intent: permanent`、精确确认短语和 `preserve_ai_config=true`。执行时暂停 n8n 与 media-worker，清空业务表、n8n 执行历史、Redis 和 `storage` 生成物，再恢复服务；保留 `cms/config/cms-managed.env`、n8n 工作流/凭证/账号、数据库结构、迁移记录和系统字典，并用 SHA-256 校验 AI 配置未变化。
 
 n8n 返回后，前端展示该次 webhook 结果和最新项目状态。审核中心通过 `GET /api/v1/reviews` 只读查询 `drama.review_tasks`。流程推进与重试也只调用 n8n，不会直接修改项目或任务等业务表。
 
@@ -71,4 +73,4 @@ AI 配置保存后不会自动重启容器。请在项目根目录执行页面�
 
 接入方案字段只描述并组织路由，实际调用仍以各能力的 Base URL、Provider 和 API Key 为准。当前文本接口要求 OpenAI 兼容的 `/v1/chat/completions`，图片同步接口要求 `/v1/images/generations` 返回 URL，异步视频接口要求 `/generate` 与 `/tasks/{id}`，通用同步 TTS 接口要求 `/tts` 返回可下载音频 URL。Google 语音配置区可直接选择 Gemini Speech 或 Chirp 3 HD，自动填写官方端点、模型和中文默认声线；Google 返回的 Base64 音频由工作流解码落盘，不进入数据库。视频模型可从 Gemini Omni Flash、Veo 3.1、Veo 3.1 Fast 预设中选择，也可输入兼容接口支持的其他模型 ID；所选模型会随视频生成请求发送。混合路由默认让文本走网关、媒体能力走已有原生适配器，避免把仅支持文本的兼容地址误用于视频或语音。
 
-系统诊断通过只读 `docker inspect` / `docker exec ... psql` 获取容器和 n8n workflow 状态，不会激活工作流或修改容器。容器名和 workflow 目录可分别通过 `CMS_*_CONTAINER_NAME` 与 `CMS_WORKFLOW_DIR` 覆盖。
+除用户在危险操作区完成双重确认的全量清理外，系统诊断只通过只读 `docker inspect` / `docker exec ... psql` 获取容器和 n8n workflow 状态，不会激活工作流或修改容器。容器名、workflow 目录和清理存储目录可分别通过 `CMS_*_CONTAINER_NAME`、`CMS_WORKFLOW_DIR` 与 `CMS_STORAGE_DIR` 覆盖。

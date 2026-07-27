@@ -57,4 +57,14 @@ export const api = {
   updateAIConfig(payload) {
     return request('/ai-config', { method: 'PUT', body: JSON.stringify(payload) })
   },
+  getDataResetPreview() {
+    return request('/data-reset')
+  },
+  resetAllData(payload) {
+    return request('/data-reset', {
+      method: 'POST',
+      headers: { 'X-Data-Reset-Intent': 'permanent' },
+      body: JSON.stringify(payload),
+    })
+  },
 }
