@@ -58,14 +58,16 @@ func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
 }
 
 func TestCreateProjectForwardsToN8N(t *testing.T) {
-	var received createProjectRequest
+	receivedCh := make(chan createProjectWorkflowRequest, 1)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
+		var received createProjectWorkflowRequest
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Fatalf("decode webhook request: %v", err)
 		}
+		receivedCh <- received
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"success":true,"project_id":"p_test_001","status":"waiting_review"}`))
 	}))
@@ -81,11 +83,20 @@ func TestCreateProjectForwardsToN8N(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	handler.Router().ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var received createProjectWorkflowRequest
+	select {
+	case received = <-receivedCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for n8n dispatch")
 	}
 	if received.NovelText != "第一章 测试正文" || received.NovelName != "测试小说" {
 		t.Fatalf("unexpected forwarded request: %+v", received)
+	}
+	if received.Action != "run" || received.ProjectID == "" {
+		t.Fatalf("missing asynchronous workflow identity: %+v", received)
 	}
 	var response struct {
 		Data struct {
@@ -95,7 +106,7 @@ func TestCreateProjectForwardsToN8N(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode CMS response: %v", err)
 	}
-	if response.Data.ProjectID != "p_test_001" {
+	if response.Data.ProjectID != received.ProjectID {
 		t.Fatalf("unexpected project id %q", response.Data.ProjectID)
 	}
 }

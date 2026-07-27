@@ -79,9 +79,9 @@ async function submit() {
         <div v-if="error" class="error-banner large create-error">{{ error }}</div>
         <button class="button button-primary submit-project" type="submit" :disabled="!canSubmit">
           <LoaderCircle v-if="submitting" :size="17" class="spin" /><Send v-else :size="17" />
-          {{ submitting ? '正在提交并执行工作流…' : '提交并创建项目' }}
+          {{ submitting ? '正在创建项目…' : '提交并创建项目' }}
         </button>
-        <p class="submit-hint"><Sparkles :size="13" />n8n 完成当前同步流程后页面会自动跳转。</p>
+        <p class="submit-hint"><Sparkles :size="13" />项目创建后立即跳转，n8n 会在后台继续执行生产流程。</p>
       </aside>
     </form>
   </section>

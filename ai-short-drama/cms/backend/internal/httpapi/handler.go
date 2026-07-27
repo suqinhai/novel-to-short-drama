@@ -3,10 +3,13 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -694,6 +697,74 @@ type createProjectRequest struct {
 	TestMode               bool   `json:"test_mode"`
 }
 
+type createProjectWorkflowRequest struct {
+	createProjectRequest
+	ProjectID string `json:"project_id"`
+	Action    string `json:"action"`
+}
+
+func deriveProjectID(input createProjectRequest, now time.Time) (string, error) {
+	identity := []any{
+		input.NovelName,
+		"",
+		input.NovelText,
+		input.TargetEpisodeCount,
+		input.TargetPlatform,
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(identity); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(bytes.TrimSpace(encoded.Bytes()))
+	return fmt.Sprintf("p_%s_%s", now.UTC().Format("20060102"), hex.EncodeToString(sum[:])[:12]), nil
+}
+
+func (h *Handler) dispatchProjectWorkflow(body []byte, projectID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.config.WebhookTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.N8NProjectURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("project %s workflow request creation failed: %v", projectID, err)
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := h.webhookClient.Do(request)
+	if err != nil {
+		log.Printf("project %s workflow dispatch ended: %v", projectID, err)
+		return
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 10<<20))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		log.Printf("project %s workflow returned HTTP %d", projectID, response.StatusCode)
+	}
+}
+
+func (h *Handler) waitForProjectStart(projectID string) {
+	if h.store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := h.store.GetProject(ctx, projectID); err == nil {
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (h *Handler) createProject(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 20<<20)
 	var input createProjectRequest
@@ -719,75 +790,30 @@ func (h *Handler) createProject(c *gin.Context) {
 		return
 	}
 
-	body, err := json.Marshal(input)
+	projectID, err := deriveProjectID(input, time.Now())
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "REQUEST_ENCODING_FAILED", "请求编码失败")
 		return
 	}
-	request, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, h.config.N8NProjectURL, bytes.NewReader(body))
+	body, err := json.Marshal(createProjectWorkflowRequest{
+		createProjectRequest: input,
+		ProjectID:            projectID,
+		Action:               "run",
+	})
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "WEBHOOK_REQUEST_FAILED", "无法创建 n8n 请求")
+		respondError(c, http.StatusInternalServerError, "REQUEST_ENCODING_FAILED", "请求编码失败")
 		return
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-
-	response, err := h.webhookClient.Do(request)
-	if err != nil {
-		respondError(c, http.StatusBadGateway, "N8N_UNAVAILABLE", "n8n webhook 调用失败："+err.Error())
-		return
-	}
-	defer response.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
-	if err != nil {
-		respondError(c, http.StatusBadGateway, "N8N_RESPONSE_FAILED", "读取 n8n 响应失败")
-		return
-	}
-
-	var n8nResponse any
-	if len(responseBody) > 0 {
-		if err := json.Unmarshal(responseBody, &n8nResponse); err != nil {
-			n8nResponse = string(responseBody)
-		}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
-			"code": "N8N_WEBHOOK_FAILED", "message": fmt.Sprintf("n8n webhook 返回 HTTP %d", response.StatusCode), "response": n8nResponse,
-		}})
-		return
-	}
-
-	projectID := findProjectID(n8nResponse)
-	if projectID == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
-			"code": "N8N_RESPONSE_INVALID", "message": "n8n 响应中缺少 project_id", "response": n8nResponse,
-		}})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"project_id": projectID, "n8n_response": n8nResponse}})
-}
-
-func findProjectID(value any) string {
-	switch item := value.(type) {
-	case map[string]any:
-		if projectID, ok := item["project_id"].(string); ok && projectID != "" {
-			return projectID
-		}
-		for _, key := range []string{"data", "output_data", "response"} {
-			if nested, ok := item[key]; ok {
-				if projectID := findProjectID(nested); projectID != "" {
-					return projectID
-				}
-			}
-		}
-	case []any:
-		for _, nested := range item {
-			if projectID := findProjectID(nested); projectID != "" {
-				return projectID
-			}
-		}
-	}
-	return ""
+	go h.dispatchProjectWorkflow(body, projectID)
+	h.waitForProjectStart(projectID)
+	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
+		"project_id": projectID,
+		"n8n_response": gin.H{
+			"accepted": true,
+			"status":   "processing",
+			"message":  "项目已创建，工作流正在后台执行",
+		},
+	}})
 }
 
 func (h *Handler) health(c *gin.Context) {
