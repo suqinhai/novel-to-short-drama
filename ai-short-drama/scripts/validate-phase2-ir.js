@@ -67,6 +67,15 @@ function schemaErrors(value, rule, location = '$') {
 }
 
 function sha256(value) { return crypto.createHash('sha256').update(value, 'utf8').digest('hex'); }
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+}
+
+if (sha256(canonicalJson({ z: 1, a: { y: 2, b: 3 } })) !== sha256(canonicalJson({ a: { b: 3, y: 2 }, z: 1 }))) {
+  fail('canonical JSON hash must ignore object key insertion order');
+}
 
 function businessErrors(fixture) {
   const out = fixture.extraction;
@@ -213,13 +222,15 @@ for (const workflowPath of workflowPaths) {
 
 const extract = readJson(workflowPaths[0]);
 if (extract) {
-  for (const name of ['Claim IR Operation', 'Load One Bounded Chapter Window', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Checkpoint Validated Window', 'Sanitize IR Extraction Failure', 'Atomically Quarantine Failed IR Run']) requireNode(extract, name);
-  if (!connected(extract, 'Parse Model JSON', 'JSON Schema Validate') || !connected(extract, 'JSON Schema Validate', 'Business Validate Provenance and References')) fail('02a: JSON Schema validation must precede business validation');
-  for (const source of ['Verify Claimed Operation', 'Load One Bounded Chapter Window', 'Build Codepoint-bounded Slice', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'Parse Model JSON', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Checkpoint Validated Window', 'Checkpoint Ready Without More Windows', 'Execute 02b Narrative IR Reconcile']) {
+  for (const name of ['Claim IR Operation', 'Load One Bounded Chapter Window', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'Normalize Model Provenance and Require Events', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Canonicalize Validated Window Hash', 'Checkpoint Validated Window', 'Sanitize IR Extraction Failure', 'Atomically Quarantine Failed IR Run']) requireNode(extract, name);
+  if (!connected(extract, 'Parse Model JSON', 'Normalize Model Provenance and Require Events') || !connected(extract, 'Normalize Model Provenance and Require Events', 'JSON Schema Validate') || !connected(extract, 'JSON Schema Validate', 'Business Validate Provenance and References') || !connected(extract, 'Business Validate Provenance and References', 'Canonicalize Validated Window Hash') || !connected(extract, 'Canonicalize Validated Window Hash', 'Checkpoint Validated Window')) fail('02a: provenance normalization, schema, business and canonical hash validation must precede checkpointing');
+  for (const source of ['Verify Claimed Operation', 'Load One Bounded Chapter Window', 'Build Codepoint-bounded Slice', 'Checkpoint Model Call Started', 'Call Narrative Extraction Model', 'Parse Model JSON', 'Normalize Model Provenance and Require Events', 'JSON Schema Validate', 'Business Validate Provenance and References', 'Canonicalize Validated Window Hash', 'Checkpoint Validated Window', 'Checkpoint Ready Without More Windows', 'Execute 02b Narrative IR Reconcile']) {
     if (!connected(extract, source, 'Sanitize IR Extraction Failure')) fail(`02a: ${source} error output must finalize the operation`);
   }
   const text = JSON.stringify(extract);
   if (!text.includes("typeof err==='string'")) fail('02a failure sanitizer must preserve string-form n8n errors');
+  if (!text.includes("hash_version:'canonical-json.v1'") || !text.includes('Object.keys(v).sort()')) fail('02a: checkpoint hashes must use canonical-json.v1');
+  for (const marker of ['EMPTY_MODEL_EXTRACTION', 'MODEL_SOURCE_QUOTE_NOT_FOUND', "crypto.createHash('sha256').update(quote)", 'Empty extraction is forbidden']) if (!text.includes(marker)) fail(`02a non-empty extraction guard: missing ${marker}`);
   for (const marker of ['IR_WINDOW_MAX_CODEPOINTS', 'MODEL_TIMEOUT_MS', 'narrative-extraction.v1', 'json_object', 'claim_operation', 'checkpoint_operation', 'finish_operation', "checkpoint_data->'chapter_ids'", 'last_selected_ordinal', 'chapter_total_codepoints', 'selected_chapter_ids', 'calling_model']) if (!text.includes(marker)) fail(`02a: missing ${marker}`);
   if (text.includes('"type":"json_schema"')) fail('02a: provider request must not use the gateway-incompatible incomplete json_schema');
   if (!/LIMIT 1/i.test(text)) fail('02a: chapter selection must be bounded to one chapter');
@@ -227,13 +238,18 @@ if (extract) {
 
 const reconcile = readJson(workflowPaths[1]);
 if (reconcile) {
-  for (const name of ['Assert Fenced Claim and Load Windows', 'Revalidate All Windows', 'Deterministic Cross-window Reconcile', 'Atomic Publish Narrative IR', 'Published Result']) requireNode(reconcile, name);
+  for (const name of ['Assert Fenced Claim and Load Windows', 'Canonicalize Checkpoint Windows', 'Revalidate All Windows', 'Deterministic Cross-window Reconcile', 'Require Non-empty Narrative IR', 'Atomic Publish Narrative IR', 'Published Result']) requireNode(reconcile, name);
+  if (!connected(reconcile, 'Assert Fenced Claim and Load Windows', 'Canonicalize Checkpoint Windows') || !connected(reconcile, 'Canonicalize Checkpoint Windows', 'Revalidate All Windows') || !connected(reconcile, 'Canonicalize Checkpoint Windows', 'Sanitize Quarantine Failure')) fail('02b: checkpoint windows must be canonicalized before hash revalidation and failures quarantined');
+  if (!connected(reconcile, 'Deterministic Cross-window Reconcile', 'Require Non-empty Narrative IR') || !connected(reconcile, 'Require Non-empty Narrative IR', 'Atomic Publish Narrative IR') || !connected(reconcile, 'Require Non-empty Narrative IR', 'Sanitize Quarantine Failure')) fail('02b: non-empty IR guard must run before atomic publication and quarantine failures');
   const publish = requireNode(reconcile, 'Atomic Publish Narrative IR');
   const sql = publish?.parameters?.query || '';
   for (const marker of ['assert_operation_claim', 'source_spans', 'narrative_entity_revisions', 'narrative_fact_revisions', 'narrative_event_revisions', 'event_participants', 'event_relations', 'character_state_changes', 'timeline_facts', 'foreshadow_occurrences', 'story_arc_revisions', 'finish_operation']) if (!sql.includes(marker)) fail(`02b atomic publish: missing ${marker}`);
   if (!/WITH\s+claim\s+AS/i.test(sql)) fail('02b: fenced claim and publication must share one SQL statement');
   if ((reconcile.nodes || []).filter((node) => node.type === 'n8n-nodes-base.postgres' && /INSERT INTO drama\.narrative_/i.test(node.parameters?.query || '')).length !== 1) fail('02b: Narrative IR publication must use one atomic PostgreSQL node');
   const reconcileText = JSON.stringify(reconcile);
+  if (!reconcileText.includes("hash_version!=='canonical-json.v1'") || !reconcileText.includes('Object.keys(v).sort()')) fail('02b: canonical-json.v1 hashes must be enforced');
+  if (!reconcileText.includes("typeof err==='string'")) fail('02b failure sanitizer must preserve string-form n8n errors');
+  for (const marker of ['EMPTY_IR_PUBLICATION', 'event_count', "facts.filter(f=>f?.fact_kind==='event'&&f.event)"]) if (!reconcileText.includes(marker)) fail(`02b non-empty publication guard: missing ${marker}`);
   for (const marker of ['CHAPTER_TAIL_MISSING', 'CHAPTER_TOTAL_MISMATCH', 'SELECTED_CHAPTER_COVERAGE_MISMATCH']) if (!reconcileText.includes(marker)) fail(`02b coverage validation: missing ${marker}`);
 }
 
