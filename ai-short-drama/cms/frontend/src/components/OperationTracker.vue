@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCircle2, CircleAlert, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import { narrativeApi } from '../services/narrativeApi'
-import { createTerminalNotifier, isTerminalOperation } from '../services/operationTerminal'
+import { createTerminalNotifier, isFailedOperation, isReviewOperation, isTerminalOperation } from '../services/operationTerminal'
 import { getDisplayValueLabel, getStatusLabel } from '../services/displayLabels'
 
 const props = defineProps({ operation: { type: Object, default: null } })
@@ -13,6 +13,10 @@ const polling = ref(false)
 let timer = 0
 const terminal = computed(() => isTerminalOperation(current.value))
 const successful = computed(() => current.value?.status === 'completed')
+const reviewable = computed(() => isReviewOperation(current.value))
+const failed = computed(() => isFailedOperation(current.value))
+const hasProgressCounts = computed(() => Number.isInteger(current.value?.checkpoint?.completed_items) &&
+  Number.isInteger(current.value?.checkpoint?.total_items))
 const notifyTerminal = createTerminalNotifier((operation) => emit('terminal', operation))
 
 function stop() {
@@ -50,7 +54,7 @@ onBeforeUnmount(stop)
 </script>
 
 <template>
-  <article v-if="current" class="operation-card" :class="{ success: successful, failed: terminal && !successful }">
+  <article v-if="current" class="operation-card" :class="{ success: successful, review: reviewable, failed }">
     <div class="operation-icon">
       <CheckCircle2 v-if="successful" :size="20" />
       <CircleAlert v-else-if="terminal" :size="20" />
@@ -60,7 +64,10 @@ onBeforeUnmount(stop)
       <span>异步操作 · {{ getDisplayValueLabel(current.operation_type) }}</span>
       <strong>{{ getStatusLabel(current.status) }}</strong>
       <code>{{ current.operation_id }}</code>
-      <p v-if="current.checkpoint?.stage">{{ getDisplayValueLabel(current.checkpoint.stage) }} · {{ current.checkpoint.completed_items || 0 }} / {{ current.checkpoint.total_items || '—' }}</p>
+      <p v-if="current.checkpoint?.stage">
+        {{ getDisplayValueLabel(current.checkpoint.stage) }}
+        <template v-if="hasProgressCounts"> · {{ current.checkpoint.completed_items }} / {{ current.checkpoint.total_items }}</template>
+      </p>
       <p v-if="current.error">{{ current.error.message }}</p>
       <p v-if="error" class="operation-error">状态刷新失败：{{ error }}</p>
     </div>

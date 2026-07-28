@@ -21,3 +21,9 @@ export function buildAdaptationScope(mode, chapterIds = [], storyArcRevisionIds 
     story_arc_revision_ids: mode === 'chapters_only' ? [] : [...storyArcRevisionIds],
   }
 }
+
+export function hasReviewableAdaptationPlan(operation) {
+  return ['completed', 'needs_review'].includes(operation?.status) &&
+    operation?.result_ref?.resource_type === 'adaptation_plan' &&
+    Boolean(operation.result_ref.resource_id)
+}

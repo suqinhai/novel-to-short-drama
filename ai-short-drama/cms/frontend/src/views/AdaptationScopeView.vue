@@ -6,7 +6,7 @@ import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { api } from '../services/api'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
-import { buildAdaptationScope, isScopeComplete, selectCurrentFullIR } from '../services/adaptationScope'
+import { buildAdaptationScope, hasReviewableAdaptationPlan, isScopeComplete, selectCurrentFullIR } from '../services/adaptationScope'
 
 const MAX_ARC_CHAPTERS = 30
 const MAX_ARC_EPISODES = 12
@@ -235,7 +235,7 @@ async function compileSpec(spec) {
 
 async function handleCompilerTerminal(terminalOperation) {
   compilingSpecId.value = ''
-  if (terminalOperation.status !== 'completed' || terminalOperation.result_ref?.resource_type !== 'adaptation_plan') return
+  if (!hasReviewableAdaptationPlan(terminalOperation)) return
   planLoading.value = true
   error.value = ''
   try {

@@ -717,7 +717,9 @@ func scanOperation(row pgx.Row) (Operation, error) {
 	item.Checkpoint.Cursor = cursor
 	var progress struct {
 		CompletedItems     *int              `json:"completed_items"`
+		CompletedStages    *int              `json:"completed_stages"`
 		TotalItems         *int              `json:"total_items"`
+		Pipeline           []string          `json:"pipeline"`
 		Windows            []json.RawMessage `json:"windows"`
 		SelectedChapterIDs []string          `json:"selected_chapter_ids"`
 		ChapterIDs         []string          `json:"chapter_ids"`
@@ -727,10 +729,21 @@ func scanOperation(row pgx.Row) (Operation, error) {
 		completed := len(progress.Windows)
 		progress.CompletedItems = &completed
 	}
+	if progress.CompletedItems == nil && progress.CompletedStages != nil {
+		progress.CompletedItems = progress.CompletedStages
+	}
 	if progress.TotalItems == nil {
-		total := len(progress.SelectedChapterIDs)
+		total := len(progress.Pipeline)
+		if total == 0 {
+			total = len(progress.SelectedChapterIDs)
+		}
 		if total == 0 {
 			total = len(progress.ChapterIDs)
+		}
+		if total == 0 && item.OperationType == "adaptation_compile" &&
+			(item.Status == "completed" || item.Status == "needs_review" || item.Status == "failed") &&
+			progress.CompletedStages != nil {
+			total = *progress.CompletedStages
 		}
 		if total > 0 {
 			progress.TotalItems = &total

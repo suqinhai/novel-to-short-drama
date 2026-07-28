@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createTerminalNotifier, isTerminalOperation } from '../src/services/operationTerminal.js'
+import {
+  createTerminalNotifier,
+  isFailedOperation,
+  isReviewOperation,
+  isTerminalOperation,
+} from '../src/services/operationTerminal.js'
 
 test('recognizes only terminal operation states with an operation id', () => {
   assert.equal(isTerminalOperation({ operation_id: 'op_1', status: 'completed' }), true)
@@ -25,4 +30,14 @@ test('notifies different terminal operations independently', () => {
   notify({ operation_id: 'op_1', status: 'failed' })
   notify({ operation_id: 'op_2', status: 'needs_review' })
   assert.deepEqual(received, ['op_1', 'op_2'])
+})
+
+test('classifies review and failure terminal states independently', () => {
+  const review = { operation_id: 'op_review', status: 'needs_review' }
+  const failed = { operation_id: 'op_failed', status: 'failed' }
+
+  assert.equal(isReviewOperation(review), true)
+  assert.equal(isFailedOperation(review), false)
+  assert.equal(isReviewOperation(failed), false)
+  assert.equal(isFailedOperation(failed), true)
 })

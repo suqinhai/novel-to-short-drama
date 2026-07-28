@@ -41,6 +41,10 @@ func TestCompilerRunLifecycleIntegration(t *testing.T) {
 	if operation.Status != "pending" || operation.OperationType != "adaptation_compile" || operation.TargetType != "project" {
 		t.Fatalf("unexpected compiler operation: %#v", operation)
 	}
+	if operation.Checkpoint.CompletedItems == nil || *operation.Checkpoint.CompletedItems != 0 ||
+		operation.Checkpoint.TotalItems == nil || *operation.Checkpoint.TotalItems != 9 {
+		t.Fatalf("compiler pipeline progress missing: %#v", operation.Checkpoint)
+	}
 	replay, err := database.StartCompilerRun(ctx, "p_phase1_legacy", key, input)
 	if err != nil || replay.OperationID != operation.OperationID {
 		t.Fatalf("compiler replay mismatch: %#v err=%v", replay, err)

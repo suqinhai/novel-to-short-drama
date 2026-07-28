@@ -68,11 +68,18 @@ func (s *Store) StartCompilerRun(ctx context.Context, projectID, key string, inp
 	if err != nil {
 		return Operation{}, err
 	}
+	pipeline := []string{
+		"source_scope_resolution", "event_selection", "prerequisite_ordering",
+		"event_compression_merge", "episode_allocation", "character_state_validation",
+		"foreshadow_validation", "duration_validation", "reviewable_plan",
+	}
 	checkpoint := mustJSON(map[string]any{
 		"adaptation_spec_version_id": input.AdaptationSpecVersionID,
 		"ir_revision_id":             input.IRRevisionID,
 		"compiler_version":           input.CompilerVersion,
-		"pipeline":                   []string{"source_scope_resolution", "event_selection", "prerequisite_ordering", "event_compression_merge", "episode_allocation", "character_state_validation", "foreshadow_validation", "duration_validation", "reviewable_plan"},
+		"pipeline":                   pipeline,
+		"completed_items":            0,
+		"total_items":                len(pipeline),
 	})
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.operations(operation_id,trace_id,operation_type,target_type,target_id,status,
 		idempotency_key,input_hash,checkpoint_stage,checkpoint_data)

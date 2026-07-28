@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildAdaptationScope, isScopeComplete, selectCurrentFullIR } from '../src/services/adaptationScope.js'
+import {
+  buildAdaptationScope,
+  hasReviewableAdaptationPlan,
+  isScopeComplete,
+  selectCurrentFullIR,
+} from '../src/services/adaptationScope.js'
 
 test('selects the highest published full IR revision', () => {
   const selected = selectCurrentFullIR([
@@ -28,4 +33,13 @@ test('validates the non-empty side required by each scope mode', () => {
   assert.equal(isScopeComplete('arcs_only', [], ['arc_1']), true)
   assert.equal(isScopeComplete('union', [], []), false)
   assert.equal(isScopeComplete('union', [], ['arc_1']), true)
+})
+
+test('accepts completed and needs-review compiler results with an adaptation plan', () => {
+  const resultRef = { resource_type: 'adaptation_plan', resource_id: 'ap_1' }
+
+  assert.equal(hasReviewableAdaptationPlan({ status: 'completed', result_ref: resultRef }), true)
+  assert.equal(hasReviewableAdaptationPlan({ status: 'needs_review', result_ref: resultRef }), true)
+  assert.equal(hasReviewableAdaptationPlan({ status: 'failed', result_ref: resultRef }), false)
+  assert.equal(hasReviewableAdaptationPlan({ status: 'needs_review', result_ref: null }), false)
 })

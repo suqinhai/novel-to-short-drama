@@ -111,7 +111,8 @@ run_saved AS (UPDATE drama.compiler_runs run SET status='validating',output_hash
   FROM claim WHERE run.operation_id=claim.operation_id RETURNING run.compiler_run_id),
 operation_saved AS (SELECT operation_id FROM drama.checkpoint_operation($1::text,$2::uuid,'validating','reviewable_plan',NULL,
   jsonb_build_object('output_hash',$4::text,'schema_valid',($5::jsonb->>'schema_valid')::boolean,
-  'publishable',($5::jsonb->>'publishable')::boolean,'completed_stages',jsonb_array_length($3::jsonb))))
+  'publishable',($5::jsonb->>'publishable')::boolean,'completed_stages',jsonb_array_length($3::jsonb),
+  'completed_items',jsonb_array_length($3::jsonb),'total_items',jsonb_array_length($3::jsonb))))
 SELECT $5::jsonb AS state FROM operation_saved,run_saved LIMIT 1;`;
 
 const publishSQL = `WITH claim AS (SELECT (drama.assert_operation_claim($1::text,$2::uuid)).*),
