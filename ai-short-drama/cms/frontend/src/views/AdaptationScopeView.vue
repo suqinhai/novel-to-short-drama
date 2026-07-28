@@ -210,7 +210,7 @@ async function handleSpecTerminal(terminalOperation) {
 }
 
 async function compileSpec(spec) {
-  if (!projectId.value || spec.status !== 'active' || !spec.ir_revision_id || !compilerVersion.value.trim()) return
+  if (compilingSpecId.value || !projectId.value || spec.status !== 'active' || !spec.ir_revision_id || !compilerVersion.value.trim()) return
   error.value = ''
   success.value = ''
   adaptationPlan.value = null
@@ -228,13 +228,13 @@ async function compileSpec(spec) {
     compilerOperation.value = response.data
     success.value = '改编编译任务已提交。'
   } catch (err) {
-    error.value = err.isConflict ? `${err.message} 请刷新 Spec 状态后重试。` : err.message
-  } finally {
     compilingSpecId.value = ''
+    error.value = err.isConflict ? `${err.message} 请刷新 Spec 状态后重试。` : err.message
   }
 }
 
 async function handleCompilerTerminal(terminalOperation) {
+  compilingSpecId.value = ''
   if (terminalOperation.status !== 'completed' || terminalOperation.result_ref?.resource_type !== 'adaptation_plan') return
   planLoading.value = true
   error.value = ''
@@ -350,10 +350,10 @@ onMounted(load)
       </form>
 
       <article v-if="projectId" class="panel spec-history">
-        <div class="production-data-head"><div><span>SPEC HISTORY</span><h3>已有规格版本</h3></div><label class="compiler-version-field"><span>编译器版本</span><input v-model="compilerVersion" maxlength="200" /></label></div>
+        <div class="production-data-head"><div><span>SPEC HISTORY</span><h3>已有规格版本</h3></div><label class="compiler-version-field"><span>编译器版本</span><input v-model="compilerVersion" maxlength="200" :disabled="Boolean(compilingSpecId)" /></label></div>
         <div v-if="specsNotice" class="contract-notice warning">{{ specsNotice }}</div>
         <div v-else-if="!specs.length" class="compact-empty">该项目还没有 Adaptation Spec。</div>
-        <div v-else class="version-list"><div v-for="item in specs" :key="item.adaptation_spec_version_id" class="version-row"><b>v{{ item.version_number }}</b><div><strong>{{ item.adaptation_spec_version_id }}</strong><code>{{ item.source_version_id }}<template v-if="item.ir_revision_id"> · {{ item.ir_revision_id }}</template></code></div><StatusBadge :status="item.status" /><button v-if="item.status === 'active' && item.ir_revision_id" class="button button-primary" :disabled="compilingSpecId === item.adaptation_spec_version_id || !compilerVersion.trim()" @click="compileSpec(item)"><LoaderCircle v-if="compilingSpecId === item.adaptation_spec_version_id" :size="15" class="spin" /><Play v-else :size="15" />{{ compilingSpecId === item.adaptation_spec_version_id ? '提交中…' : '编译计划' }}</button><small v-else-if="item.status === 'active'" class="spec-unavailable">缺少 IR revision</small></div></div>
+        <div v-else class="version-list"><div v-for="item in specs" :key="item.adaptation_spec_version_id" class="version-row"><b>v{{ item.version_number }}</b><div><strong>{{ item.adaptation_spec_version_id }}</strong><code>{{ item.source_version_id }}<template v-if="item.ir_revision_id"> · {{ item.ir_revision_id }}</template></code></div><StatusBadge :status="item.status" /><button v-if="item.status === 'active' && item.ir_revision_id" class="button button-primary" :disabled="Boolean(compilingSpecId) || !compilerVersion.trim()" @click="compileSpec(item)"><LoaderCircle v-if="compilingSpecId === item.adaptation_spec_version_id" :size="15" class="spin" /><Play v-else :size="15" />{{ compilingSpecId === item.adaptation_spec_version_id ? '编译中…' : '编译计划' }}</button><small v-else-if="item.status === 'active'" class="spec-unavailable">缺少 IR revision</small></div></div>
       </article>
 
       <article v-if="planLoading || adaptationPlan" class="panel padded compiler-plan-panel">

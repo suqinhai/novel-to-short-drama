@@ -56,6 +56,7 @@ func New(store *store.Store, cfg config.Config) *Handler {
 			StorageDirectory: cfg.StorageDirectory, ManagedEnvFile: cfg.ManagedEnvFile,
 			N8NContainer: cfg.N8NContainer, MediaWorkerContainer: cfg.MediaWorkerContainer,
 			PostgresContainer: cfg.PostgresContainer, RedisContainer: cfg.RedisContainer,
+			PostgresUser: cfg.PostgresUser, N8NDatabase: cfg.N8NDatabase,
 		})
 	}
 	return handler

@@ -39,6 +39,8 @@ type Config struct {
 	MediaWorkerContainer string
 	PostgresContainer    string
 	RedisContainer       string
+	PostgresUser         string
+	N8NDatabase          string
 }
 
 type StorageSummary struct {
@@ -206,8 +208,14 @@ func (m *Manager) containerRunning(ctx context.Context, container string) (bool,
 func (m *Manager) clearN8NHistory(ctx context.Context) error {
 	sql := `WITH removed AS (DELETE FROM execution_entity RETURNING 1) SELECT count(*) FROM removed;
 TRUNCATE TABLE insights_raw, insights_by_period, insights_metadata, workflow_statistics RESTART IDENTITY CASCADE;`
-	shell := `psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c ` + shellQuote(sql)
-	if _, err := m.run(ctx, "docker", "exec", m.cfg.PostgresContainer, "sh", "-lc", shell); err != nil {
+	if _, err := m.run(
+		ctx,
+		"docker", "exec", m.cfg.PostgresContainer,
+		"psql", "-X", "-v", "ON_ERROR_STOP=1",
+		"-U", m.cfg.PostgresUser,
+		"-d", m.cfg.N8NDatabase,
+		"-c", sql,
+	); err != nil {
 		return fmt.Errorf("clear n8n history: %w", err)
 	}
 	return nil
@@ -235,6 +243,12 @@ func validateConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.StorageDirectory) == "" {
 		return errors.New("storage directory is not configured")
+	}
+	if strings.TrimSpace(cfg.PostgresUser) == "" {
+		return errors.New("postgres user is not configured")
+	}
+	if strings.TrimSpace(cfg.N8NDatabase) == "" {
+		return errors.New("n8n database is not configured")
 	}
 	return nil
 }
@@ -335,10 +349,6 @@ func fileFingerprint(path string) (string, bool, error) {
 	}
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:]), true, nil
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {

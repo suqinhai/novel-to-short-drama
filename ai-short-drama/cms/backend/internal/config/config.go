@@ -14,6 +14,8 @@ type Config struct {
 	Host                  string
 	Port                  string
 	DatabaseURL           string
+	PostgresUser          string
+	N8NDatabase           string
 	AllowedOrigins        []string
 	N8NHealthURL          string
 	N8NProjectURL         string
@@ -66,6 +68,8 @@ func Load() (Config, error) {
 		Host:                  env("CMS_HOST", "127.0.0.1"),
 		Port:                  env("CMS_PORT", "8888"),
 		DatabaseURL:           databaseURL,
+		PostgresUser:          strings.TrimSpace(os.Getenv("POSTGRES_USER")),
+		N8NDatabase:           env("POSTGRES_DB", "n8n"),
 		AllowedOrigins:        splitCSV(env("CMS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		N8NHealthURL:          env("CMS_N8N_HEALTH_URL", "http://127.0.0.1:5678/healthz"),
 		N8NProjectURL:         env("CMS_N8N_PROJECT_WEBHOOK_URL", "http://127.0.0.1:5678/webhook/ai-short-drama/projects"),
