@@ -232,6 +232,48 @@ if (extract) {
   if (!text.includes("typeof err==='string'")) fail('02a failure sanitizer must preserve string-form n8n errors');
   if (!text.includes("hash_version:'canonical-json.v1'") || !text.includes('Object.keys(v).sort()')) fail('02a: checkpoint hashes must use canonical-json.v1');
   for (const marker of ['EMPTY_MODEL_EXTRACTION', 'MODEL_SOURCE_QUOTE_NOT_FOUND', "crypto.createHash('sha256').update(quote)", 'Empty extraction is forbidden']) if (!text.includes(marker)) fail(`02a non-empty extraction guard: missing ${marker}`);
+  try {
+    const normalize = requireNode(extract, 'Normalize Model Provenance and Require Events');
+    const input = {
+      source_version_id: 'sv_test',
+      window: {
+        source_version_id: 'sv_test',
+        chapter_id: 'ch_test',
+        chapter_revision_id: 'chr_test',
+        start_codepoint: 0,
+        start_utf8_byte: 0,
+        content: '李凌离开房间。',
+      },
+      extraction: {
+        schema_version: 'narrative-extraction.v1',
+        entities: [{ local_id: 'char_li', entity_type: 'character', canonical_name: '李凌', aliases: [], attributes: {}, source: { quote: '李凌' } }],
+        facts: [{
+          local_id: 'event_leave',
+          fact_kind: 'event',
+          statement: '李凌离开房间。',
+          source: { quote: '李凌离开房间。' },
+          supporting_sources: [{ quote: '原文中不存在的辅助引文' }],
+          event: {
+            event_type: 'departure',
+            summary: '李凌离开',
+            narrative_order: 1,
+            temporal_expression: null,
+            location_entity_local_id: null,
+            importance: 0.5,
+            participants: [{ entity_local_id: 'char_li', role: 'actor', state: {} }],
+          },
+        }],
+        event_relations: [],
+        story_arcs: [],
+      },
+    };
+    const result = new Function('require', '$json', normalize.parameters.jsCode)(require, input);
+    if (result?.[0]?.json?.extraction?.facts?.[0]?.supporting_sources?.length !== 0) {
+      fail('02a: ungrounded optional supporting sources must be discarded');
+    }
+  } catch (error) {
+    fail(`02a: optional supporting source normalization failed: ${error.message}`);
+  }
   for (const marker of ['IR_WINDOW_MAX_CODEPOINTS', 'MODEL_TIMEOUT_MS', 'narrative-extraction.v1', 'json_object', 'claim_operation', 'checkpoint_operation', 'finish_operation', "checkpoint_data->'chapter_ids'", 'last_selected_ordinal', 'chapter_total_codepoints', 'selected_chapter_ids', 'calling_model']) if (!text.includes(marker)) fail(`02a: missing ${marker}`);
   if (text.includes('"type":"json_schema"')) fail('02a: provider request must not use the gateway-incompatible incomplete json_schema');
   if (!/LIMIT 1/i.test(text)) fail('02a: chapter selection must be bounded to one chapter');

@@ -39,7 +39,17 @@ func (s *Store) ListChapterRevisions(ctx context.Context, chapterID string) ([]C
 
 func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID string) ([]NarrativeIRRevisionSummary, error) {
 	rows, err := s.pool.Query(ctx, `SELECT ir.ir_revision_id,operation.operation_id,operation.status,
-		operation.checkpoint_stage,operation.retry_count,operation.error_code,operation.error_message,operation.error_retryable,
+		operation.checkpoint_stage,
+		CASE WHEN jsonb_typeof(operation.checkpoint_data->'windows')='array'
+			THEN jsonb_array_length(operation.checkpoint_data->'windows') ELSE 0 END AS completed_items,
+		CASE
+			WHEN jsonb_typeof(operation.checkpoint_data->'selected_chapter_ids')='array'
+				THEN jsonb_array_length(operation.checkpoint_data->'selected_chapter_ids')
+			WHEN jsonb_typeof(operation.checkpoint_data->'chapter_ids')='array'
+				THEN jsonb_array_length(operation.checkpoint_data->'chapter_ids')
+			ELSE jsonb_array_length(ir.changed_chapter_ids)
+		END AS total_items,
+		operation.retry_count,operation.error_code,operation.error_message,operation.error_retryable,
 		ir.source_version_id,ir.revision_number,ir.status,ir.revision_scope,ir.extractor_version,
 		ir.changed_chapter_ids,ir.validation_summary,ir.created_at,ir.published_at
 		FROM drama.narrative_ir_revisions ir
@@ -53,7 +63,8 @@ func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID st
 	for rows.Next() {
 		var item NarrativeIRRevisionSummary
 		if err := rows.Scan(&item.IRRevisionID, &item.OperationID, &item.OperationStatus,
-			&item.CheckpointStage, &item.RetryCount, &item.OperationErrorCode, &item.OperationErrorMessage, &item.OperationErrorRetryable,
+			&item.CheckpointStage, &item.CompletedItems, &item.TotalItems,
+			&item.RetryCount, &item.OperationErrorCode, &item.OperationErrorMessage, &item.OperationErrorRetryable,
 			&item.SourceVersionID, &item.RevisionNumber,
 			&item.Status, &item.RevisionScope, &item.ExtractorVersion, &item.ChangedChapterIDs, &item.ValidationSummary, &item.CreatedAt, &item.PublishedAt); err != nil {
 			return nil, err

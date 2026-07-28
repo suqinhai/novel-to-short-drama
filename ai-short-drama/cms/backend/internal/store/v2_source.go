@@ -716,10 +716,26 @@ func scanOperation(row pgx.Row) (Operation, error) {
 	}
 	item.Checkpoint.Cursor = cursor
 	var progress struct {
-		CompletedItems *int `json:"completed_items"`
-		TotalItems     *int `json:"total_items"`
+		CompletedItems     *int              `json:"completed_items"`
+		TotalItems         *int              `json:"total_items"`
+		Windows            []json.RawMessage `json:"windows"`
+		SelectedChapterIDs []string          `json:"selected_chapter_ids"`
+		ChapterIDs         []string          `json:"chapter_ids"`
 	}
 	_ = json.Unmarshal(checkpointData, &progress)
+	if progress.CompletedItems == nil && progress.Windows != nil {
+		completed := len(progress.Windows)
+		progress.CompletedItems = &completed
+	}
+	if progress.TotalItems == nil {
+		total := len(progress.SelectedChapterIDs)
+		if total == 0 {
+			total = len(progress.ChapterIDs)
+		}
+		if total > 0 {
+			progress.TotalItems = &total
+		}
+	}
 	item.Checkpoint.CompletedItems, item.Checkpoint.TotalItems = progress.CompletedItems, progress.TotalItems
 	if resultType != nil && resultID != nil {
 		item.ResultRef = &ResultReference{ResourceType: *resultType, ResourceID: *resultID}

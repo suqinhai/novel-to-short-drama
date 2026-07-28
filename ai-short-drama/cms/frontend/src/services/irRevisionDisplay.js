@@ -25,5 +25,10 @@ export function getIRProgressSummary(revision) {
   }
   if (!['pending', 'running', 'validating'].includes(status)) return ''
   const retry = retryCount > 0 ? `第 ${retryCount} 次重试 · ` : ''
+  const completed = Number(revision?.completed_items)
+  const total = Number(revision?.total_items)
+  if (Number.isInteger(completed) && completed >= 0 && Number.isInteger(total) && total > 0) {
+    return `${retry}已完成 ${Math.min(completed, total)} / ${total}`
+  }
   return `${retry}${stage}`
 }

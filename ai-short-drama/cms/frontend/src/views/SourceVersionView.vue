@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, Eye, FileStack, FlaskConical, History, PencilLine, RefreshCw, Send, Upload, X } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
@@ -29,16 +29,39 @@ const historyLoading = ref(false)
 const historyError = ref('')
 const chapterReader = reactive({ open: false, loading: false, error: '', chapter: null })
 const irTestAcknowledged = ref(false)
-const irRun = reactive({ extractor_version: 'cms-ir-extractor-v7', chapter_ids: [] })
+const irRun = reactive({ extractor_version: 'cms-ir-extractor-v8', chapter_ids: [] })
 const commandKeys = new Map()
 const wholeText = ref('')
 const single = reactive({ title: '', content: '', ordinal: 1 })
 const batchText = ref('')
 const revision = reactive({ chapter_id: '', title: '', content: '' })
+let irPollTimer = 0
 const isDraft = computed(() => version.value?.status === 'draft')
 const nextOrdinal = computed(() => Math.max(0, ...chapters.value.map((item) => item.ordinal || 0)) + 1)
 const etag = computed(() => narrativeApi.getCachedVersionETag(route.params.versionId) || '—')
 const batchPreview = computed(() => parseBatch(batchText.value))
+
+function stopIRPolling() {
+  window.clearTimeout(irPollTimer)
+  irPollTimer = 0
+}
+
+function scheduleIRPolling() {
+  stopIRPolling()
+  const hasActiveIR = irRevisions.value.some((item) =>
+    ['pending', 'running', 'validating'].includes(String(item.operation_status || '').toLowerCase()))
+  if (!hasActiveIR) return
+  irPollTimer = window.setTimeout(async () => {
+    irPollTimer = 0
+    try {
+      irRevisions.value = (await narrativeApi.listIRRevisions(route.params.versionId)).data
+    } catch {
+      // Keep the last known progress and retry on the next polling interval.
+    } finally {
+      scheduleIRPolling()
+    }
+  }, 2000)
+}
 
 function parseBatch(text) {
   const items = []
@@ -72,6 +95,7 @@ async function load() {
     version.value = versionResponse.data
     chapters.value = chapterResponse.data
     irRevisions.value = irResponse.data
+    scheduleIRPolling()
     if (!irRun.chapter_ids.length) {
       irRun.chapter_ids = chapters.value.slice(0, Math.min(10, MAX_IR_CHAPTERS)).map((item) => item.chapter_id)
     }
@@ -151,6 +175,8 @@ async function startTestIR() {
     const response = await narrativeApi.startIRRun(route.params.versionId, payload, key.value)
     commandKeys.delete(key.signature)
     operation.value = response.data
+    irRevisions.value = (await narrativeApi.listIRRevisions(route.params.versionId)).data
+    scheduleIRPolling()
     notice.value = '测试模式 Narrative IR 提取已排队；模型只会按工作流窗口读取章节片段。'
   } catch (err) {
     error.value = err.isConflict ? `${err.message} 请确认版本已发布、章节范围属于当前版本且没有冲突任务。` : err.message
@@ -217,6 +243,7 @@ async function initialize() {
   }
 }
 onMounted(initialize)
+onBeforeUnmount(stopIRPolling)
 </script>
 
 <template>

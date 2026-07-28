@@ -92,6 +92,8 @@ type NarrativeIRRevisionSummary struct {
 	OperationID             string          `json:"operation_id"`
 	OperationStatus         string          `json:"operation_status"`
 	CheckpointStage         string          `json:"checkpoint_stage"`
+	CompletedItems          int             `json:"completed_items"`
+	TotalItems              int             `json:"total_items"`
 	RetryCount              int             `json:"retry_count"`
 	OperationErrorCode      *string         `json:"operation_error_code,omitempty"`
 	OperationErrorMessage   *string         `json:"operation_error_message,omitempty"`

@@ -27,3 +27,15 @@ test('shows retry stage and terminal error details', () => {
     '模型请求超时',
   )
 })
+
+test('shows live completed and total chapter counts while extraction is active', () => {
+  assert.equal(
+    getIRProgressSummary({
+      operation_status: 'running',
+      checkpoint_stage: 'calling_model',
+      completed_items: 10,
+      total_items: 15,
+    }),
+    '已完成 10 / 15',
+  )
+})
