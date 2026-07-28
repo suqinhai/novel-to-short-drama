@@ -85,8 +85,9 @@ function getCommandKey(kind, payload) {
   return { signature, value: commandKeys.get(signature) }
 }
 
-async function load() {
-  loading.value = true
+async function load(options = {}) {
+  const silent = options?.silent === true
+  if (!silent) loading.value = true
   error.value = ''
   try {
     const [versionResponse, chapterResponse, irResponse] = await Promise.all([
@@ -106,7 +107,7 @@ async function load() {
   } catch (err) {
     error.value = err.message
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -220,8 +221,9 @@ function closeChapterReader() {
   chapterReader.chapter = null
 }
 
-async function operationFinished() {
-  await load()
+async function operationFinished(terminalOperation) {
+  operation.value = terminalOperation
+  await load({ silent: true })
   if (historyChapterId.value) await showChapterHistory(historyChapterId.value)
 }
 
