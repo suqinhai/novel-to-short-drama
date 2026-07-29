@@ -12,6 +12,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +85,8 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
 	api.POST("/reviews/:reviewID/regenerate", h.regenerateReview)
 	api.GET("/media-assets", h.listMediaAssets)
+	api.POST("/media-assets/:assetType/:assetID/regenerate", h.regenerateMediaAsset)
+	api.POST("/media-assets/:assetType/:assetID/replacement", h.replaceMediaAsset)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
 	api.PUT("/ai-config", h.updateAIConfig)
@@ -484,6 +488,7 @@ func (h *Handler) listMediaAssets(c *gin.Context) {
 
 	result, err := h.store.ListMediaAssets(c.Request.Context(), c.Query("project_id"), assetType, reviewStatus, page, limit)
 	if err != nil {
+		log.Printf("list media assets: %v", err)
 		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_LIST_FAILED", "媒体资产读取失败")
 		return
 	}
@@ -496,6 +501,297 @@ func (h *Handler) listMediaAssets(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+type mediaAssetRegenerationRequest struct {
+	PromptAdjustment string `json:"prompt_adjustment"`
+}
+
+func (h *Handler) regenerateMediaAsset(c *gin.Context) {
+	assetType := strings.TrimSpace(c.Param("assetType"))
+	assetID := strings.TrimSpace(c.Param("assetID"))
+	if !mediaAssetTypes[assetType] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_TYPE", "不支持的媒体资产类型")
+		return
+	}
+	var input mediaAssetRegenerationRequest
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "重新生成请求格式无效")
+		return
+	}
+	input.PromptAdjustment = strings.TrimSpace(input.PromptAdjustment)
+	asset, err := h.store.GetMediaAsset(c.Request.Context(), assetType, assetID)
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "MEDIA_ASSET_NOT_FOUND", "媒体资产不存在")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_READ_FAILED", "无法读取媒体资产")
+		return
+	}
+	if matchesAny(asset.Status, "", "pending", "submitting", "generating", "processing", "rendering") {
+		respondError(c, http.StatusConflict, "MEDIA_ASSET_BUSY", "该资产仍在处理中，请稍后刷新状态")
+		return
+	}
+	version, err := h.store.NextMediaAssetGenerationVersion(c.Request.Context(), assetType, assetID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "GENERATION_VERSION_FAILED", "无法分配新的资产版本")
+		return
+	}
+
+	stage, webhookURL := "", ""
+	payload := map[string]any{
+		"source_asset_id": asset.AssetID, "source_asset_type": asset.AssetType,
+		"replacement_strategy": "new_version", "preserve_existing_version": true,
+		"prompt_adjustment": input.PromptAdjustment,
+	}
+	request := map[string]any{
+		"project_id": asset.ProjectID, "action": "regenerate",
+		"generation_version": version, "test_mode": asset.TestMode,
+		"entity_type": asset.EntityType, "entity_id": asset.EntityID,
+	}
+	if asset.EpisodeID != nil && strings.TrimSpace(*asset.EpisodeID) != "" {
+		request["episode_id"] = strings.TrimSpace(*asset.EpisodeID)
+	}
+	switch assetType {
+	case "generated_assets":
+		stage, webhookURL = "visual_assets", h.config.N8NStage3URL
+		request["entity_type"], request["entity_id"] = "generated_asset", asset.AssetID
+		payload["generation_mode"] = "replace"
+	case "storyboard_images":
+		stage, webhookURL = "storyboard_images", h.config.N8NStage3URL
+		request["shot_id"] = asset.EntityID
+		payload["shot_id"] = asset.EntityID
+	case "shot_videos":
+		stage, webhookURL = "image_to_video", h.config.N8NStage4URL
+		request["shot_id"] = asset.EntityID
+		payload["shot_id"] = asset.EntityID
+		payload["requested_stage"] = stage
+	case "dialogue_audio":
+		stage, webhookURL = "voice_audio", h.config.N8NStage4URL
+		request["dialogue_id"] = asset.EntityID
+		payload["dialogue_id"] = asset.EntityID
+		payload["requested_stage"] = stage
+	case "episode_masters":
+		stage, webhookURL = "edit_compose", h.config.N8NStage5URL
+		payload["source_master_id"] = asset.AssetID
+		payload["render_type"] = asset.Subtype
+		payload["preview_approved"] = true
+	}
+	request["stage"] = stage
+	request["payload"] = payload
+
+	n8nResponse, statusCode, err := h.postJSON(c.Request.Context(), webhookURL, request)
+	if err != nil {
+		respondError(c, http.StatusBadGateway, "N8N_UNAVAILABLE", "重新生成工作流调用失败："+err.Error())
+		return
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code":     "MEDIA_REGENERATION_FAILED",
+			"message":  fmt.Sprintf("n8n %s webhook 返回 HTTP %d", stage, statusCode),
+			"response": n8nResponse,
+		}})
+		return
+	}
+	if failed, message := n8nReturnedFailure(n8nResponse); failed {
+		if message == "" {
+			message = "重新生成工作流返回失败"
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "MEDIA_REGENERATION_FAILED", "message": message, "response": n8nResponse,
+		}})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
+		"operation": "regenerate", "source_asset_id": asset.AssetID,
+		"asset_type": asset.AssetType, "generation_version": version,
+		"status": "queued", "webhook_stage": stage,
+	}})
+}
+
+const maxMediaReplacementBytes = int64(512 << 20)
+
+var mediaContentTypes = map[string]map[string]string{
+	"image": {
+		"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+	},
+	"video": {
+		"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm",
+		"application/octet-stream": ".mp4",
+	},
+	"audio": {
+		"audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
+		"audio/ogg": ".ogg", "audio/mp4": ".m4a", "video/mp4": ".m4a",
+	},
+}
+
+func (h *Handler) replaceMediaAsset(c *gin.Context) {
+	assetType := strings.TrimSpace(c.Param("assetType"))
+	assetID := strings.TrimSpace(c.Param("assetID"))
+	if !mediaAssetTypes[assetType] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_TYPE", "不支持的媒体资产类型")
+		return
+	}
+	source, err := h.store.GetMediaAsset(c.Request.Context(), assetType, assetID)
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "MEDIA_ASSET_NOT_FOUND", "媒体资产不存在")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_READ_FAILED", "无法读取媒体资产")
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxMediaReplacementBytes)
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		respondError(c, http.StatusBadRequest, "REPLACEMENT_FILE_REQUIRED", "请选择需要上传的替换文件")
+		return
+	}
+	defer file.Close()
+	if header.Size <= 0 || header.Size > maxMediaReplacementBytes {
+		respondError(c, http.StatusRequestEntityTooLarge, "REPLACEMENT_FILE_TOO_LARGE", "替换文件必须小于 512MB")
+		return
+	}
+	head := make([]byte, 512)
+	count, readErr := io.ReadFull(file, head)
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		respondError(c, http.StatusBadRequest, "REPLACEMENT_FILE_INVALID", "无法读取替换文件")
+		return
+	}
+	head = head[:count]
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		respondError(c, http.StatusBadRequest, "REPLACEMENT_FILE_INVALID", "无法校验替换文件")
+		return
+	}
+	detectedType := strings.ToLower(strings.TrimSpace(http.DetectContentType(head)))
+	extension, ok := mediaContentTypes[source.MediaKind][detectedType]
+	if !ok || (detectedType == "application/octet-stream" && strings.ToLower(filepath.Ext(header.Filename)) != ".mp4") {
+		respondError(c, http.StatusUnprocessableEntity, "REPLACEMENT_MEDIA_TYPE_MISMATCH",
+			fmt.Sprintf("上传文件不是可识别的%s格式", map[string]string{"image": "图片", "video": "视频", "audio": "音频"}[source.MediaKind]))
+		return
+	}
+
+	width := positiveFormInt(c.PostForm("width"))
+	height := positiveFormInt(c.PostForm("height"))
+	durationMS := positiveFormInt64(c.PostForm("duration_ms"))
+	if source.MediaKind == "image" && (width == nil || height == nil) {
+		respondError(c, http.StatusUnprocessableEntity, "REPLACEMENT_METADATA_REQUIRED", "无法读取图片尺寸，请重新选择文件")
+		return
+	}
+	if source.MediaKind == "video" && (width == nil || height == nil || durationMS == nil) {
+		respondError(c, http.StatusUnprocessableEntity, "REPLACEMENT_METADATA_REQUIRED", "无法读取视频尺寸或时长，请重新选择文件")
+		return
+	}
+	if source.MediaKind == "audio" && durationMS == nil {
+		respondError(c, http.StatusUnprocessableEntity, "REPLACEMENT_METADATA_REQUIRED", "无法读取音频时长，请重新选择文件")
+		return
+	}
+
+	targetDirectory := filepath.Join(h.config.StorageDirectory, "manual-uploads",
+		safeStorageSegment(source.ProjectID), source.AssetType)
+	if err = os.MkdirAll(targetDirectory, 0o755); err != nil {
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_STORAGE_FAILED", "无法创建替换文件目录")
+		return
+	}
+	temp, err := os.CreateTemp(targetDirectory, ".upload-*.part")
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_STORAGE_FAILED", "无法创建临时上传文件")
+		return
+	}
+	tempPath := temp.Name()
+	cleanupTemp := true
+	defer func() {
+		_ = temp.Close()
+		if cleanupTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(temp, hasher), io.LimitReader(file, maxMediaReplacementBytes+1))
+	if err != nil || written <= 0 || written > maxMediaReplacementBytes {
+		respondError(c, http.StatusBadRequest, "REPLACEMENT_UPLOAD_FAILED", "替换文件上传失败")
+		return
+	}
+	if err = temp.Sync(); err != nil {
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_STORAGE_FAILED", "替换文件写入失败")
+		return
+	}
+	if err = temp.Close(); err != nil {
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_STORAGE_FAILED", "替换文件保存失败")
+		return
+	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+	idHash := sha256.Sum256([]byte(source.AssetID + ":" + contentHash + ":" + time.Now().UTC().Format(time.RFC3339Nano)))
+	prefixes := map[string]string{
+		"generated_assets": "asset", "storyboard_images": "frame", "shot_videos": "video",
+		"dialogue_audio": "audio", "episode_masters": "master",
+	}
+	newAssetID := prefixes[assetType] + "_manual_" + hex.EncodeToString(idHash[:10])
+	finalPath := filepath.Join(targetDirectory, newAssetID+extension)
+	if err = os.Rename(tempPath, finalPath); err != nil {
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_STORAGE_FAILED", "替换文件入库失败")
+		return
+	}
+	cleanupTemp = false
+
+	replacement, err := h.store.ReplaceMediaAsset(c.Request.Context(), store.MediaAssetReplacement{
+		SourceAssetType: assetType, SourceAssetID: assetID, AssetID: newAssetID,
+		StorageURL: finalPath, ContentHash: contentHash,
+		Width: width, Height: height, DurationMS: durationMS,
+	})
+	if err != nil {
+		_ = os.Remove(finalPath)
+		if errors.Is(err, store.ErrNotFound) {
+			respondError(c, http.StatusNotFound, "MEDIA_ASSET_NOT_FOUND", "原媒体资产已不存在")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "REPLACEMENT_PERSIST_FAILED", "替换文件已回滚，资产版本保存失败")
+		return
+	}
+	replacement.MediaURL = resolvePublicMediaURL(h.config.MediaPublicURL, replacement.StorageURL)
+	replacement.PreviewURL = resolvePublicMediaURL(h.config.MediaPublicURL, replacement.ThumbnailURL)
+	if replacement.MediaKind == "image" && replacement.PreviewURL == nil {
+		replacement.PreviewURL = replacement.MediaURL
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+		"operation": "upload_replacement", "source_asset_id": source.AssetID,
+		"asset": replacement, "previous_version_preserved": true,
+	}})
+}
+
+func positiveFormInt(value string) *int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return nil
+	}
+	return &parsed
+}
+
+func positiveFormInt64(value string) *int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed <= 0 {
+		return nil
+	}
+	return &parsed
+}
+
+func safeStorageSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	var builder strings.Builder
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		} else {
+			builder.WriteByte('_')
+		}
+	}
+	return strings.Trim(builder.String(), "._")
 }
 
 func resolvePublicMediaURL(publicBase string, candidates ...*string) *string {
@@ -714,6 +1010,19 @@ func (h *Handler) regenerateReview(c *gin.Context) {
 	if !ok {
 		respondError(c, http.StatusBadRequest, "INVALID_REGENERATION_MODE", "重新生成模式只允许 replace 或 variant")
 		return
+	}
+	if content.ReviewStatus == "rejected" {
+		regenerated, successorErr := h.store.HasSuccessfulVisualAssetRegeneration(
+			c.Request.Context(), content.EntityID,
+		)
+		if successorErr != nil {
+			respondError(c, http.StatusInternalServerError, "REGENERATION_STATE_FAILED", "无法确认该图片的重新生成状态")
+			return
+		}
+		if regenerated {
+			respondError(c, http.StatusConflict, "REVIEW_ALREADY_REGENERATED", "该拒绝记录已经成功生成后继版本，请在新的审核记录中继续处理")
+			return
+		}
 	}
 
 	var asset struct {

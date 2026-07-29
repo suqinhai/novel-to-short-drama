@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -137,19 +138,21 @@ type ReviewTask struct {
 }
 
 type ReviewCenterItem struct {
-	ReviewID            string          `json:"review_id"`
-	ProjectID           string          `json:"project_id"`
-	NovelName           string          `json:"novel_name"`
-	Stage               string          `json:"stage"`
-	EntityType          string          `json:"entity_type"`
-	EntityID            string          `json:"entity_id"`
-	ReviewStatus        string          `json:"review_status"`
-	ReviewComment       *string         `json:"review_comment,omitempty"`
-	RejectionReason     *string         `json:"rejection_reason,omitempty"`
-	RevisionInstruction *string         `json:"revision_instruction,omitempty"`
-	Metadata            json.RawMessage `json:"metadata"`
-	CreatedAt           time.Time       `json:"created_at"`
-	ReviewedAt          *time.Time      `json:"reviewed_at,omitempty"`
+	ReviewID              string          `json:"review_id"`
+	ProjectID             string          `json:"project_id"`
+	NovelName             string          `json:"novel_name"`
+	Stage                 string          `json:"stage"`
+	EntityType            string          `json:"entity_type"`
+	EntityID              string          `json:"entity_id"`
+	ReviewStatus          string          `json:"review_status"`
+	ReviewComment         *string         `json:"review_comment,omitempty"`
+	RejectionReason       *string         `json:"rejection_reason,omitempty"`
+	RevisionInstruction   *string         `json:"revision_instruction,omitempty"`
+	Metadata              json.RawMessage `json:"metadata"`
+	RegeneratedByReviewID *string         `json:"regenerated_by_review_id,omitempty"`
+	RegeneratedByEntityID *string         `json:"regenerated_by_entity_id,omitempty"`
+	CreatedAt             time.Time       `json:"created_at"`
+	ReviewedAt            *time.Time      `json:"reviewed_at,omitempty"`
 }
 
 type ReviewProjectOption struct {
@@ -204,31 +207,48 @@ type ReviewContent struct {
 }
 
 type MediaAsset struct {
-	AssetID      string    `json:"asset_id"`
-	AssetType    string    `json:"asset_type"`
-	ProjectID    string    `json:"project_id"`
-	NovelName    string    `json:"novel_name"`
-	EpisodeID    *string   `json:"episode_id,omitempty"`
-	EntityType   string    `json:"entity_type"`
-	EntityID     string    `json:"entity_id"`
-	Subtype      string    `json:"subtype"`
-	MediaKind    string    `json:"media_kind"`
-	Status       string    `json:"status"`
-	ReviewStatus string    `json:"review_status"`
-	OriginalURL  *string   `json:"original_url,omitempty"`
-	StorageURL   *string   `json:"storage_url,omitempty"`
-	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
-	MediaURL     *string   `json:"media_url,omitempty"`
-	PreviewURL   *string   `json:"preview_url,omitempty"`
-	Width        *int      `json:"width,omitempty"`
-	Height       *int      `json:"height,omitempty"`
-	DurationMS   *int64    `json:"duration_ms,omitempty"`
-	Provider     *string   `json:"provider,omitempty"`
-	Model        *string   `json:"model,omitempty"`
-	IsCurrent    bool      `json:"is_current"`
-	ErrorMessage *string   `json:"error_message,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	AssetID           string    `json:"asset_id"`
+	AssetType         string    `json:"asset_type"`
+	ProjectID         string    `json:"project_id"`
+	NovelName         string    `json:"novel_name"`
+	EpisodeID         *string   `json:"episode_id,omitempty"`
+	EntityType        string    `json:"entity_type"`
+	EntityID          string    `json:"entity_id"`
+	Subtype           string    `json:"subtype"`
+	MediaKind         string    `json:"media_kind"`
+	Status            string    `json:"status"`
+	ReviewStatus      string    `json:"review_status"`
+	OriginalURL       *string   `json:"original_url,omitempty"`
+	StorageURL        *string   `json:"storage_url,omitempty"`
+	ThumbnailURL      *string   `json:"thumbnail_url,omitempty"`
+	MediaURL          *string   `json:"media_url,omitempty"`
+	PreviewURL        *string   `json:"preview_url,omitempty"`
+	Width             *int      `json:"width,omitempty"`
+	Height            *int      `json:"height,omitempty"`
+	DurationMS        *int64    `json:"duration_ms,omitempty"`
+	Provider          *string   `json:"provider,omitempty"`
+	Model             *string   `json:"model,omitempty"`
+	GenerationVersion int       `json:"generation_version"`
+	IsCurrent         bool      `json:"is_current"`
+	ErrorCode         *string   `json:"error_code,omitempty"`
+	ErrorMessage      *string   `json:"error_message,omitempty"`
+	TaskID            *string   `json:"task_id,omitempty"`
+	RetryCount        int       `json:"retry_count"`
+	MaxRetries        int       `json:"max_retries"`
+	TestMode          bool      `json:"test_mode"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type MediaAssetReplacement struct {
+	SourceAssetType string
+	SourceAssetID   string
+	AssetID         string
+	StorageURL      string
+	ContentHash     string
+	Width           *int
+	Height          *int
+	DurationMS      *int64
 }
 
 type MediaAssetSummary struct {
@@ -369,37 +389,62 @@ const mediaAssetsCTE = `WITH media_assets AS (
 	SELECT 'generated_assets'::text asset_type,ga.asset_id,ga.project_id,p.novel_name,
 		NULL::text episode_id,ga.entity_type,ga.entity_id,ga.asset_type subtype,'image'::text media_kind,
 		ga.status,ga.review_status,ga.original_url,ga.storage_url,ga.thumbnail_url,ga.width,ga.height,
-		NULL::bigint duration_ms,ga.provider,ga.model,true is_current,ga.error_message,ga.created_at,ga.updated_at
+		NULL::bigint duration_ms,ga.provider,ga.model,ga.generation_version,
+		ga.selected_as_primary is_current,ga.error_code,ga.error_message,
+		(SELECT t.task_id FROM drama.image_generation_tasks t WHERE t.asset_id=ga.asset_id ORDER BY t.created_at DESC LIMIT 1) task_id,
+		ga.retry_count,COALESCE((SELECT t.max_retries FROM drama.image_generation_tasks t WHERE t.asset_id=ga.asset_id ORDER BY t.created_at DESC LIMIT 1),3) max_retries,
+		p.test_mode,ga.created_at,ga.updated_at
 	FROM drama.generated_assets ga JOIN drama.projects p ON p.project_id=ga.project_id
 	UNION ALL
 	SELECT 'storyboard_images',si.storyboard_image_id,si.project_id,p.novel_name,
 		si.episode_id,'shot',si.shot_id,'storyboard_frame','image',si.status,si.review_status,
 		si.image_url,si.storage_url,NULL::text,NULL::int,NULL::int,NULL::bigint,si.provider,si.model,
-		si.is_current,NULL::text,si.created_at,si.updated_at
+		si.generation_version,si.is_current,
+		(SELECT t.error_code FROM drama.image_generation_tasks t WHERE t.project_id=si.project_id AND t.shot_id=si.shot_id AND t.generation_version=si.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.error_message FROM drama.image_generation_tasks t WHERE t.project_id=si.project_id AND t.shot_id=si.shot_id AND t.generation_version=si.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.task_id FROM drama.image_generation_tasks t WHERE t.project_id=si.project_id AND t.shot_id=si.shot_id AND t.generation_version=si.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		COALESCE((SELECT t.retry_count FROM drama.image_generation_tasks t WHERE t.project_id=si.project_id AND t.shot_id=si.shot_id AND t.generation_version=si.generation_version ORDER BY t.created_at DESC LIMIT 1),0),
+		COALESCE((SELECT t.max_retries FROM drama.image_generation_tasks t WHERE t.project_id=si.project_id AND t.shot_id=si.shot_id AND t.generation_version=si.generation_version ORDER BY t.created_at DESC LIMIT 1),3),
+		p.test_mode,si.created_at,si.updated_at
 	FROM drama.storyboard_images si JOIN drama.projects p ON p.project_id=si.project_id
 	UNION ALL
 	SELECT 'shot_videos',sv.shot_video_id,sv.project_id,p.novel_name,
 		sv.episode_id,'shot',sv.shot_id,'shot_video','video',sv.status,sv.review_status,
 		sv.original_url,sv.storage_url,sv.thumbnail_url,sv.width,sv.height,
 		CASE WHEN sv.actual_duration_seconds IS NULL THEN NULL ELSE round(sv.actual_duration_seconds*1000)::bigint END,
-		sv.provider,sv.model,sv.is_current,NULL::text,sv.created_at,sv.updated_at
+		sv.provider,sv.model,sv.generation_version,sv.is_current,
+		(SELECT t.error_code FROM drama.video_generation_tasks t WHERE t.project_id=sv.project_id AND t.shot_id=sv.shot_id AND t.generation_version=sv.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.error_message FROM drama.video_generation_tasks t WHERE t.project_id=sv.project_id AND t.shot_id=sv.shot_id AND t.generation_version=sv.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.task_id FROM drama.video_generation_tasks t WHERE t.project_id=sv.project_id AND t.shot_id=sv.shot_id AND t.generation_version=sv.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		COALESCE((SELECT t.retry_count FROM drama.video_generation_tasks t WHERE t.project_id=sv.project_id AND t.shot_id=sv.shot_id AND t.generation_version=sv.generation_version ORDER BY t.created_at DESC LIMIT 1),0),
+		COALESCE((SELECT t.max_retries FROM drama.video_generation_tasks t WHERE t.project_id=sv.project_id AND t.shot_id=sv.shot_id AND t.generation_version=sv.generation_version ORDER BY t.created_at DESC LIMIT 1),3),
+		p.test_mode,sv.created_at,sv.updated_at
 	FROM drama.shot_videos sv JOIN drama.projects p ON p.project_id=sv.project_id
 	UNION ALL
 	SELECT 'dialogue_audio',da.dialogue_audio_id,da.project_id,p.novel_name,
 		da.episode_id,'dialogue',da.dialogue_id,da.dialogue_type,'audio',da.status,da.review_status,
 		da.original_url,da.storage_url,da.waveform_url,NULL::int,NULL::int,da.actual_duration_ms::bigint,
-		da.provider,da.model,da.is_current,NULL::text,da.created_at,da.updated_at
+		da.provider,da.model,da.generation_version,da.is_current,
+		(SELECT t.error_code FROM drama.tts_generation_tasks t WHERE t.project_id=da.project_id AND t.dialogue_id=da.dialogue_id AND t.generation_version=da.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.error_message FROM drama.tts_generation_tasks t WHERE t.project_id=da.project_id AND t.dialogue_id=da.dialogue_id AND t.generation_version=da.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		(SELECT t.task_id FROM drama.tts_generation_tasks t WHERE t.project_id=da.project_id AND t.dialogue_id=da.dialogue_id AND t.generation_version=da.generation_version ORDER BY t.created_at DESC LIMIT 1),
+		COALESCE((SELECT t.retry_count FROM drama.tts_generation_tasks t WHERE t.project_id=da.project_id AND t.dialogue_id=da.dialogue_id AND t.generation_version=da.generation_version ORDER BY t.created_at DESC LIMIT 1),0),
+		COALESCE((SELECT t.max_retries FROM drama.tts_generation_tasks t WHERE t.project_id=da.project_id AND t.dialogue_id=da.dialogue_id AND t.generation_version=da.generation_version ORDER BY t.created_at DESC LIMIT 1),3),
+		p.test_mode,da.created_at,da.updated_at
 	FROM drama.dialogue_audio da JOIN drama.projects p ON p.project_id=da.project_id
 	UNION ALL
 	SELECT 'episode_masters',em.master_id,em.project_id,p.novel_name,
 		em.episode_id,'episode',em.episode_id,em.master_type,'video',em.status,
 		COALESCE(fr.review_status,'pending'),NULL::text,COALESCE(NULLIF(em.storage_url,''),em.local_path),em.thumbnail_url,
-		em.width,em.height,em.duration_ms, NULL::text,NULL::text,em.is_current,NULL::text,em.created_at,em.updated_at
+		em.width,em.height,em.duration_ms,NULL::text,NULL::text,em.generation_version,em.is_current,
+		rj.error_code,rj.error_message,rj.render_job_id,COALESCE(rj.retry_count,0),COALESCE(rj.max_retries,3),
+		p.test_mode,em.created_at,em.updated_at
 	FROM drama.episode_masters em JOIN drama.projects p ON p.project_id=em.project_id
 	LEFT JOIN LATERAL (
 		SELECT review_status FROM drama.final_reviews f WHERE f.master_id=em.master_id
 		ORDER BY f.reviewed_at DESC NULLS LAST,f.created_at DESC LIMIT 1
 	) fr ON true
+	LEFT JOIN drama.render_jobs rj ON rj.render_job_id=em.render_job_id
 ) `
 
 func New(ctx context.Context, databaseURL string) (*Store, error) {
@@ -715,7 +760,8 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 
 	rows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
-		thumbnail_url,width,height,duration_ms,provider,model,is_current,error_message,created_at,updated_at
+		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
+		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets `+where+`
 		ORDER BY updated_at DESC,asset_id
 		LIMIT $4 OFFSET $5`, projectID, assetType, reviewStatus, limit, (page-1)*limit)
@@ -729,8 +775,10 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 		if err := rows.Scan(&item.AssetID, &item.AssetType, &item.ProjectID, &item.NovelName,
 			&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
 			&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
-			&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model, &item.IsCurrent,
-			&item.ErrorMessage, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
+			&item.GenerationVersion, &item.IsCurrent, &item.ErrorCode, &item.ErrorMessage,
+			&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
+			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			return MediaAssetListResult{}, err
 		}
 		result.Items = append(result.Items, item)
@@ -760,6 +808,202 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 	result.Facets.Types = []string{"generated_assets", "storyboard_images", "shot_videos", "dialogue_audio", "episode_masters"}
 	result.Facets.Statuses = []string{"pending", "approved", "rejected", "regenerating"}
 	return result, nil
+}
+
+func (s *Store) GetMediaAsset(ctx context.Context, assetType, assetID string) (MediaAsset, error) {
+	var item MediaAsset
+	err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
+		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
+		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
+		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
+		FROM media_assets WHERE asset_type=$1 AND asset_id=$2`, assetType, assetID).Scan(
+		&item.AssetID, &item.AssetType, &item.ProjectID, &item.NovelName,
+		&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
+		&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
+		&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
+		&item.GenerationVersion, &item.IsCurrent, &item.ErrorCode, &item.ErrorMessage,
+		&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
+		&item.CreatedAt, &item.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MediaAsset{}, ErrNotFound
+	}
+	return item, err
+}
+
+func (s *Store) NextMediaAssetGenerationVersion(ctx context.Context, assetType, assetID string) (int, error) {
+	queries := map[string]string{
+		"generated_assets": `SELECT COALESCE(MAX(candidate.generation_version),0)+1
+			FROM drama.generated_assets source
+			JOIN drama.generated_assets candidate ON candidate.project_id=source.project_id
+				AND candidate.entity_type=source.entity_type AND candidate.entity_id=source.entity_id
+				AND candidate.asset_type=source.asset_type
+			WHERE source.asset_id=$1`,
+		"storyboard_images": `SELECT COALESCE(MAX(candidate.generation_version),0)+1
+			FROM drama.storyboard_images source
+			JOIN drama.storyboard_images candidate ON candidate.shot_id=source.shot_id
+			WHERE source.storyboard_image_id=$1`,
+		"shot_videos": `SELECT COALESCE(MAX(candidate.generation_version),0)+1
+			FROM drama.shot_videos source
+			JOIN drama.shot_videos candidate ON candidate.shot_id=source.shot_id
+			WHERE source.shot_video_id=$1`,
+		"dialogue_audio": `SELECT COALESCE(MAX(candidate.generation_version),0)+1
+			FROM drama.dialogue_audio source
+			JOIN drama.dialogue_audio candidate ON candidate.dialogue_id=source.dialogue_id
+			WHERE source.dialogue_audio_id=$1`,
+		"episode_masters": `SELECT COALESCE(MAX(candidate.generation_version),0)+1
+			FROM drama.episode_masters source
+			JOIN drama.episode_masters candidate ON candidate.episode_id=source.episode_id
+				AND candidate.master_type=source.master_type
+			WHERE source.master_id=$1`,
+	}
+	query, ok := queries[assetType]
+	if !ok {
+		return 0, fmt.Errorf("unsupported media asset type %q", assetType)
+	}
+	var version int
+	if err := s.pool.QueryRow(ctx, query, assetID).Scan(&version); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if version <= 1 {
+		if _, err := s.GetMediaAsset(ctx, assetType, assetID); err != nil {
+			return 0, err
+		}
+	}
+	return version, nil
+}
+
+func (s *Store) ReplaceMediaAsset(ctx context.Context, replacement MediaAssetReplacement) (MediaAsset, error) {
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return MediaAsset{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var commandTag pgconn.CommandTag
+	switch replacement.SourceAssetType {
+	case "generated_assets":
+		var selected bool
+		if err = tx.QueryRow(ctx, `SELECT selected_as_primary FROM drama.generated_assets WHERE asset_id=$1 FOR UPDATE`,
+			replacement.SourceAssetID).Scan(&selected); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return MediaAsset{}, ErrNotFound
+			}
+			return MediaAsset{}, err
+		}
+		if selected {
+			if _, err = tx.Exec(ctx, `UPDATE drama.generated_assets SET selected_as_primary=false
+				WHERE profile_id=(SELECT profile_id FROM drama.generated_assets WHERE asset_id=$1)
+				  AND asset_type=(SELECT asset_type FROM drama.generated_assets WHERE asset_id=$1)`,
+				replacement.SourceAssetID); err != nil {
+				return MediaAsset{}, err
+			}
+		}
+		commandTag, err = tx.Exec(ctx, `INSERT INTO drama.generated_assets(
+			asset_id,project_id,asset_type,entity_type,entity_id,profile_id,generation_version,
+			provider,model,prompt,negative_prompt,request_parameters,reference_asset_ids,
+			reference_image_urls,status,storage_url,width,height,content_hash,review_status,
+			selected_as_primary)
+			SELECT $2,source.project_id,source.asset_type,source.entity_type,source.entity_id,source.profile_id,
+				(SELECT COALESCE(MAX(v.generation_version),0)+1 FROM drama.generated_assets v
+				 WHERE v.project_id=source.project_id AND v.entity_type=source.entity_type
+				   AND v.entity_id=source.entity_id AND v.asset_type=source.asset_type),
+				'manual_upload','user_upload',source.prompt,source.negative_prompt,
+				source.request_parameters||jsonb_build_object('replacement_for',source.asset_id),
+				source.reference_asset_ids,source.reference_image_urls,'succeeded',$3,$4,$5,$6,
+				'pending',$7
+			FROM drama.generated_assets source WHERE source.asset_id=$1`,
+			replacement.SourceAssetID, replacement.AssetID, replacement.StorageURL,
+			replacement.Width, replacement.Height, replacement.ContentHash, selected)
+	case "storyboard_images":
+		commandTag, err = tx.Exec(ctx, `INSERT INTO drama.storyboard_images(
+			storyboard_image_id,project_id,episode_id,storyboard_id,shot_id,generation_version,
+			source_storyboard_version,visual_style_id,character_profile_ids,costume_ids,
+			location_profile_id,prop_ids,reference_asset_ids,final_prompt,negative_prompt,
+			provider,model,image_asset_id,storage_url,status,auto_qc_status,auto_qc_report,
+			review_status,is_current)
+			SELECT $2,source.project_id,source.episode_id,source.storyboard_id,source.shot_id,
+				(SELECT COALESCE(MAX(v.generation_version),0)+1 FROM drama.storyboard_images v WHERE v.shot_id=source.shot_id),
+				source.source_storyboard_version,source.visual_style_id,source.character_profile_ids,
+				source.costume_ids,source.location_profile_id,source.prop_ids,source.reference_asset_ids,
+				source.final_prompt,source.negative_prompt,'manual_upload','user_upload',
+				source.image_asset_id,$3,'succeeded','pending',
+				jsonb_build_object('source','manual_upload','replacement_for',source.storyboard_image_id),
+				'pending',true
+			FROM drama.storyboard_images source WHERE source.storyboard_image_id=$1`,
+			replacement.SourceAssetID, replacement.AssetID, replacement.StorageURL)
+	case "shot_videos":
+		commandTag, err = tx.Exec(ctx, `INSERT INTO drama.shot_videos(
+			shot_video_id,project_id,episode_id,storyboard_id,shot_id,storyboard_image_id,
+			source_image_generation_version,generation_version,provider,model,video_prompt,
+			negative_prompt,reference_image_url,reference_asset_ids,request_parameters,seed,
+			requested_duration_seconds,actual_duration_seconds,aspect_ratio,width,height,fps,
+			has_audio,storage_url,content_hash,status,auto_qc_status,auto_qc_report,
+			review_status,is_current)
+			SELECT $2,source.project_id,source.episode_id,source.storyboard_id,source.shot_id,
+				source.storyboard_image_id,source.source_image_generation_version,
+				(SELECT COALESCE(MAX(v.generation_version),0)+1 FROM drama.shot_videos v WHERE v.shot_id=source.shot_id),
+				'manual_upload','user_upload',source.video_prompt,source.negative_prompt,
+				source.reference_image_url,source.reference_asset_ids,
+				source.request_parameters||jsonb_build_object('replacement_for',source.shot_video_id),
+				source.seed,COALESCE(($6::bigint/1000.0),source.requested_duration_seconds),
+				COALESCE(($6::bigint/1000.0),source.actual_duration_seconds),
+				source.aspect_ratio,COALESCE($4,source.width),COALESCE($5,source.height),source.fps,
+				source.has_audio,$3,$7,'succeeded','pending',
+				jsonb_build_object('source','manual_upload','replacement_for',source.shot_video_id),
+				'pending',true
+			FROM drama.shot_videos source WHERE source.shot_video_id=$1`,
+			replacement.SourceAssetID, replacement.AssetID, replacement.StorageURL,
+			replacement.Width, replacement.Height, replacement.DurationMS, replacement.ContentHash)
+	case "dialogue_audio":
+		commandTag, err = tx.Exec(ctx, `INSERT INTO drama.dialogue_audio(
+			dialogue_audio_id,project_id,episode_id,scene_id,dialogue_id,character_id,
+			voice_profile_id,generation_version,dialogue_type,source_text,normalized_text,
+			emotion,performance_instruction,requested_speed,provider,model,storage_url,
+			actual_duration_ms,content_hash,status,auto_qc_status,auto_qc_report,
+			review_status,is_current)
+			SELECT $2,source.project_id,source.episode_id,source.scene_id,source.dialogue_id,
+				source.character_id,source.voice_profile_id,
+				(SELECT COALESCE(MAX(v.generation_version),0)+1 FROM drama.dialogue_audio v WHERE v.dialogue_id=source.dialogue_id),
+				source.dialogue_type,source.source_text,source.normalized_text,source.emotion,
+				source.performance_instruction,source.requested_speed,'manual_upload','user_upload',
+				$3,$4,$5,'succeeded','pending',
+				jsonb_build_object('source','manual_upload','replacement_for',source.dialogue_audio_id),
+				'pending',true
+			FROM drama.dialogue_audio source WHERE source.dialogue_audio_id=$1`,
+			replacement.SourceAssetID, replacement.AssetID, replacement.StorageURL,
+			replacement.DurationMS, replacement.ContentHash)
+	case "episode_masters":
+		commandTag, err = tx.Exec(ctx, `INSERT INTO drama.episode_masters(
+			master_id,project_id,episode_id,timeline_id,generation_version,master_type,
+			storage_url,subtitle_url,subtitle_burned,width,height,aspect_ratio,fps,duration_ms,
+			file_size_bytes,video_codec,audio_codec,sample_rate,content_hash,status,is_current)
+			SELECT $2,source.project_id,source.episode_id,source.timeline_id,
+				(SELECT COALESCE(MAX(v.generation_version),0)+1 FROM drama.episode_masters v
+				 WHERE v.episode_id=source.episode_id AND v.master_type=source.master_type),
+				source.master_type,$3,source.subtitle_url,source.subtitle_burned,
+				COALESCE($4,source.width),COALESCE($5,source.height),source.aspect_ratio,source.fps,
+				COALESCE($6,source.duration_ms),source.file_size_bytes,source.video_codec,
+				source.audio_codec,source.sample_rate,$7,'ready',true
+			FROM drama.episode_masters source WHERE source.master_id=$1`,
+			replacement.SourceAssetID, replacement.AssetID, replacement.StorageURL,
+			replacement.Width, replacement.Height, replacement.DurationMS, replacement.ContentHash)
+	default:
+		return MediaAsset{}, fmt.Errorf("unsupported media asset type %q", replacement.SourceAssetType)
+	}
+	if err != nil {
+		return MediaAsset{}, err
+	}
+	if commandTag.RowsAffected() != 1 {
+		return MediaAsset{}, ErrNotFound
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return MediaAsset{}, err
+	}
+	return s.GetMediaAsset(ctx, replacement.SourceAssetType, replacement.AssetID)
 }
 
 func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectDetail, error) {
@@ -901,7 +1145,18 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 
 	rows, err := s.pool.Query(ctx, `SELECT r.review_id, r.project_id, p.novel_name, r.stage, r.entity_type,
 		r.entity_id, r.review_status, r.review_comment, r.rejection_reason, r.revision_instruction,
-		COALESCE(r.metadata, '{}'::jsonb), r.created_at, r.reviewed_at
+		COALESCE(r.metadata, '{}'::jsonb),
+		(SELECT successor.review_id FROM drama.review_tasks successor
+		 WHERE r.stage='visual_asset' AND r.entity_type='generated_asset'
+		   AND successor.stage='visual_asset' AND successor.entity_type='generated_asset'
+		   AND successor.metadata->>'regenerated_from_asset_id'=r.entity_id
+		 ORDER BY successor.created_at DESC LIMIT 1),
+		(SELECT successor.entity_id FROM drama.review_tasks successor
+		 WHERE r.stage='visual_asset' AND r.entity_type='generated_asset'
+		   AND successor.stage='visual_asset' AND successor.entity_type='generated_asset'
+		   AND successor.metadata->>'regenerated_from_asset_id'=r.entity_id
+		 ORDER BY successor.created_at DESC LIMIT 1),
+		r.created_at, r.reviewed_at
 		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id `+where+`
 		ORDER BY CASE r.review_status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at DESC
 		LIMIT $4 OFFSET $5`, projectID, stage, status, limit, (page-1)*limit)
@@ -914,7 +1169,8 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 		var item ReviewCenterItem
 		if err := rows.Scan(&item.ReviewID, &item.ProjectID, &item.NovelName, &item.Stage, &item.EntityType,
 			&item.EntityID, &item.ReviewStatus, &item.ReviewComment, &item.RejectionReason,
-			&item.RevisionInstruction, &item.Metadata, &item.CreatedAt, &item.ReviewedAt); err != nil {
+			&item.RevisionInstruction, &item.Metadata, &item.RegeneratedByReviewID,
+			&item.RegeneratedByEntityID, &item.CreatedAt, &item.ReviewedAt); err != nil {
 			return ReviewListResult{}, err
 		}
 		result.Items = append(result.Items, item)
@@ -1179,11 +1435,34 @@ func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewCo
 func (s *Store) NextVisualAssetGenerationVersion(ctx context.Context, projectID, profileID, assetType string) (int, error) {
 	var version int
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(generation_version),0)+1
-		FROM drama.generated_assets
-		WHERE project_id=$1 AND profile_id=$2 AND asset_type=$3`,
+		FROM (
+			SELECT generation_version
+			FROM drama.generated_assets
+			WHERE project_id=$1 AND profile_id=$2 AND asset_type=$3
+			UNION ALL
+			SELECT generation_version
+			FROM drama.image_generation_tasks
+			WHERE project_id=$1
+			  AND COALESCE(NULLIF(request_payload->>'profile_id',''),
+			              NULLIF(request_payload#>>'{payload,profile_id}',''))=$2
+			  AND COALESCE(NULLIF(request_payload->>'asset_type',''),
+			              NULLIF(request_payload#>>'{payload,asset_type}',''))=$3
+		) versions`,
 		projectID, profileID, assetType,
 	).Scan(&version)
 	return version, err
+}
+
+func (s *Store) HasSuccessfulVisualAssetRegeneration(ctx context.Context, sourceAssetID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM drama.review_tasks successor
+		WHERE successor.stage='visual_asset'
+		  AND successor.entity_type='generated_asset'
+		  AND successor.metadata->>'regenerated_from_asset_id'=$1
+	)`, sourceAssetID).Scan(&exists)
+	return exists, err
 }
 
 func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID string) (FlowActionContext, error) {

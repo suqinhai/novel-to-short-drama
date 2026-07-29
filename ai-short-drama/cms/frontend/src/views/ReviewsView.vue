@@ -6,7 +6,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ReviewContentViewer from '../components/ReviewContentViewer.vue'
 import { getDisplayValueLabel } from '../services/displayLabels'
-import { getVisualRegenerationAction, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
+import { getVisualRegenerationAction, isRegeneratedVisualReview, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
 
 const data = ref(null)
 const loading = ref(true)
@@ -188,7 +188,7 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
       <div v-else class="review-list">
         <article v-for="item in items" :key="item.review_id" class="review-row">
           <div class="review-stage-icon"><ClipboardCheck :size="18" /></div>
-          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || '其他审核阶段' }}</strong><StatusBadge :status="item.review_status" /><span>{{ webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ getDisplayValueLabel(item.entity_type) }}</code><span>{{ item.entity_id }}</span></div></div>
+          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || '其他审核阶段' }}</strong><StatusBadge :status="item.review_status" /><span>{{ isRegeneratedVisualReview(item) ? '已重新生成' : webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ getDisplayValueLabel(item.entity_type) }}</code><span>{{ item.entity_id }}</span></div></div>
           <div class="review-history"><span>创建时间</span><strong>{{ formatTime(item.created_at) }}</strong><small v-if="item.reviewed_at">审核于 {{ formatTime(item.reviewed_at) }}</small></div>
           <div class="review-actions"><button class="review-open-button" @click="openPreview(item)"><Eye :size="15" />查看内容</button></div>
         </article>
@@ -207,7 +207,8 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
           <ReviewContentViewer v-else-if="preview.content" :content="preview.content" />
         </div>
         <footer class="review-drawer-actions">
-          <span v-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，原审核结论不会因重新生成而改变。</span>
+          <span v-if="isRegeneratedVisualReview(preview.item)">该拒绝记录已生成后继版本 {{ preview.item?.regenerated_by_entity_id }}，请在新的审核记录中继续处理。</span>
+          <span v-else-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，原审核结论不会因重新生成而改变。</span>
           <template v-else>
             <button class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />拒绝</button>
           </template>

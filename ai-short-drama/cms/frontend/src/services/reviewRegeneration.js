@@ -2,12 +2,19 @@ export function isVisualAssetReview(item) {
   return item?.stage === 'visual_asset' && item?.entity_type === 'generated_asset'
 }
 
+export function isRegeneratedVisualReview(item) {
+  return isVisualAssetReview(item)
+    && item?.review_status === 'rejected'
+    && Boolean(item?.regenerated_by_review_id)
+}
+
 export function getVisualRegenerationAction(item) {
   if (!isVisualAssetReview(item)) return null
   if (item.review_status === 'pending') {
     return { operation: 'reject_regenerate', mode: 'replace', label: '退回重做' }
   }
   if (item.review_status === 'rejected') {
+    if (isRegeneratedVisualReview(item)) return null
     return { operation: 'regenerate', mode: 'replace', label: '按意见重新生成' }
   }
   if (item.review_status === 'approved') {

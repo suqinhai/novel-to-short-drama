@@ -1,8 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
 async function request(path, options = {}) {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
+    headers: { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
     ...options,
   })
   const payload = await response.json().catch(() => ({}))
@@ -62,6 +63,16 @@ export const api = {
   getMediaAssets(params = {}) {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/media-assets?${query}`)
+  },
+  regenerateMediaAsset(assetType, assetId, payload = {}) {
+    return request(`/media-assets/${encodeURIComponent(assetType)}/${encodeURIComponent(assetId)}/regenerate`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  replaceMediaAsset(assetType, assetId, formData) {
+    return request(`/media-assets/${encodeURIComponent(assetType)}/${encodeURIComponent(assetId)}/replacement`, {
+      method: 'POST', body: formData,
+    })
   },
   decideReview(reviewId, payload) {
     return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
