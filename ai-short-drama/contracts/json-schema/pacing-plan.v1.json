@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-short-drama.local/contracts/pacing-plan.v1.json",
+  "title": "Versioned Drama Pacing Plan",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["pacing_plan_id", "version_number", "total_duration_seconds", "episodes", "beats", "issues"],
+  "properties": {
+    "pacing_plan_id": {"type": "string", "minLength": 1},
+    "version_number": {"type": "integer", "minimum": 1},
+    "total_duration_seconds": {"type": "integer", "minimum": 1},
+    "episodes": {"type": "array", "items": {"$ref": "#/$defs/metrics"}},
+    "beats": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "allOf": [
+          {"$ref": "#/$defs/metrics"},
+          {
+            "type": "object",
+            "required": ["beat_key", "episode_number", "beat_ordinal", "dialogue_ratio", "action_ratio", "narration_ratio", "estimated_duration_seconds"],
+            "properties": {
+              "beat_key": {"type": "string", "minLength": 1},
+              "episode_number": {"type": "integer", "minimum": 1},
+              "beat_ordinal": {"type": "integer", "minimum": 1},
+              "dialogue_ratio": {"$ref": "#/$defs/ratio"},
+              "action_ratio": {"$ref": "#/$defs/ratio"},
+              "narration_ratio": {"$ref": "#/$defs/ratio"},
+              "estimated_duration_seconds": {"type": "integer", "minimum": 1}
+            }
+          }
+        ]
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["issue_code", "severity", "location", "message", "suggestion"],
+        "properties": {
+          "issue_code": {"enum": ["CONSECUTIVE_LOW_INTENSITY", "INFORMATION_OVERLOAD", "MISSING_HOOK", "CLIMAX_TOO_LATE", "ENDING_WITHOUT_SUSPENSE"]},
+          "severity": {"enum": ["info", "warning", "major", "critical"]},
+          "location": {"type": "object"},
+          "message": {"type": "string", "minLength": 1},
+          "suggestion": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "metrics": {
+      "type": "object",
+      "required": ["conflict_intensity", "emotional_intensity", "information_reveal", "hook_strength"],
+      "properties": {
+        "conflict_intensity": {"$ref": "#/$defs/ratio"},
+        "emotional_intensity": {"$ref": "#/$defs/ratio"},
+        "information_reveal": {"$ref": "#/$defs/ratio"},
+        "hook_strength": {"$ref": "#/$defs/ratio"},
+        "reversal_strength": {"$ref": "#/$defs/ratio"}
+      }
+    }
+  }
+}

@@ -177,6 +177,55 @@ export const narrativeApi = {
   getLatestAdaptationPlan(projectId) {
     return request(`/adaptation-projects/${id(projectId)}/adaptation-plans/latest`)
   },
+  runAdaptationAnalysis(projectId, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/diagnostic-runs`, {
+      body: { mode: 'deterministic_mock' }, idempotencyKey,
+    })
+  },
+  getLatestDiagnostic(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/diagnostics/latest`)
+  },
+  getLatestPacing(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/pacing/latest`)
+  },
+  editPacing(projectId, pacingPlanId, edits, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/pacing-plans/${id(pacingPlanId)}/beats`, {
+      method: 'PATCH', body: { edits }, idempotencyKey,
+    })
+  },
+  rescoreQuality(projectId, scope, scopeSelector, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/quality-score-runs`, {
+      body: { scope, scope_selector: scopeSelector || {} }, idempotencyKey,
+    })
+  },
+  getLatestQualityScore(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/quality-scores/latest`)
+  },
+  listCandidateSets(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/candidate-sets`)
+  },
+  getCandidateSet(projectId, candidateSetId) {
+    return request(`/adaptation-projects/${id(projectId)}/candidate-sets/${id(candidateSetId)}`)
+  },
+  generateCandidateSet(projectId, payload, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/candidate-sets`, { body: payload, idempotencyKey })
+  },
+  recordCandidateDecision(candidateId, payload, idempotencyKey) {
+    return command(`/candidates/${id(candidateId)}/decisions`, { body: payload, idempotencyKey })
+  },
+  selectCandidate(projectId, candidateSetId, payload, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/candidate-sets/${id(candidateSetId)}/selections`, {
+      body: payload, idempotencyKey,
+    })
+  },
+  composeCandidates(projectId, candidateSetId, payload, idempotencyKey) {
+    return command(`/adaptation-projects/${id(projectId)}/candidate-sets/${id(candidateSetId)}/compositions`, {
+      body: payload, idempotencyKey,
+    })
+  },
+  addCandidateTimecodeComment(candidateId, payload, idempotencyKey) {
+    return command(`/candidates/${id(candidateId)}/timecode-comments`, { body: payload, idempotencyKey })
+  },
   getCachedVersionETag(sourceVersionId) {
     return cachedETag('source-version', sourceVersionId)
   },

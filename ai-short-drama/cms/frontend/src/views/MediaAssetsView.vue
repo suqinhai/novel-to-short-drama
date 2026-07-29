@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import {
   AlertTriangle, ArrowRight, AudioLines, CheckCircle2, ChevronLeft, ChevronRight,
   CircleAlert, CirclePlay, Clock3, ExternalLink, Film, Filter, History, Hourglass,
-  ImageOff, Images, Info, LayoutGrid, List, LoaderCircle, RefreshCw, RotateCcw,
+  ImageOff, Images, Info, LayoutGrid, List, LoaderCircle, RefreshCw, RotateCcw, GitCompare,
   Search, Upload, X,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
@@ -16,6 +16,7 @@ import {
 } from '../services/mediaAssetVersions'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import { localEditLinkForMedia } from '../services/localEditing'
 
 const data = ref(null)
 const loading = ref(true)
@@ -441,6 +442,7 @@ async function submitAction() {
             </button>
             <div class="media-browser-actions">
               <button @click="openAction('details', item)"><Info :size="14" />详情</button>
+              <RouterLink :to="localEditLinkForMedia(item)"><GitCompare :size="14" />局部修改</RouterLink>
               <button v-if="canRecover(item)" class="primary" @click="openAction('regenerate', item)">
                 <RotateCcw :size="14" />重新生成
               </button>

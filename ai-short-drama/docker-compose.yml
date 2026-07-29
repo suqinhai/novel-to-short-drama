@@ -30,6 +30,10 @@ services:
       - ./database/09-rollback-phase5-contract-corrections.sql:/opt/drama/09-rollback-phase5-contract-corrections.sql:ro
       - ./database/11-pgcrypto-runtime-prerequisite.sql:/opt/drama/11-pgcrypto-runtime-prerequisite.sql:ro
       - ./database/12-rolling-episode-production.sql:/opt/drama/12-rolling-episode-production.sql:ro
+      - ./database/13-adaptation-diagnostics-pacing-quality.sql:/opt/drama/13-adaptation-diagnostics-pacing-quality.sql:ro
+      - ./database/14-multi-candidate-selection.sql:/opt/drama/14-multi-candidate-selection.sql:ro
+      - ./database/14-verify-multi-candidate-selection.sql:/opt/drama/14-verify-multi-candidate-selection.sql:ro
+      - ./database/15-local-editing-workbench.sql:/opt/drama/15-local-editing-workbench.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

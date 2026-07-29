@@ -2,6 +2,42 @@
 
 本目录提供项目总控、小说导入与分析、故事圣经、分集策划、单集剧本、分镜设计、视觉资产、分镜图片、单镜头视频、对白音频、整集剪辑合成、质量检查、人工终审和发布物料工作流。第五阶段把第四阶段已审核素材写成结构化时间线，由隔离的 media-worker 执行 FFmpeg，并在自动质检与两次人工门禁后生成官方 API 发布任务或 `manual_package`；默认禁止真实发布。
 
+## 局部精修工作台
+
+CMS 现支持对白、场景、镜头和视频时间段的局部修改。自然语言指令必须先生成 `change-plan.v1`，展示字段 diff、精确 artifact 影响和重建任务，再由用户分别确认与执行。执行采用单事务和不可变实体版本；失败不会留下半成品 current，旧版本可通过新的回滚/重应用计划恢复。局部视频与验收测试使用确定性 Mock，不调用付费模型。实现、API 和验证命令见 [第三阶段局部精修文档](docs/architecture/phase-15-local-editing-workbench.md)。
+
+## 第二阶段：多候选生成、评分、择优与组合
+
+项目详情新增“候选工作台”。在第一阶段诊断、节奏和十维评分已经完成后，可针对故事弧、单集、场景、分镜、关键图片或视频镜头生成 2–12 个确定性候选；用户同时指定差异方向、必须保持、允许变化、Prompt 版本、随机种子和生成参数。故事弧支持多个分集方案，单集支持开场/冲突/高潮/结尾钩子，场景支持对白/动作/旁白，分镜支持构图/景别/运镜/表演/转场，图片与视频各自支持多个候选。
+
+候选自动记录忠实度、钩子、节奏、连续性、可拍摄性、预计时长和修改风险，并继承第一阶段 `quality_score_report` 的 artifact 依赖；排序展示推荐理由和扣分原因。文本使用结构化 diff；工作台具备并排比较、图片滑块入口、视频同步播放和时间码评论，并提供筛选、收藏、淘汰、选择与组合。所有选择和组合都弹出明确确认，组合后重新执行因果、时长、人物状态、伏笔和连续性五项硬规则。
+
+候选正文、评分、候选集、选择快照和硬规则结果均由数据库触发器禁止更新或删除。收藏/淘汰写入独立追加式决策。候选 artifact 永远是 `is_current=false` 且 `downstream_eligible=false`；只有确认选择或组合后，系统才复制内容生成新的 `candidate_selection` artifact、建立来源依赖并更新 `artifact_current_bindings`。先前 current 只标记为历史，不覆盖或删除。
+
+升级与导入：
+
+```powershell
+docker compose exec -T postgres psql -U <业务库用户> -d short_drama -v ON_ERROR_STOP=1 -f /opt/drama/14-multi-candidate-selection.sql
+docker compose exec n8n n8n import:workflow --input=/data/workflows/04c-multi-candidate-generation.json
+```
+
+API 包括 `.../candidate-sets` 的生成/列表/详情、`.../selections`、`.../compositions`、`.../decisions` 和 `.../timecode-comments`，所有写入要求 `Idempotency-Key`。同一键和同一请求返回原候选集，不重复创建。Mock 输入见 `test-data/04c-generate-candidates.json`；验证入口为 `node scripts/validate-phase14.js`、后端/前端全量测试以及数据库 E2E `TestPhase13MockE2EAndSelectiveBeatInvalidation`。详细设计见 `docs/architecture/phase-14-multi-candidate-workbench.md`。
+
+## 第一阶段：改编诊断、节奏与可解释评分
+
+项目级 CMS 入口“改编诊断”基于已发布 Source Version、当前 full Narrative IR 和 active Adaptation Spec，使用 `deterministic-mock-v1` 同步生成三类不可变版本：改编诊断、节奏计划和十维质量评分。诊断覆盖核心卖点、受众/情绪价值、爽虐/打脸/反转/身份揭露/悬念/伏笔、章节密度/可视化/制作复杂度、改编动作、3 秒/30 秒/集尾钩子、主角曲线以及不可直接影视化段落。
+
+节奏计划保存故事弧、单集、节拍的冲突/情绪/信息/钩子/反转强度、对白/动作/旁白占比和时长。CMS 可人工调整节拍集数、顺序和时长；保存会创建新版本、复用未变化节拍的 artifact，只从变化节拍的旧 artifact 向下传播 stale。评分固定包含原著忠实度、因果完整性、人物一致性、钩子强度、节奏密度、对白自然度、视觉可执行性、连续性、情绪传达和声画可执行性，每维都有来源证据、问题位置、严重度和建议。
+
+升级已有业务库只执行加法、幂等迁移：
+
+```powershell
+docker compose exec -T postgres psql -U <业务库用户> -d short_drama -v ON_ERROR_STOP=1 -f /opt/drama/13-adaptation-diagnostics-pacing-quality.sql
+docker compose exec n8n n8n import:workflow --input=/data/workflows/04b-adaptation-diagnostics.json
+```
+
+核心 v2 接口为 `POST .../diagnostic-runs`、`GET .../diagnostics/latest`、`GET .../pacing/latest`、`PATCH .../pacing-plans/{id}/beats`、`POST .../quality-score-runs` 与 `GET .../quality-scores/latest`。所有写接口要求 `Idempotency-Key`；诊断仅接受 `deterministic_mock`。从诊断生成 Adaptation Spec 时，CMS 先展示草稿，只有用户点击确认才调用原有版本化 Spec 接口。完整设计与测试入口见 `docs/architecture/phase-13-adaptation-intelligence.md`。
+
 ## 单集滚动生产（推荐）
 
 CMS 的“新建项目”现在只把整本小说写入原著资料库并拆章，不会自动分析全书或生成整季视频。发布来源版本后，每次明确选择 1–30 章提取 Narrative IR，再把一个故事弧编译为最多 12 集的适配计划。

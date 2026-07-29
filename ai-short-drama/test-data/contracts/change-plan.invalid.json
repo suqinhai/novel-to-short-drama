@@ -1,0 +1,16 @@
+{
+  "schema_version": "change-plan.v1",
+  "user_intent": "直接改数据",
+  "target": {"entity_type": "episode", "entity_id": "episode_1", "version": 0},
+  "must_preserve": [],
+  "allowed_fields": [],
+  "expected_changes": [],
+  "impact": {"upstream": [], "downstream": [], "rebuild_tasks": []},
+  "rebuild": {"voice": false, "image": false, "video": false, "edit": false, "subtitle": false},
+  "risks": [],
+  "validation_rules": [],
+  "rollback_version": 0,
+  "change_kind": "content_changed",
+  "semantic_change": true,
+  "locks": []
+}

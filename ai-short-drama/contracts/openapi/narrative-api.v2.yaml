@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AI Short Drama Narrative API
-  version: 2.0.0-phase1
+  version: 2.1.0-phase2
   description: >-
     Frozen Phase 1 public contract for the source library, Narrative IR,
     Adaptation Spec, compiler operations and lineage. Phase 1 defines storage
@@ -704,6 +704,336 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/LineageResponse'}
+  /adaptation-projects/{project_id}/diagnostic-runs:
+    post:
+      tags: [AdaptationProjects]
+      operationId: runAdaptationDiagnostic
+      summary: Generate immutable diagnostic, pacing and explainable-score versions
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {mode: {type: string, enum: [deterministic_mock]}}
+      responses:
+        '202': {description: Deterministic analysis completed idempotently}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/diagnostics/latest:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getLatestAdaptationDiagnostic
+      parameters: [{$ref: '#/components/parameters/ProjectID'}]
+      responses:
+        '200':
+          description: Latest immutable diagnostic report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: ../json-schema/adaptation-diagnostic.v1.json
+  /adaptation-projects/{project_id}/pacing/latest:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getLatestPacingPlan
+      parameters: [{$ref: '#/components/parameters/ProjectID'}]
+      responses:
+        '200':
+          description: Latest immutable pacing version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: ../json-schema/pacing-plan.v1.json
+  /adaptation-projects/{project_id}/pacing-plans/{pacing_plan_id}/beats:
+    patch:
+      tags: [AdaptationProjects]
+      operationId: editPacingBeats
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: pacing_plan_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [edits]
+              properties:
+                edits:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [beat_key]
+                    properties:
+                      beat_key: {type: string, minLength: 1}
+                      episode_number: {type: integer, minimum: 1}
+                      beat_ordinal: {type: integer, minimum: 1}
+                      estimated_duration_seconds: {type: integer, minimum: 1}
+      responses:
+        '202': {description: A new pacing version and local score version were created}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/quality-score-runs:
+    post:
+      tags: [AdaptationProjects]
+      operationId: rescoreAdaptationQuality
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                scope: {type: string, enum: [season, episode, beat, artifact], default: season}
+                scope_selector: {type: object}
+      responses:
+        '202': {description: Explainable local score version created}
+  /adaptation-projects/{project_id}/quality-scores/latest:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getLatestAdaptationQualityScore
+      parameters: [{$ref: '#/components/parameters/ProjectID'}]
+      responses:
+        '200':
+          description: Latest explainable quality score
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: ../json-schema/quality-score.v1.json
+  /adaptation-projects/{project_id}/candidate-sets:
+    get:
+      tags: [AdaptationProjects]
+      operationId: listCandidateSets
+      summary: List immutable candidate sets and their scored candidates
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Candidate sets sorted newest first
+    post:
+      tags: [AdaptationProjects]
+      operationId: generateCandidateSet
+      summary: Deterministically generate and score multiple candidates
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateCandidateSetRequest'
+      responses:
+        '201': {description: New immutable candidate set}
+        '200': {description: Idempotent replay of the same candidate set}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/candidate-sets/{candidate_set_id}:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getCandidateSet
+      summary: Get candidates, structured diffs, scores and editorial state
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/CandidateSetID'
+      responses:
+        '200': {description: Candidate comparison payload}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /adaptation-projects/{project_id}/candidate-sets/{candidate_set_id}/selections:
+    post:
+      tags: [AdaptationProjects, Lineage]
+      operationId: selectCandidate
+      summary: Explicitly confirm one candidate and create a new current artifact
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/CandidateSetID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectCandidateRequest'
+      responses:
+        '201': {description: Selection artifact created; prior artifact remains history}
+        '200': {description: Idempotent replay}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/candidate-sets/{candidate_set_id}/compositions:
+    post:
+      tags: [AdaptationProjects, Lineage]
+      operationId: composeCandidates
+      summary: Combine components and rerun all hard validation rules
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - $ref: '#/components/parameters/CandidateSetID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeCandidatesRequest'
+      responses:
+        '201': {description: Validated composition artifact created}
+        '200': {description: Idempotent replay}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /candidates/{candidate_id}/decisions:
+    post:
+      tags: [AdaptationProjects]
+      operationId: recordCandidateDecision
+      summary: Append a favorite or elimination decision without mutating the candidate
+      parameters:
+        - $ref: '#/components/parameters/CandidateID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CandidateDecisionRequest'
+      responses:
+        '201': {description: Editorial decision appended}
+  /candidates/{candidate_id}/timecode-comments:
+    post:
+      tags: [AdaptationProjects]
+      operationId: addCandidateTimecodeComment
+      summary: Add a video candidate timecode comment
+      parameters:
+        - $ref: '#/components/parameters/CandidateID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimecodeCommentRequest'
+      responses:
+        '201': {description: Timecode comment saved}
+  /adaptation-projects/{project_id}/change-plans:
+    get:
+      tags: [Lineage]
+      operationId: listLocalChangePlans
+      summary: List immutable local-edit plan history
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200':
+          description: Change plan history
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ChangePlanRecord'}
+    post:
+      tags: [Lineage]
+      operationId: createLocalChangePlan
+      summary: Convert natural language to a validated plan without mutating production data
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateChangePlanRequest'}
+      responses:
+        '201':
+          description: Validated plan awaiting explicit confirmation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePlanRecord'}
+        '422': {$ref: '#/components/responses/ValidationFailed'}
+  /adaptation-projects/{project_id}/change-plans/{change_plan_id}:
+    get:
+      tags: [Lineage]
+      operationId: getLocalChangePlan
+      summary: Read plan diff, exact impact and rebuild preview
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: change_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200':
+          description: Change plan
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePlanRecord'}
+  /adaptation-projects/{project_id}/change-plans/{change_plan_id}:confirm:
+    post:
+      tags: [Lineage]
+      operationId: confirmLocalChangePlan
+      summary: Explicitly confirm an immutable validated plan
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: change_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200':
+          description: Confirmed plan
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePlanRecord'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/change-plans/{change_plan_id}:execute:
+    post:
+      tags: [Lineage]
+      operationId: executeLocalChangePlan
+      summary: Atomically version, mutate, invalidate and enqueue exact incremental rebuilds
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: change_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200':
+          description: Applied plan and deterministic rebuild records
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePlanRecord'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/entity-versions/{entity_version_id}:change-plan:
+    post:
+      tags: [Lineage]
+      operationId: createVersionRestoreChangePlan
+      summary: Create a confirmed-gated rollback or reapply plan from an immutable entity version
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: entity_version_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode: {type: string, enum: [rollback, reapply]}
+                requested_by: {type: string, maxLength: 300}
+      responses:
+        '201':
+          description: Validated rollback or reapply plan; formal data remains unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChangePlanRecord'}
 components:
   securitySchemes:
     bearerAuth:
@@ -766,6 +1096,16 @@ components:
       in: path
       required: true
       schema: {$ref: '#/components/schemas/ID'}
+    CandidateSetID:
+      name: candidate_set_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+    CandidateID:
+      name: candidate_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
   responses:
     NotFound:
       description: Resource not found
@@ -778,6 +1118,64 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorResponse'}
   schemas:
+    CreateChangePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [instruction, target]
+      properties:
+        instruction: {type: string, minLength: 1, maxLength: 5000}
+        target: {$ref: '#/components/schemas/LocalEditTarget'}
+        requested_by: {type: string, maxLength: 300}
+    LocalEditTarget:
+      type: object
+      additionalProperties: false
+      required: [entity_type, entity_id, version]
+      properties:
+        entity_type: {type: string, enum: [dialogue, scene, shot, shot_video, media]}
+        entity_id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1}
+    PlannedFieldChange:
+      type: object
+      additionalProperties: false
+      required: [operation]
+      properties:
+        operation: {type: string, enum: [replace, adjust, reorder, regenerate, regenerate_segment, manual_replace]}
+        field: {type: string}
+        value: {}
+        delta: {}
+        start_ms: {type: integer, minimum: 0}
+        end_ms: {type: integer, minimum: 1}
+    ChangePlan:
+      type: object
+      additionalProperties: false
+      required: [schema_version, user_intent, target, must_preserve, allowed_fields, expected_changes, impact, rebuild, risks, validation_rules, rollback_version, change_kind, semantic_change, locks]
+      properties:
+        schema_version: {type: string, const: change-plan.v1}
+        user_intent: {type: string}
+        target: {$ref: '#/components/schemas/LocalEditTarget'}
+        must_preserve: {type: array, items: {type: string}}
+        allowed_fields: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
+        expected_changes: {type: array, minItems: 1, items: {$ref: '#/components/schemas/PlannedFieldChange'}}
+        impact: {type: object}
+        rebuild: {type: object}
+        risks: {type: array, items: {type: string}}
+        validation_rules: {type: array, minItems: 1, items: {type: string}}
+        rollback_version: {type: integer, minimum: 1}
+        change_kind: {type: string, enum: [content_changed, removed, format_changed, source_relocated]}
+        semantic_change: {type: boolean}
+        locks: {type: array, items: {type: string, enum: [character, costume, location, composition]}}
+    ChangePlanRecord:
+      type: object
+      additionalProperties: true
+      required: [change_plan_id, project_id, status, plan, fingerprint, impacts, rebuild_tasks]
+      properties:
+        change_plan_id: {$ref: '#/components/schemas/ID'}
+        project_id: {$ref: '#/components/schemas/ID'}
+        status: {type: string, enum: [draft, validated, confirmed, executing, applied, failed, cancelled]}
+        plan: {$ref: '#/components/schemas/ChangePlan'}
+        fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        impacts: {type: array, items: {type: object}}
+        rebuild_tasks: {type: array, items: {type: object}}
     ID:
       type: string
       minLength: 1
@@ -786,6 +1184,76 @@ components:
     Timestamp:
       type: string
       format: date-time
+    GenerateCandidateSetRequest:
+      type: object
+      additionalProperties: false
+      required: [target_type, target_id, component_types, candidate_count, difference_directions, model]
+      properties:
+        target_type: {type: string, enum: [story_arc, episode, scene, storyboard, image, video]}
+        target_id: {$ref: '#/components/schemas/ID'}
+        component_types:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items:
+            type: string
+            enum: [episode_plan, opening, conflict, climax, ending_hook, dialogue, action, narration, composition, shot_size, camera_movement, performance, transition, key_image, video_shot]
+        candidate_count: {type: integer, minimum: 2, maximum: 12}
+        difference_directions: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+        must_preserve: {type: array, items: {type: string}}
+        allowed_changes: {type: array, items: {type: string}}
+        model: {type: string, const: deterministic_mock}
+        prompt_version: {type: string, minLength: 1}
+        random_seed: {type: integer, format: int64}
+        generation_parameters: {type: object}
+        base_content: {type: object}
+        base_duration_seconds: {type: integer, minimum: 1}
+        base_artifact_id: {$ref: '#/components/schemas/ID'}
+        parent_candidate_id: {$ref: '#/components/schemas/ID'}
+        derived_reason: {type: string}
+    SelectCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [candidate_id, confirmed]
+      properties:
+        candidate_id: {$ref: '#/components/schemas/ID'}
+        confirmed: {type: boolean, const: true}
+        confirmed_by: {type: string}
+    ComposeCandidatesRequest:
+      type: object
+      additionalProperties: false
+      required: [parts, confirmed]
+      properties:
+        parts:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [component_key, candidate_id]
+            properties:
+              component_key: {type: string, minLength: 1}
+              candidate_id: {$ref: '#/components/schemas/ID'}
+        confirmed: {type: boolean, const: true}
+        confirmed_by: {type: string}
+    CandidateDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision: {type: string, enum: [favorite, unfavorite, eliminate, restore]}
+        reason: {type: string}
+        decided_by: {type: string}
+    TimecodeCommentRequest:
+      type: object
+      additionalProperties: false
+      required: [timecode_ms, comment_text]
+      properties:
+        timecode_ms: {type: integer, format: int64, minimum: 0}
+        comment_text: {type: string, minLength: 1}
+        author: {type: string}
     CreateSourceWorkRequest:
       type: object
       additionalProperties: false

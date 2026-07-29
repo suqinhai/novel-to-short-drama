@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-short-drama.local/contracts/adaptation-diagnostic.v1.json",
+  "title": "Versioned Adaptation Diagnostic",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["diagnostic_report_id", "version_number", "source_version_id", "ir_revision_id", "core_selling_points", "target_audience", "emotional_value", "protagonist_curve", "hook_recommendations", "nodes"],
+  "properties": {
+    "diagnostic_report_id": {"type": "string", "minLength": 1},
+    "version_number": {"type": "integer", "minimum": 1},
+    "source_version_id": {"type": "string", "minLength": 1},
+    "ir_revision_id": {"type": "string", "minLength": 1},
+    "core_selling_points": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "target_audience": {"type": "object"},
+    "emotional_value": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "protagonist_curve": {"type": "object", "required": ["goal", "resistance", "cost", "growth"]},
+    "hook_recommendations": {"type": "object", "required": ["opening_3_seconds", "first_30_seconds", "episode_end"]},
+    "nodes": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": true,
+        "required": ["node_type", "ordinal", "title", "intensity", "production_complexity", "evidence"],
+        "properties": {
+          "node_type": {"enum": ["selling_point", "爽点", "虐点", "打脸", "反转", "身份揭露", "悬念", "伏笔", "chapter_density", "visualizability", "production_complexity", "transformation", "unfilmable"]},
+          "ordinal": {"type": "integer", "minimum": 1},
+          "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+          "production_complexity": {"type": "number", "minimum": 0, "maximum": 1},
+          "evidence": {"type": "object", "minProperties": 1}
+        }
+      }
+    }
+  }
+}

@@ -19,6 +19,10 @@ PAIRS = (
     ("adaptation-spec.v1.json", "adaptation-spec"),
     ("compiler-plan.v1.json", "compiler-plan"),
     ("worker-execution.v1.json", "worker-execution"),
+    ("adaptation-diagnostic.v1.json", "adaptation-diagnostic"),
+    ("pacing-plan.v1.json", "pacing-plan"),
+    ("quality-score.v1.json", "quality-score"),
+    ("change-plan.v1.json", "change-plan"),
 )
 
 

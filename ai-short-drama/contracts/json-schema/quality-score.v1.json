@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-short-drama.local/contracts/quality-score.v1.json",
+  "title": "Explainable Adaptation Quality Score",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["quality_score_report_id", "version_number", "total_score", "dimensions"],
+  "properties": {
+    "quality_score_report_id": {"type": "string", "minLength": 1},
+    "version_number": {"type": "integer", "minimum": 1},
+    "total_score": {"type": "number", "minimum": 0, "maximum": 100},
+    "dimensions": {
+      "type": "array", "minItems": 10, "maxItems": 10,
+      "items": {
+        "type": "object", "additionalProperties": true,
+        "required": ["dimension", "score", "weight", "evidence", "issues"],
+        "properties": {
+          "dimension": {"enum": ["原著忠实度", "因果完整性", "人物一致性", "钩子强度", "节奏密度", "对白自然度", "视觉可执行性", "连续性", "情绪传达", "声画可执行性"]},
+          "score": {"type": "number", "minimum": 0, "maximum": 100},
+          "weight": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+          "evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "minProperties": 1}},
+          "issues": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["severity", "location", "evidence", "message", "suggestion"],
+              "properties": {
+                "severity": {"enum": ["info", "warning", "major", "critical"]},
+                "location": {"type": "object", "minProperties": 1},
+                "evidence": {"type": "string"},
+                "message": {"type": "string", "minLength": 1},
+                "suggestion": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

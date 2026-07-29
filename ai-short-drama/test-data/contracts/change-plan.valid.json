@@ -1,0 +1,24 @@
+{
+  "schema_version": "change-plan.v1",
+  "user_intent": "把第2场缩短20秒，但保留身份揭露。",
+  "target": {"entity_type": "scene", "entity_id": "scene_2", "version": 3},
+  "must_preserve": ["身份揭露"],
+  "allowed_fields": ["estimated_duration_seconds"],
+  "expected_changes": [
+    {"operation": "adjust", "field": "estimated_duration_seconds", "delta": -20}
+  ],
+  "impact": {
+    "upstream": [],
+    "downstream": ["storyboard", "edit_timeline"],
+    "rebuild_tasks": ["recompose_timeline"]
+  },
+  "rebuild": {
+    "voice": false, "image": false, "video": false, "edit": true, "subtitle": false
+  },
+  "risks": ["场景缩短可能破坏节奏"],
+  "validation_rules": ["目标版本仍为 current"],
+  "rollback_version": 3,
+  "change_kind": "content_changed",
+  "semantic_change": true,
+  "locks": []
+}

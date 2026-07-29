@@ -11,16 +11,22 @@ import SourceWorkDetailView from '../views/SourceWorkDetailView.vue'
 import SourceVersionView from '../views/SourceVersionView.vue'
 import AdaptationScopeView from '../views/AdaptationScopeView.vue'
 import ImpactAnalysisView from '../views/ImpactAnalysisView.vue'
+import AdaptationDiagnosticsView from '../views/AdaptationDiagnosticsView.vue'
+import CandidateWorkbenchView from '../views/CandidateWorkbenchView.vue'
+import LocalEditingWorkbenchView from '../views/LocalEditingWorkbenchView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/projects' },
+    { path: '/projects/:projectId/candidates', name: 'project-candidates', component: CandidateWorkbenchView, meta: { title: '候选工作台', eyebrow: 'CANDIDATE WORKBENCH' } },
+    { path: '/projects/:projectId/local-edit', name: 'project-local-edit', component: LocalEditingWorkbenchView, meta: { title: '局部精修工作台', eyebrow: 'LOCAL EDITING' } },
     { path: '/projects', name: 'projects', component: ProjectsView, meta: { title: '项目列表', eyebrow: 'PRODUCTION OVERVIEW' } },
     { path: '/projects/new', name: 'project-new', component: NewProjectView, meta: { title: '新建项目', eyebrow: 'CREATE PRODUCTION' } },
     { path: '/projects/:projectId', name: 'project-detail', component: ProjectDetailView, meta: { title: '项目详情', eyebrow: 'PROJECT WORKSPACE' } },
     { path: '/projects/:projectId/adaptation-scope', name: 'project-adaptation-scope', component: AdaptationScopeView, meta: { title: '改编范围', eyebrow: 'ADAPTATION SPEC' } },
     { path: '/projects/:projectId/impact', name: 'project-impact', component: ImpactAnalysisView, meta: { title: '修订影响分析', eyebrow: 'SOURCE IMPACT' } },
+    { path: '/projects/:projectId/adaptation-diagnostics', name: 'project-adaptation-diagnostics', component: AdaptationDiagnosticsView, meta: { title: '改编诊断', eyebrow: 'ADAPTATION INTELLIGENCE' } },
     { path: '/adaptations/new', name: 'adaptation-new', component: AdaptationScopeView, meta: { title: '新建改编项目', eyebrow: 'ADAPTATION SPEC' } },
     { path: '/library', name: 'source-works', component: SourceWorksView, meta: { title: '原著资料库', eyebrow: 'SOURCE LIBRARY' } },
     { path: '/library/:workId', name: 'source-work-detail', component: SourceWorkDetailView, meta: { title: '作品版本', eyebrow: 'SOURCE LIBRARY' } },

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/schemas/change-plan.v1.json",
+  "title": "Local Editing Change Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "user_intent", "target", "must_preserve", "allowed_fields",
+    "expected_changes", "impact", "rebuild", "risks", "validation_rules",
+    "rollback_version", "change_kind", "semantic_change", "locks"
+  ],
+  "properties": {
+    "schema_version": {"const": "change-plan.v1"},
+    "user_intent": {"type": "string", "minLength": 1, "maxLength": 5000},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "entity_id", "version"],
+      "properties": {
+        "entity_type": {"enum": ["dialogue", "scene", "shot", "shot_video", "media"]},
+        "entity_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "must_preserve": {
+      "type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}
+    },
+    "allowed_fields": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "expected_changes": {
+      "type": "array", "minItems": 1, "items": {"$ref": "#/$defs/change"}
+    },
+    "impact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["upstream", "downstream", "rebuild_tasks"],
+      "properties": {
+        "upstream": {"type": "array", "items": {"type": "string"}},
+        "downstream": {"type": "array", "items": {"type": "string"}},
+        "rebuild_tasks": {
+          "type": "array", "uniqueItems": true,
+          "items": {"enum": ["regenerate_voice", "update_subtitle", "regenerate_image", "regenerate_video", "recompose_timeline"]}
+        }
+      }
+    },
+    "rebuild": {
+      "type": "object", "additionalProperties": false,
+      "required": ["voice", "image", "video", "edit", "subtitle"],
+      "properties": {
+        "voice": {"type": "boolean"}, "image": {"type": "boolean"},
+        "video": {"type": "boolean"}, "edit": {"type": "boolean"},
+        "subtitle": {"type": "boolean"}
+      }
+    },
+    "risks": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "validation_rules": {
+      "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}
+    },
+    "rollback_version": {"type": "integer", "minimum": 1},
+    "change_kind": {"enum": ["content_changed", "removed", "format_changed", "source_relocated"]},
+    "semantic_change": {"type": "boolean"},
+    "locks": {
+      "type": "array", "uniqueItems": true,
+      "items": {"enum": ["character", "costume", "location", "composition"]}
+    }
+  },
+  "$defs": {
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation"],
+      "properties": {
+        "operation": {"enum": ["replace", "adjust", "reorder", "regenerate", "regenerate_segment", "manual_replace"]},
+        "field": {"type": "string", "minLength": 1},
+        "value": {},
+        "delta": {},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"operation": {"const": "regenerate_segment"}}},
+          "then": {"required": ["field", "start_ms", "end_ms"]}
+        }
+      ]
+    }
+  }
+}

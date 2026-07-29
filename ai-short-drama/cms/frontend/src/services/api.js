@@ -74,6 +74,42 @@ export const api = {
       method: 'POST', body: formData,
     })
   },
+  getChangePlans(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-plans`)
+  },
+  createChangePlan(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-plans`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  confirmChangePlan(projectId, changePlanId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-plans/${encodeURIComponent(changePlanId)}/confirm`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  executeChangePlan(projectId, changePlanId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-plans/${encodeURIComponent(changePlanId)}/execute`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
+  getEntityVersions(projectId, entityType, entityId) {
+    const query = new URLSearchParams({ entity_type: entityType, entity_id: entityId })
+    return request(`/projects/${encodeURIComponent(projectId)}/entity-versions?${query}`)
+  },
+  createVersionRestorePlan(projectId, entityVersionId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/entity-versions/${encodeURIComponent(entityVersionId)}/change-plan`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  getChangeComments(projectId, entityType = '', entityId = '') {
+    const query = new URLSearchParams({ entity_type: entityType, entity_id: entityId })
+    return request(`/projects/${encodeURIComponent(projectId)}/change-comments?${query}`)
+  },
+  createChangeComment(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-comments`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
   decideReview(reviewId, payload) {
     return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
   },

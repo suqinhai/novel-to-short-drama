@@ -41,14 +41,32 @@ type sourceV2Service interface {
 	CreateAdaptationProject(context.Context, string, store.CreateAdaptationProjectInput) (store.Operation, error)
 	ListAdaptationSpecs(context.Context, string) ([]store.AdaptationSpecSummary, error)
 	CreateAdaptationSpecVersion(context.Context, string, string, store.AdaptationSpecInput) (store.Operation, error)
+	RunAdaptationAnalysis(context.Context, string, string) (store.Operation, error)
+	GetLatestDiagnostic(context.Context, string) (json.RawMessage, string, error)
+	GetLatestPacing(context.Context, string) (json.RawMessage, string, error)
+	EditPacing(context.Context, string, string, string, store.EditPacingInput) (store.Operation, error)
+	GetLatestQualityScore(context.Context, string) (json.RawMessage, string, error)
+	RescoreQuality(context.Context, string, string, store.QualityRescoreInput) (store.Operation, error)
+}
+
+type candidateV2Service interface {
+	GenerateCandidateSet(context.Context, string, string, store.GenerateCandidateSetInput) (store.CandidateSet, bool, error)
+	ListCandidateSets(context.Context, string) ([]store.CandidateSet, error)
+	GetCandidateSet(context.Context, string, string) (store.CandidateSet, error)
+	RecordCandidateDecision(context.Context, string, string, store.CandidateDecisionInput) (store.CandidateDecision, bool, error)
+	SelectCandidate(context.Context, string, string, string, store.CandidateSelectionInput) (store.CandidateSelection, bool, error)
+	ComposeCandidates(context.Context, string, string, string, store.CandidateCompositionInput) (store.CandidateSelection, bool, error)
+	AddCandidateTimecodeComment(context.Context, string, string, store.TimecodeCommentInput) (store.TimecodeComment, bool, error)
 }
 
 type sourceV2Handler struct {
-	service sourceV2Service
+	service          sourceV2Service
+	candidateService candidateV2Service
 }
 
 func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	h := &sourceV2Handler{service: service}
+	h.candidateService, _ = service.(candidateV2Service)
 	api := router.Group("/api/v2")
 	api.GET("/source-works", h.listWorks)
 	api.POST("/source-works", h.createWork)
@@ -72,6 +90,279 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.POST("/adaptation-projects", h.createAdaptationProject)
 	api.GET("/adaptation-projects/:projectID/specs", h.listAdaptationSpecs)
 	api.POST("/adaptation-projects/:projectID/specs", h.createAdaptationSpec)
+	api.POST("/adaptation-projects/:projectID/diagnostic-runs", h.runAdaptationAnalysis)
+	api.GET("/adaptation-projects/:projectID/diagnostics/latest", h.getLatestDiagnostic)
+	api.GET("/adaptation-projects/:projectID/pacing/latest", h.getLatestPacing)
+	api.PATCH("/adaptation-projects/:projectID/pacing-plans/:pacingPlanID/beats", h.editPacing)
+	api.POST("/adaptation-projects/:projectID/quality-score-runs", h.rescoreQuality)
+	api.GET("/adaptation-projects/:projectID/quality-scores/latest", h.getLatestQualityScore)
+	api.POST("/adaptation-projects/:projectID/candidate-sets", h.generateCandidateSet)
+	api.GET("/adaptation-projects/:projectID/candidate-sets", h.listCandidateSets)
+	api.GET("/adaptation-projects/:projectID/candidate-sets/:candidateSetID", h.getCandidateSet)
+	api.POST("/adaptation-projects/:projectID/candidate-sets/:candidateSetID/selections", h.selectCandidate)
+	api.POST("/adaptation-projects/:projectID/candidate-sets/:candidateSetID/compositions", h.composeCandidates)
+	api.POST("/candidates/:candidateID/decisions", h.recordCandidateDecision)
+	api.POST("/candidates/:candidateID/timecode-comments", h.addCandidateTimecodeComment)
+}
+
+func (h *sourceV2Handler) runAdaptationAnalysis(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if request.Mode != "" && request.Mode != "deterministic_mock" {
+		v2InputError(c, "PAID_MODEL_DISABLED", "当前阶段只允许 deterministic_mock")
+		return
+	}
+	operation, err := h.service.RunAdaptationAnalysis(c.Request.Context(), c.Param("projectID"), key)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) getLatestDiagnostic(c *gin.Context) {
+	payload, trace, err := h.service.GetLatestDiagnostic(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, trace, payload, nil)
+}
+
+func (h *sourceV2Handler) getLatestPacing(c *gin.Context) {
+	payload, trace, err := h.service.GetLatestPacing(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, trace, payload, nil)
+}
+
+func (h *sourceV2Handler) editPacing(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.EditPacingInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if len(request.Edits) == 0 {
+		v2InputError(c, "VALIDATION_FAILED", "edits 不能为空")
+		return
+	}
+	operation, err := h.service.EditPacing(c.Request.Context(), c.Param("projectID"),
+		c.Param("pacingPlanID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) rescoreQuality(c *gin.Context) {
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.QualityRescoreInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if len(request.ScopeSelector) == 0 {
+		request.ScopeSelector = json.RawMessage(`{}`)
+	}
+	operation, err := h.service.RescoreQuality(c.Request.Context(), c.Param("projectID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+}
+
+func (h *sourceV2Handler) getLatestQualityScore(c *gin.Context) {
+	payload, trace, err := h.service.GetLatestQualityScore(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, trace, payload, nil)
+}
+
+func (h *sourceV2Handler) generateCandidateSet(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.GenerateCandidateSetInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if !publicIDPattern.MatchString(request.TargetID) ||
+		(request.BaseArtifactID != "" && !publicIDPattern.MatchString(request.BaseArtifactID)) ||
+		(request.ParentCandidateID != "" && !publicIDPattern.MatchString(request.ParentCandidateID)) {
+		v2InputError(c, "INVALID_CANDIDATE_REQUEST", "target, base artifact or parent candidate id is invalid")
+		return
+	}
+	result, created, err := h.candidateService.GenerateCandidateSet(c.Request.Context(), c.Param("projectID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, result.CandidateSetID, result, nil)
+}
+
+func (h *sourceV2Handler) listCandidateSets(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	result, err := h.candidateService.ListCandidateSets(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), result, nil)
+}
+
+func (h *sourceV2Handler) getCandidateSet(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	result, err := h.candidateService.GetCandidateSet(c.Request.Context(), c.Param("projectID"), c.Param("candidateSetID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), result, nil)
+}
+
+func (h *sourceV2Handler) recordCandidateDecision(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.CandidateDecisionInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	result, created, err := h.candidateService.RecordCandidateDecision(c.Request.Context(), c.Param("candidateID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, result.CandidateDecisionID, result, nil)
+}
+
+func (h *sourceV2Handler) selectCandidate(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.CandidateSelectionInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if !request.Confirmed {
+		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true")
+		return
+	}
+	result, created, err := h.candidateService.SelectCandidate(c.Request.Context(), c.Param("projectID"),
+		c.Param("candidateSetID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, result.CandidateSelectionID, result, nil)
+}
+
+func (h *sourceV2Handler) composeCandidates(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.CandidateCompositionInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	if !request.Confirmed {
+		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true")
+		return
+	}
+	result, created, err := h.candidateService.ComposeCandidates(c.Request.Context(), c.Param("projectID"),
+		c.Param("candidateSetID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, result.CandidateSelectionID, result, nil)
+}
+
+func (h *sourceV2Handler) addCandidateTimecodeComment(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var request store.TimecodeCommentInput
+	if !decodeStrictJSON(c, &request) {
+		return
+	}
+	result, created, err := h.candidateService.AddCandidateTimecodeComment(c.Request.Context(),
+		c.Param("candidateID"), key, request)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	v2Response(c, status, result.CandidateTimecodeCommentID, result, nil)
 }
 
 func (h *sourceV2Handler) dispatchSourceVersionGet(c *gin.Context) {

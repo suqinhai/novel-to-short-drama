@@ -268,3 +268,19 @@ type RegenerationRequest struct {
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }
+
+type PacingBeatEditInput struct {
+	BeatKey                  string `json:"beat_key"`
+	EpisodeNumber            *int   `json:"episode_number,omitempty"`
+	BeatOrdinal              *int   `json:"beat_ordinal,omitempty"`
+	EstimatedDurationSeconds *int   `json:"estimated_duration_seconds,omitempty"`
+}
+
+type EditPacingInput struct {
+	Edits []PacingBeatEditInput `json:"edits"`
+}
+
+type QualityRescoreInput struct {
+	Scope         string          `json:"scope"`
+	ScopeSelector json.RawMessage `json:"scope_selector"`
+}

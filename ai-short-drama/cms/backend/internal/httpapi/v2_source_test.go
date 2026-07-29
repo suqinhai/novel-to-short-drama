@@ -21,6 +21,8 @@ type fakeSourceV2 struct {
 	lastImport          store.ImportInput
 	lastAdaptationSpec  store.AdaptationSpecInput
 	versionChapter      store.VersionChapterContent
+	lastCandidateInput  store.GenerateCandidateSetInput
+	lastComposition     store.CandidateCompositionInput
 }
 
 func (f *fakeSourceV2) ListSourceWorks(context.Context, string, int, int) (store.SourceWorkList, error) {
@@ -111,6 +113,53 @@ func (f *fakeSourceV2) CreateAdaptationSpecVersion(_ context.Context, _ string, 
 	f.adaptationSpecCalls++
 	f.lastAdaptationSpec = input
 	return adaptationTestOperation("adaptation_spec_version", "asv_test"), nil
+}
+func (f *fakeSourceV2) RunAdaptationAnalysis(context.Context, string, string) (store.Operation, error) {
+	return adaptationTestOperation("project", "project_test"), nil
+}
+func (f *fakeSourceV2) GetLatestDiagnostic(context.Context, string) (json.RawMessage, string, error) {
+	return json.RawMessage(`{"diagnostic_report_id":"diag_test"}`), "tr_diag", nil
+}
+func (f *fakeSourceV2) GetLatestPacing(context.Context, string) (json.RawMessage, string, error) {
+	return json.RawMessage(`{"pacing_plan_id":"pace_test","beats":[]}`), "tr_pace", nil
+}
+func (f *fakeSourceV2) EditPacing(context.Context, string, string, string, store.EditPacingInput) (store.Operation, error) {
+	return completedTestOperation(), nil
+}
+func (f *fakeSourceV2) GetLatestQualityScore(context.Context, string) (json.RawMessage, string, error) {
+	return json.RawMessage(`{"quality_score_report_id":"score_test","dimensions":[]}`), "tr_score", nil
+}
+func (f *fakeSourceV2) RescoreQuality(context.Context, string, string, store.QualityRescoreInput) (store.Operation, error) {
+	return completedTestOperation(), nil
+}
+func (f *fakeSourceV2) GenerateCandidateSet(_ context.Context, projectID, _ string, input store.GenerateCandidateSetInput) (store.CandidateSet, bool, error) {
+	f.lastCandidateInput = input
+	return store.CandidateSet{CandidateSetID: "candset_test", ProjectID: projectID, TargetType: input.TargetType,
+		TargetID: input.TargetID, CandidateCount: input.CandidateCount, EstimatedCost: .072, Currency: "CNY",
+		Candidates: []store.CandidateVersion{{CandidateID: "cand_a", Label: "候选A", Rank: 1},
+			{CandidateID: "cand_b", Label: "候选B", Rank: 2}, {CandidateID: "cand_c", Label: "候选C", Rank: 3}}}, true, nil
+}
+func (f *fakeSourceV2) ListCandidateSets(context.Context, string) ([]store.CandidateSet, error) {
+	return []store.CandidateSet{{CandidateSetID: "candset_test", CandidateCount: 3}}, nil
+}
+func (f *fakeSourceV2) GetCandidateSet(context.Context, string, string) (store.CandidateSet, error) {
+	return store.CandidateSet{CandidateSetID: "candset_test", CandidateCount: 3}, nil
+}
+func (f *fakeSourceV2) RecordCandidateDecision(_ context.Context, candidateID, _ string, input store.CandidateDecisionInput) (store.CandidateDecision, bool, error) {
+	return store.CandidateDecision{CandidateDecisionID: "decision_test", CandidateID: candidateID, Decision: input.Decision}, true, nil
+}
+func (f *fakeSourceV2) SelectCandidate(context.Context, string, string, string, store.CandidateSelectionInput) (store.CandidateSelection, bool, error) {
+	return store.CandidateSelection{CandidateSelectionID: "selection_test", ArtifactID: "artifact_selected",
+		SelectionType: "candidate", ValidationSummary: json.RawMessage(`{"passed":true,"results":[]}`)}, true, nil
+}
+func (f *fakeSourceV2) ComposeCandidates(_ context.Context, _, _ string, _ string, input store.CandidateCompositionInput) (store.CandidateSelection, bool, error) {
+	f.lastComposition = input
+	return store.CandidateSelection{CandidateSelectionID: "composition_test", ArtifactID: "artifact_composed",
+		SelectionType: "composition", ValidationSummary: json.RawMessage(`{"passed":true,"results":[{"rule":"causality","passed":true},{"rule":"duration","passed":true},{"rule":"character_state","passed":true},{"rule":"foreshadowing","passed":true},{"rule":"continuity","passed":true}]}`)}, true, nil
+}
+func (f *fakeSourceV2) AddCandidateTimecodeComment(_ context.Context, candidateID, _ string, input store.TimecodeCommentInput) (store.TimecodeComment, bool, error) {
+	return store.TimecodeComment{CandidateTimecodeCommentID: "comment_test", CandidateID: candidateID,
+		TimecodeMS: input.TimecodeMS, CommentText: input.CommentText}, true, nil
 }
 
 func adaptationTestOperation(targetType, targetID string) store.Operation {
@@ -350,5 +399,106 @@ func TestImpactPreviewAndExplicitRegenerationDecision(t *testing.T) {
 	router.ServeHTTP(regenerate, request)
 	if regenerate.Code != http.StatusCreated || !bytes.Contains(regenerate.Body.Bytes(), []byte(`"status":"queued"`)) {
 		t.Fatalf("unexpected regeneration response: status=%d body=%s", regenerate.Code, regenerate.Body.String())
+	}
+}
+
+func TestAdaptationAnalysisEndpointsAndDeterministicModeGuard(t *testing.T) {
+	router := newSourceV2TestRouter(&fakeSourceV2{})
+	run := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/diagnostic-runs",
+		bytes.NewBufferString(`{"mode":"deterministic_mock"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "diagnostic-run-test")
+	router.ServeHTTP(run, request)
+	if run.Code != http.StatusAccepted || !bytes.Contains(run.Body.Bytes(), []byte(`"operation_type":"spec_validation"`)) {
+		t.Fatalf("unexpected diagnostic run: status=%d body=%s", run.Code, run.Body.String())
+	}
+	for _, path := range []string{
+		"/api/v2/adaptation-projects/project_test/diagnostics/latest",
+		"/api/v2/adaptation-projects/project_test/pacing/latest",
+		"/api/v2/adaptation-projects/project_test/quality-scores/latest",
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	paid := httptest.NewRecorder()
+	paidRequest := httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/diagnostic-runs",
+		bytes.NewBufferString(`{"mode":"paid_model"}`))
+	paidRequest.Header.Set("Content-Type", "application/json")
+	paidRequest.Header.Set("Idempotency-Key", "paid-model-rejected")
+	router.ServeHTTP(paid, paidRequest)
+	if paid.Code != http.StatusBadRequest || !bytes.Contains(paid.Body.Bytes(), []byte(`PAID_MODEL_DISABLED`)) {
+		t.Fatalf("paid model guard failed: status=%d body=%s", paid.Code, paid.Body.String())
+	}
+}
+
+func TestPacingEditRequiresEditsAndIdempotencyKey(t *testing.T) {
+	router := newSourceV2TestRouter(&fakeSourceV2{})
+	empty := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch,
+		"/api/v2/adaptation-projects/project_test/pacing-plans/pace_test/beats",
+		bytes.NewBufferString(`{"edits":[]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "empty-pacing-edit")
+	router.ServeHTTP(empty, request)
+	if empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty edits status=%d body=%s", empty.Code, empty.Body.String())
+	}
+	missingKey := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/quality-score-runs",
+		bytes.NewBufferString(`{"scope":"season","scope_selector":{}}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(missingKey, request)
+	if missingKey.Code != http.StatusBadRequest {
+		t.Fatalf("missing idempotency status=%d body=%s", missingKey.Code, missingKey.Body.String())
+	}
+}
+
+func TestCandidateGenerationSelectionAndCompositionContracts(t *testing.T) {
+	service := &fakeSourceV2{}
+	router := newSourceV2TestRouter(service)
+	generate := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/candidate-sets",
+		bytes.NewBufferString(`{"target_type":"episode","target_id":"episode_test","component_types":["opening","climax","ending_hook"],"candidate_count":3,"difference_directions":["强钩子","紧凑","低成本"],"must_preserve":[],"allowed_changes":[],"model":"deterministic_mock","random_seed":42,"generation_parameters":{}}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "candidate-generate-test")
+	router.ServeHTTP(generate, request)
+	if generate.Code != http.StatusCreated || service.lastCandidateInput.CandidateCount != 3 ||
+		!bytes.Contains(generate.Body.Bytes(), []byte(`"candidate_count":3`)) {
+		t.Fatalf("generate status=%d input=%#v body=%s", generate.Code, service.lastCandidateInput, generate.Body.String())
+	}
+
+	unconfirmed := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/candidate-sets/candset_test/selections",
+		bytes.NewBufferString(`{"candidate_id":"cand_a","confirmed":false}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "candidate-select-unconfirmed")
+	router.ServeHTTP(unconfirmed, request)
+	if unconfirmed.Code != http.StatusBadRequest || !bytes.Contains(unconfirmed.Body.Bytes(), []byte("EXPLICIT_CONFIRMATION_REQUIRED")) {
+		t.Fatalf("unconfirmed selection status=%d body=%s", unconfirmed.Code, unconfirmed.Body.String())
+	}
+
+	composed := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost,
+		"/api/v2/adaptation-projects/project_test/candidate-sets/candset_test/compositions",
+		bytes.NewBufferString(`{"parts":[{"component_key":"opening","candidate_id":"cand_a"},{"component_key":"climax","candidate_id":"cand_b"},{"component_key":"ending_hook","candidate_id":"cand_c"}],"confirmed":true,"confirmed_by":"tester"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "candidate-compose-test")
+	router.ServeHTTP(composed, request)
+	if composed.Code != http.StatusCreated || len(service.lastComposition.Parts) != 3 {
+		t.Fatalf("composition status=%d input=%#v body=%s", composed.Code, service.lastComposition, composed.Body.String())
+	}
+	for _, rule := range []string{"causality", "duration", "character_state", "foreshadowing", "continuity"} {
+		if !bytes.Contains(composed.Body.Bytes(), []byte(`"rule":"`+rule+`"`)) {
+			t.Fatalf("composition omitted hard rule %s: %s", rule, composed.Body.String())
+		}
 	}
 }

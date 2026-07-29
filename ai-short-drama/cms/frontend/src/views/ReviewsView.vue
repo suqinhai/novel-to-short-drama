@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ClipboardCheck, Clock3, CircleCheckBig, CircleX, Eye, Filter, RefreshCw, X, Webhook, ExternalLink, LoaderCircle, MessageSquareText, Search, ChevronLeft, ChevronRight, Layers3 } from 'lucide-vue-next'
+import { ClipboardCheck, Clock3, CircleCheckBig, CircleX, Eye, Filter, RefreshCw, X, Webhook, ExternalLink, LoaderCircle, MessageSquareText, Search, ChevronLeft, ChevronRight, Layers3, GitCompareArrows } from 'lucide-vue-next'
 import { api } from '../services/api'
 import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -8,6 +8,7 @@ import ReviewContentViewer from '../components/ReviewContentViewer.vue'
 import { getDisplayValueLabel } from '../services/displayLabels'
 import { getRegeneratedSuccessor, getRegenerationSourceLabel, getVisualRegenerationAction, isRegeneratedVisualReview, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
 import { REVIEW_PAGE_SIZE, getAdjacentReview, getReviewTabCount, getReviewTaskTitle, groupReviewItems, reviewStatusTabs } from '../services/reviewWorkspace'
+import { localEditLinkForReview } from '../services/localEditing'
 
 const data = ref(null)
 const overview = ref(null)
@@ -293,6 +294,7 @@ const taskTitle = (item) => getReviewTaskTitle(item, stageLabels[item.stage] || 
           <span v-else>{{ previewPosition }} · 完成后可直接进入下一条</span>
           <button class="button button-secondary review-nav-button" :disabled="preview.loading || currentPreviewIndex <= 0" @click="openAdjacentPreview(-1)"><ChevronLeft :size="16" />上一条</button>
           <button class="button button-secondary review-nav-button" :disabled="preview.loading || currentPreviewIndex < 0 || currentPreviewIndex >= items.length - 1" @click="openAdjacentPreview(1)">下一条<ChevronRight :size="16" /></button>
+          <RouterLink v-if="preview.item" class="button button-secondary" :to="localEditLinkForReview(preview.item)"><GitCompareArrows :size="16" />局部修改</RouterLink>
           <button v-if="preview.item?.review_status === 'pending'" class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />拒绝</button>
           <button v-if="getVisualRegenerationAction(preview.item)" class="button button-secondary" :disabled="preview.loading || !!preview.error" @click="openRegeneration(preview.item)"><RefreshCw :size="16" />{{ getVisualRegenerationAction(preview.item).label }}</button>
           <button v-if="isRegeneratedVisualReview(preview.item)" class="button button-primary" :disabled="preview.loading" @click="openSuccessor(preview.item)"><RefreshCw :size="16" />查看新版本</button>
