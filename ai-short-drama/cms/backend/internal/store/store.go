@@ -138,21 +138,24 @@ type ReviewTask struct {
 }
 
 type ReviewCenterItem struct {
-	ReviewID              string          `json:"review_id"`
-	ProjectID             string          `json:"project_id"`
-	NovelName             string          `json:"novel_name"`
-	Stage                 string          `json:"stage"`
-	EntityType            string          `json:"entity_type"`
-	EntityID              string          `json:"entity_id"`
-	ReviewStatus          string          `json:"review_status"`
-	ReviewComment         *string         `json:"review_comment,omitempty"`
-	RejectionReason       *string         `json:"rejection_reason,omitempty"`
-	RevisionInstruction   *string         `json:"revision_instruction,omitempty"`
-	Metadata              json.RawMessage `json:"metadata"`
-	RegeneratedByReviewID *string         `json:"regenerated_by_review_id,omitempty"`
-	RegeneratedByEntityID *string         `json:"regenerated_by_entity_id,omitempty"`
-	CreatedAt             time.Time       `json:"created_at"`
-	ReviewedAt            *time.Time      `json:"reviewed_at,omitempty"`
+	ReviewID               string          `json:"review_id"`
+	ProjectID              string          `json:"project_id"`
+	NovelName              string          `json:"novel_name"`
+	Stage                  string          `json:"stage"`
+	EntityType             string          `json:"entity_type"`
+	EntityID               string          `json:"entity_id"`
+	ReviewStatus           string          `json:"review_status"`
+	ReviewComment          *string         `json:"review_comment,omitempty"`
+	RejectionReason        *string         `json:"rejection_reason,omitempty"`
+	RevisionInstruction    *string         `json:"revision_instruction,omitempty"`
+	Metadata               json.RawMessage `json:"metadata"`
+	RegeneratedFromAssetID *string         `json:"regenerated_from_asset_id,omitempty"`
+	GenerationVersion      *int            `json:"generation_version,omitempty"`
+	RegeneratedByReviewID  *string         `json:"regenerated_by_review_id,omitempty"`
+	RegeneratedByEntityID  *string         `json:"regenerated_by_entity_id,omitempty"`
+	RegeneratedByVersion   *int            `json:"regenerated_by_generation_version,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	ReviewedAt             *time.Time      `json:"reviewed_at,omitempty"`
 }
 
 type ReviewProjectOption struct {
@@ -1173,12 +1176,22 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 	rows, err := s.pool.Query(ctx, `SELECT r.review_id, r.project_id, p.novel_name, r.stage, r.entity_type,
 		r.entity_id, r.review_status, r.review_comment, r.rejection_reason, r.revision_instruction,
 		COALESCE(r.metadata, '{}'::jsonb),
+		NULLIF(r.metadata->>'regenerated_from_asset_id', ''),
+		CASE WHEN r.metadata->>'generation_version' ~ '^[0-9]+$'
+			THEN (r.metadata->>'generation_version')::int END,
 		(SELECT successor.review_id FROM drama.review_tasks successor
 		 WHERE r.stage='visual_asset' AND r.entity_type='generated_asset'
 		   AND successor.stage='visual_asset' AND successor.entity_type='generated_asset'
 		   AND successor.metadata->>'regenerated_from_asset_id'=r.entity_id
 		 ORDER BY successor.created_at DESC LIMIT 1),
 		(SELECT successor.entity_id FROM drama.review_tasks successor
+		 WHERE r.stage='visual_asset' AND r.entity_type='generated_asset'
+		   AND successor.stage='visual_asset' AND successor.entity_type='generated_asset'
+		   AND successor.metadata->>'regenerated_from_asset_id'=r.entity_id
+		 ORDER BY successor.created_at DESC LIMIT 1),
+		(SELECT CASE WHEN successor.metadata->>'generation_version' ~ '^[0-9]+$'
+				THEN (successor.metadata->>'generation_version')::int END
+		 FROM drama.review_tasks successor
 		 WHERE r.stage='visual_asset' AND r.entity_type='generated_asset'
 		   AND successor.stage='visual_asset' AND successor.entity_type='generated_asset'
 		   AND successor.metadata->>'regenerated_from_asset_id'=r.entity_id
@@ -1196,8 +1209,9 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 		var item ReviewCenterItem
 		if err := rows.Scan(&item.ReviewID, &item.ProjectID, &item.NovelName, &item.Stage, &item.EntityType,
 			&item.EntityID, &item.ReviewStatus, &item.ReviewComment, &item.RejectionReason,
-			&item.RevisionInstruction, &item.Metadata, &item.RegeneratedByReviewID,
-			&item.RegeneratedByEntityID, &item.CreatedAt, &item.ReviewedAt); err != nil {
+			&item.RevisionInstruction, &item.Metadata, &item.RegeneratedFromAssetID,
+			&item.GenerationVersion, &item.RegeneratedByReviewID, &item.RegeneratedByEntityID,
+			&item.RegeneratedByVersion, &item.CreatedAt, &item.ReviewedAt); err != nil {
 			return ReviewListResult{}, err
 		}
 		result.Items = append(result.Items, item)

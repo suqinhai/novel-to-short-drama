@@ -6,7 +6,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ReviewContentViewer from '../components/ReviewContentViewer.vue'
 import { getDisplayValueLabel } from '../services/displayLabels'
-import { getVisualRegenerationAction, isRegeneratedVisualReview, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
+import { getRegeneratedSuccessor, getRegenerationSourceLabel, getVisualRegenerationAction, isRegeneratedVisualReview, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
 
 const data = ref(null)
 const loading = ref(true)
@@ -78,6 +78,11 @@ async function openPreview(item) {
   try { preview.content = await api.getReviewContent(item.review_id) }
   catch (err) { preview.error = err.message }
   finally { preview.loading = false }
+}
+
+function openSuccessor(item) {
+  const successor = getRegeneratedSuccessor(item, items.value)
+  if (successor) openPreview(successor)
 }
 
 function closePreview() {
@@ -152,7 +157,10 @@ const modalTitle = computed(() => {
   if (decision.operation === 'regenerate') return decision.regeneration_mode === 'variant' ? '生成新变体' : '按意见重新生成'
   return decision.review_status === 'approved' ? '通过审核' : '拒绝审核'
 })
-const submitLabel = computed(() => isRegeneration.value ? '确认重新生成' : `确认${decision.review_status === 'approved' ? '通过' : '拒绝'}`)
+const submitLabel = computed(() => {
+  if (submitting.value && isRegeneration.value) return '图片生成中（预计 1–3 分钟）'
+  return isRegeneration.value ? '确认重新生成' : `确认${decision.review_status === 'approved' ? '通过' : '拒绝'}`
+})
 const submitDisabled = computed(() => submitting.value
   || ((decision.operation === 'decision' && decision.review_status === 'rejected') || decision.operation === 'reject_regenerate') && !decision.rejection_reason.trim()
   || (isRegeneration.value && regenerationNeedsPrompt(decision.regeneration_mode) && !decision.prompt_adjustment.trim() && !decision.revision_instruction.trim())
@@ -188,9 +196,9 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
       <div v-else class="review-list">
         <article v-for="item in items" :key="item.review_id" class="review-row">
           <div class="review-stage-icon"><ClipboardCheck :size="18" /></div>
-          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || '其他审核阶段' }}</strong><StatusBadge :status="item.review_status" /><span>{{ isRegeneratedVisualReview(item) ? '已重新生成' : webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ getDisplayValueLabel(item.entity_type) }}</code><span>{{ item.entity_id }}</span></div></div>
+          <div class="review-main"><div class="review-title"><strong>{{ stageLabels[item.stage] || '其他审核阶段' }}</strong><StatusBadge :status="item.review_status" /><span>{{ isRegeneratedVisualReview(item) ? '已重新生成' : webhookStage(item) }}</span></div><p>{{ item.novel_name }} <RouterLink :to="`/projects/${item.project_id}`"><ExternalLink :size="11" />{{ item.project_id }}</RouterLink></p><div class="review-entity"><code>{{ getDisplayValueLabel(item.entity_type) }}</code><span>{{ item.entity_id }}</span></div><div v-if="getRegenerationSourceLabel(item)" class="review-lineage"><RefreshCw :size="13" /><span>{{ getRegenerationSourceLabel(item) }}</span></div></div>
           <div class="review-history"><span>创建时间</span><strong>{{ formatTime(item.created_at) }}</strong><small v-if="item.reviewed_at">审核于 {{ formatTime(item.reviewed_at) }}</small></div>
-          <div class="review-actions"><button class="review-open-button" @click="openPreview(item)"><Eye :size="15" />查看内容</button></div>
+          <div class="review-actions"><button class="review-open-button" @click="openPreview(item)"><Eye :size="15" />查看内容</button><button v-if="isRegeneratedVisualReview(item)" class="review-successor-button" @click="openSuccessor(item)"><RefreshCw :size="15" />查看新版本</button></div>
         </article>
       </div>
     </article>
@@ -207,12 +215,13 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
           <ReviewContentViewer v-else-if="preview.content" :content="preview.content" />
         </div>
         <footer class="review-drawer-actions">
-          <span v-if="isRegeneratedVisualReview(preview.item)">该拒绝记录已生成后继版本 {{ preview.item?.regenerated_by_entity_id }}，请在新的审核记录中继续处理。</span>
+          <span v-if="isRegeneratedVisualReview(preview.item)">已重新生成后继版本 {{ preview.item?.regenerated_by_entity_id }}。</span>
           <span v-else-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，原审核结论不会因重新生成而改变。</span>
           <template v-else>
             <button class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />拒绝</button>
           </template>
           <button v-if="getVisualRegenerationAction(preview.item)" class="button button-secondary" :disabled="preview.loading || !!preview.error" @click="openRegeneration(preview.item)"><RefreshCw :size="16" />{{ getVisualRegenerationAction(preview.item).label }}</button>
+          <button v-if="isRegeneratedVisualReview(preview.item)" class="button button-primary" :disabled="preview.loading" @click="openSuccessor(preview.item)"><RefreshCw :size="16" />查看新版本</button>
           <button v-if="preview.item?.review_status === 'pending'" class="button button-primary" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('approved')"><CircleCheckBig :size="16" />通过并锁定</button>
         </footer>
       </aside>
@@ -229,7 +238,7 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
         <label v-if="decision.operation === 'decision' && isVoiceProfile && decision.review_status === 'approved'" class="field"><span>供应商音色 ID <i>*</i></span><input v-model="decision.provider_voice_id" type="text" placeholder="例如：Kore、Aoede、Puck" required /></label>
         <div v-if="decision.operation === 'decision' && (isVisualAsset || isVoiceProfile) && decision.review_status === 'approved'" class="decision-options"><label v-if="isVisualAsset"><input v-model="decision.selected_as_primary" type="checkbox" />设为主资产</label><label><input v-model="decision.lock_after_approval" type="checkbox" />批准后锁定</label></div>
         <div v-if="isRegeneration && decision.regeneration_mode === 'variant'" class="modal-notice regeneration"><RefreshCw :size="16" /><span>当前已通过的主图会继续生效；新变体生成后仍需单独审核，不会自动重做已有分镜或视频。</span></div>
-        <div v-else class="modal-notice"><Webhook :size="16" /><span>{{ isRegeneration ? '系统会创建新版本和新的待审核记录，保留当前图片作为历史。' : '此操作将调用 n8n，不会由 CMS 直接更新 review_tasks。' }}</span></div>
+        <div v-else class="modal-notice"><Webhook :size="16" /><span>{{ submitting && isRegeneration ? '图片模型正在生成并保存新版本，请保持页面打开；完成或失败后会自动给出结果。' : isRegeneration ? '系统会创建新版本和新的待审核记录，保留当前图片作为历史。' : '此操作将调用 n8n，不会由 CMS 直接更新 review_tasks。' }}</span></div>
         <div class="modal-actions"><button class="button button-secondary" :disabled="submitting" @click="closeDecision">取消</button><button class="button" :class="decision.operation === 'decision' && decision.review_status === 'rejected' ? 'button-danger' : 'button-primary'" :disabled="submitDisabled" @click="submitDecision"><LoaderCircle v-if="submitting" :size="16" class="spin" /><MessageSquareText v-else :size="16" />{{ submitLabel }}</button></div>
       </div>
     </div>
