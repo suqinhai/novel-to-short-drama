@@ -76,9 +76,12 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/projects/:projectID/actions", h.advanceProject)
 	api.POST("/projects/:projectID/rolling-plans/:planID/adopt", h.adoptRollingPlan)
 	api.POST("/projects/:projectID/episode-runs/:episodeRunID/activate", h.activateEpisodeRun)
+	api.GET("/projects/:projectID/episode-runs/:episodeRunID/content", h.getEpisodeRunContent)
+	api.PATCH("/projects/:projectID/episode-runs/:episodeRunID/content", h.updateEpisodeRunContent)
 	api.GET("/reviews", h.listReviews)
 	api.GET("/reviews/:reviewID/content", h.getReviewContent)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
+	api.POST("/reviews/:reviewID/regenerate", h.regenerateReview)
 	api.GET("/media-assets", h.listMediaAssets)
 	api.GET("/diagnostics", h.diagnostics)
 	api.GET("/ai-config", h.aiConfig)
@@ -545,6 +548,14 @@ type reviewDecisionRequest struct {
 	LockAfterApproval   bool   `json:"lock_after_approval"`
 }
 
+type reviewRegenerationRequest struct {
+	Mode                string `json:"mode"`
+	ReviewComment       string `json:"review_comment"`
+	RejectionReason     string `json:"rejection_reason"`
+	RevisionInstruction string `json:"revision_instruction"`
+	PromptAdjustment    string `json:"prompt_adjustment"`
+}
+
 func (h *Handler) decideReview(c *gin.Context) {
 	var input reviewDecisionRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -668,6 +679,147 @@ func (h *Handler) decideReview(c *gin.Context) {
 		"review_id": review.ReviewID, "project_id": review.ProjectID, "webhook_stage": webhookStage,
 		"n8n_response": n8nResponse,
 	}})
+}
+
+func (h *Handler) regenerateReview(c *gin.Context) {
+	var input reviewRegenerationRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_INPUT", "重新生成请求格式无效")
+		return
+	}
+	input.Mode = strings.ToLower(strings.TrimSpace(input.Mode))
+	input.ReviewComment = strings.TrimSpace(input.ReviewComment)
+	input.RejectionReason = strings.TrimSpace(input.RejectionReason)
+	input.RevisionInstruction = strings.TrimSpace(input.RevisionInstruction)
+	input.PromptAdjustment = strings.TrimSpace(input.PromptAdjustment)
+
+	content, err := h.store.GetReviewContent(c.Request.Context(), c.Param("reviewID"))
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(c, http.StatusNotFound, "REVIEW_NOT_FOUND", "审核任务不存在")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "REVIEW_CONTENT_FAILED", "无法读取待重新生成的视觉资产")
+		return
+	}
+	if content.Stage != "visual_asset" || content.EntityType != "generated_asset" {
+		respondError(c, http.StatusUnprocessableEntity, "REGENERATION_NOT_SUPPORTED", "当前只支持视觉资产图片重新生成")
+		return
+	}
+	if content.ReviewStatus == "pending" {
+		respondError(c, http.StatusConflict, "REVIEW_DECISION_REQUIRED", "请先拒绝当前图片，再发起重新生成")
+		return
+	}
+	mode, ok := normalizeVisualAssetRegenerationMode(input.Mode, content.ReviewStatus)
+	if !ok {
+		respondError(c, http.StatusBadRequest, "INVALID_REGENERATION_MODE", "重新生成模式只允许 replace 或 variant")
+		return
+	}
+
+	var asset struct {
+		AssetID           string  `json:"asset_id"`
+		AssetType         string  `json:"asset_type"`
+		EntityType        string  `json:"entity_type"`
+		EntityID          string  `json:"entity_id"`
+		ProfileID         string  `json:"profile_id"`
+		GenerationVersion int     `json:"generation_version"`
+		Prompt            string  `json:"prompt"`
+		NegativePrompt    string  `json:"negative_prompt"`
+		OriginalURL       *string `json:"original_url"`
+		StorageURL        *string `json:"storage_url"`
+		RejectionReason   *string `json:"rejection_reason"`
+	}
+	if err = json.Unmarshal(content.Artifact, &asset); err != nil || asset.AssetID == "" ||
+		asset.AssetType == "" || asset.EntityType == "" || asset.EntityID == "" || asset.ProfileID == "" {
+		respondError(c, http.StatusUnprocessableEntity, "VISUAL_ASSET_CONTEXT_INVALID", "视觉资产缺少重新生成所需的上下文")
+		return
+	}
+	existingRejectionReason := ""
+	if asset.RejectionReason != nil {
+		existingRejectionReason = strings.TrimSpace(*asset.RejectionReason)
+	}
+	instruction := firstNonBlank(input.PromptAdjustment, input.RevisionInstruction, input.RejectionReason, existingRejectionReason)
+	if mode == "variant" && instruction == "" {
+		respondError(c, http.StatusBadRequest, "PROMPT_ADJUSTMENT_REQUIRED", "生成新变体时必须填写 Prompt 调整或修改指令")
+		return
+	}
+
+	generationVersion, err := h.store.NextVisualAssetGenerationVersion(
+		c.Request.Context(), content.ProjectID, asset.ProfileID, asset.AssetType,
+	)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "GENERATION_VERSION_FAILED", "无法分配新的图片版本")
+		return
+	}
+	referenceURLs := make([]string, 0, 1)
+	for _, candidate := range []*string{asset.StorageURL, asset.OriginalURL} {
+		if candidate != nil && strings.TrimSpace(*candidate) != "" {
+			referenceURLs = append(referenceURLs, strings.TrimSpace(*candidate))
+			break
+		}
+	}
+	regenerationPayload := map[string]any{
+		"source_review_id": content.ReviewID, "source_asset_id": asset.AssetID,
+		"source_review_status": content.ReviewStatus, "generation_mode": mode,
+		"profile_id": asset.ProfileID, "asset_type": asset.AssetType,
+		"source_entity_type": asset.EntityType, "source_entity_id": asset.EntityID,
+		"source_prompt": asset.Prompt, "source_negative_prompt": asset.NegativePrompt,
+		"reference_image_urls": referenceURLs, "prompt_adjustment": instruction,
+		"review_comment": input.ReviewComment, "rejection_reason": firstNonBlank(input.RejectionReason, existingRejectionReason),
+		"revision_instruction": input.RevisionInstruction, "preserve_project_stage": true,
+	}
+	payload := map[string]any{
+		"project_id": content.ProjectID, "action": "regenerate", "stage": "visual_assets",
+		"entity_type": content.EntityType, "entity_id": asset.AssetID,
+		"generation_version": generationVersion, "test_mode": content.TestMode,
+		"payload": regenerationPayload,
+	}
+	n8nResponse, statusCode, err := h.postJSON(c.Request.Context(), h.config.N8NStage3URL, payload)
+	if err != nil {
+		respondError(c, http.StatusBadGateway, "N8N_UNAVAILABLE", "n8n 重新生成 webhook 调用失败："+err.Error())
+		return
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "N8N_REGENERATION_FAILED", "message": fmt.Sprintf("n8n stage3 webhook 返回 HTTP %d", statusCode), "response": n8nResponse,
+		}})
+		return
+	}
+	if failed, message := n8nReturnedFailure(n8nResponse); failed {
+		if message == "" {
+			message = "n8n regeneration workflow returned success=false"
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"code": "N8N_REGENERATION_FAILED", "message": message, "response": n8nResponse,
+		}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"operation": "regenerate", "mode": mode, "review_id": content.ReviewID,
+		"project_id": content.ProjectID, "source_asset_id": asset.AssetID,
+		"generation_version": generationVersion, "webhook_stage": "stage3", "n8n_response": n8nResponse,
+	}})
+}
+
+func normalizeVisualAssetRegenerationMode(mode, reviewStatus string) (string, bool) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		if reviewStatus == "approved" {
+			mode = "variant"
+		} else {
+			mode = "replace"
+		}
+	}
+	return mode, mode == "replace" || mode == "variant"
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func n8nReturnedFailure(value any) (bool, string) {

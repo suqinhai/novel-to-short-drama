@@ -34,6 +34,7 @@ type sourceV2Service interface {
 	StartIRRun(context.Context, string, string, store.IRRunInput) (store.Operation, error)
 	StartCompilerRun(context.Context, string, string, store.CompilerRunInput) (store.Operation, error)
 	GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error)
+	GetLatestAdaptationPlan(context.Context, string) (json.RawMessage, string, error)
 	GetProjectImpact(context.Context, string, string) (store.ProjectImpact, string, error)
 	CreateRegenerationRequest(context.Context, string, string, string, store.RegenerationRequestInput) (store.RegenerationRequest, bool, error)
 	GetOperation(context.Context, string) (store.Operation, error)
@@ -64,6 +65,7 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.GET("/source-chapters/:chapterID/revisions", h.listChapterRevisions)
 	api.GET("/narrative-ir-revisions/:irRevisionID/story-arcs", h.listStoryArcs)
 	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
+	api.GET("/adaptation-projects/:projectID/adaptation-plans/latest", h.getLatestAdaptationPlan)
 	api.GET("/adaptation-projects/:projectID/impact", h.getProjectImpact)
 	api.POST("/adaptation-projects/:projectID/impact/:changeSetID/regeneration-requests", h.createRegenerationRequest)
 	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
@@ -546,6 +548,15 @@ func (h *sourceV2Handler) startCompilerRun(c *gin.Context) {
 
 func (h *sourceV2Handler) getAdaptationPlan(c *gin.Context) {
 	plan, trace, err := h.service.GetAdaptationPlan(c.Request.Context(), c.Param("adaptationPlanID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, trace, plan, nil)
+}
+
+func (h *sourceV2Handler) getLatestAdaptationPlan(c *gin.Context) {
+	plan, trace, err := h.service.GetLatestAdaptationPlan(c.Request.Context(), c.Param("projectID"))
 	if err != nil {
 		v2Error(c, err)
 		return

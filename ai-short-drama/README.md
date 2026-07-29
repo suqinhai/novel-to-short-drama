@@ -41,6 +41,8 @@ docker compose exec n8n n8n import:workflow --input=/data/workflows/00-project-o
 
 第三阶段统一入口：`POST /webhook/ai-short-drama/stage3`。项目处于 `storyboard_approved` 或 `stage_2_completed` 时发送 resume 调用 07。候选资产审核请求参考 `test-data/07-review-asset.json`；只有 `review_status=approved`、`selected_as_primary=true`、`lock_after_approval=true` 才会锁定 profile。锁定后触发器禁止原地修改，必须用递增 `generation_version` 创建新档案版本，旧 locked 版本会继续可用。
 
+视觉资产审核支持三种重做入口：待审核图片可以“退回重做”，已拒绝图片可以“按意见重新生成”，已通过图片可以“生成新变体”。重做请求使用原 `profile_id` 和 `asset_type` 创建递增版本及新的 pending 审核记录，不会覆盖原审核结论；已通过主图在新变体获批前继续生效，已有分镜图片和视频不会自动级联重做。
+
 全部需要的 profile 锁定后再次 resume，00 调用 08。TEST_MODE 最多处理 `TEST_MAX_IMAGE_SHOTS` 个镜头。单图批准参考 `08-review-shot-image.json`；拒绝时填写 `rejection_reason`、`prompt_adjustment`，随后用 `08-regenerate-shot-image.json` 只重绘该 shot，旧版本 `is_current=false` 且保留。
 
 Mock 同步模式会在 `storage/provider-responses` 生成稳定 SVG，可通过 media 服务查看；同一幂等键得到同一文件。设置 `payload.mock_async=true` 后首次返回 processing，08a 至少轮询两次才 succeeded。`mock-image-provider-responses.json` 提供 429、timeout、无效响应和损坏文件模拟参数。

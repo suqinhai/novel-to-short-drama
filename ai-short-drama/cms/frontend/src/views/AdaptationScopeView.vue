@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, ArrowLeft, BookOpenCheck, CheckCircle2, CirclePlus, Layers3, LoaderCircle, Play, Trash2 } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
@@ -27,6 +27,7 @@ const success = ref('')
 const operation = ref(null)
 const compilerOperation = ref(null)
 const adaptationPlan = ref(null)
+const compilerPlanPanel = ref(null)
 const compilingSpecId = ref('')
 const compilerVersion = ref('constraint-compiler-v1')
 const planLoading = ref(false)
@@ -68,13 +69,27 @@ async function loadSpecs() {
   }
 }
 
+async function loadLatestPlan() {
+  if (!projectId.value) return
+  planLoading.value = true
+  try {
+    adaptationPlan.value = (await narrativeApi.getLatestAdaptationPlan(projectId.value)).data
+  } catch (err) {
+    if (err.status !== 404) {
+      error.value = `最新编译计划读取失败：${err.message}`
+    }
+  } finally {
+    planLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const response = await narrativeApi.listWorks({ page: 1, limit: 200 })
     works.value = response.data
-    await loadSpecs()
+    await Promise.all([loadSpecs(), loadLatestPlan()])
   } catch (err) {
     error.value = err.message
   } finally {
@@ -240,12 +255,21 @@ async function handleCompilerTerminal(terminalOperation) {
   error.value = ''
   try {
     adaptationPlan.value = (await narrativeApi.getAdaptationPlan(terminalOperation.result_ref.resource_id)).data
-    success.value = '改编计划已生成，可查看分集与约束诊断。'
+    success.value = '改编计划已生成，审核内容已加载到下方。'
+    await scrollToPlan()
   } catch (err) {
     error.value = `编译已完成，但计划读取失败：${err.message}`
   } finally {
     planLoading.value = false
   }
+}
+
+async function scrollToPlan() {
+  if (!adaptationPlan.value) {
+    await loadLatestPlan()
+  }
+  await nextTick()
+  compilerPlanPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 async function adoptPlan() {
@@ -292,7 +316,7 @@ onMounted(load)
       <div v-if="error" class="error-banner large"><AlertTriangle :size="17" />{{ error }}<button @click="error = ''">关闭</button></div>
       <div v-if="success" class="success-banner"><CheckCircle2 :size="17" />{{ success }}</div>
       <OperationTracker :operation="operation" @terminal="handleSpecTerminal" />
-      <OperationTracker :operation="compilerOperation" @terminal="handleCompilerTerminal" />
+      <OperationTracker :operation="compilerOperation" review-action-label="查看审核内容" @terminal="handleCompilerTerminal" @review="scrollToPlan" />
 
       <div class="contract-notice arc-unavailable"><BookOpenCheck :size="17" /><div><strong>范围绑定已发布的完整 Narrative IR</strong><span>章节和故事弧都来自同一个 source version 与当前 published/full IR，不推测 ID，也不以向量相似度代替来源。</span></div></div>
 
@@ -356,10 +380,11 @@ onMounted(load)
         <div v-else class="version-list"><div v-for="item in specs" :key="item.adaptation_spec_version_id" class="version-row"><b>v{{ item.version_number }}</b><div><strong>{{ item.adaptation_spec_version_id }}</strong><code>{{ item.source_version_id }}<template v-if="item.ir_revision_id"> · {{ item.ir_revision_id }}</template></code></div><StatusBadge :status="item.status" /><button v-if="item.status === 'active' && item.ir_revision_id" class="button button-primary" :disabled="Boolean(compilingSpecId) || !compilerVersion.trim()" @click="compileSpec(item)"><LoaderCircle v-if="compilingSpecId === item.adaptation_spec_version_id" :size="15" class="spin" /><Play v-else :size="15" />{{ compilingSpecId === item.adaptation_spec_version_id ? '编译中…' : '编译计划' }}</button><small v-else-if="item.status === 'active'" class="spec-unavailable">缺少 IR revision</small></div></div>
       </article>
 
-      <article v-if="planLoading || adaptationPlan" class="panel padded compiler-plan-panel">
-        <div class="section-title"><div><span>REVIEWABLE ADAPTATION PLAN</span><h3>改编编译结果</h3></div><StatusBadge v-if="adaptationPlan" :status="planValidationPassed ? 'completed' : 'needs_review'" /></div>
+      <article v-if="planLoading || adaptationPlan" ref="compilerPlanPanel" class="panel padded compiler-plan-panel">
+        <div class="section-title"><div><span>REVIEWABLE ADAPTATION PLAN</span><h3>改编编译结果</h3></div><StatusBadge v-if="adaptationPlan" :status="adaptationPlan.status" /></div>
         <div v-if="planLoading" class="compact-empty"><LoaderCircle :size="18" class="spin" />正在读取编译计划……</div>
         <template v-else-if="adaptationPlan">
+          <div class="contract-notice"><BookOpenCheck :size="17" /><div><strong>这里就是本次审核内容</strong><span>请逐集检查标题、剧情梗概、时长和原著事件覆盖；确认无误后，在列表底部点击“批准并建立单集队列”。</span></div></div>
           <div class="version-stats"><div><span>分集</span><strong>{{ adaptationPlan.episodes?.length || 0 }}</strong></div><div><span>诊断</span><strong>{{ adaptationPlan.diagnostics?.length || 0 }}</strong></div><div><span>硬规则</span><strong>{{ adaptationPlan.validation?.hard_rules_satisfied ? '通过' : '未通过' }}</strong></div><div><span>时间线 / 因果</span><strong>{{ adaptationPlan.validation?.timeline_valid && adaptationPlan.validation?.causality_valid ? '通过' : '检查失败' }}</strong></div></div>
           <div v-if="adaptationPlan.diagnostics?.length" class="compiler-diagnostics"><article v-for="(item, index) in adaptationPlan.diagnostics" :key="`${item.code}-${index}`" :class="item.severity"><strong>{{ item.severity }} · {{ item.code }}</strong><p>{{ item.message }}</p></article></div>
           <div class="compiler-episodes"><article v-for="episode in adaptationPlan.episodes || []" :key="episode.episode_number"><b>第 {{ episode.episode_number }} 集</b><div><strong>{{ episode.title }}</strong><p>{{ episode.logline }}</p><small>{{ episode.estimated_duration_seconds }} 秒 · {{ episode.source_event_ids.length }} 个原著事件 · {{ episode.source_chapter_ids.length }} 章</small></div></article></div>

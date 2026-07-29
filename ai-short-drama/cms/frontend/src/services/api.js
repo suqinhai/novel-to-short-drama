@@ -44,6 +44,14 @@ export const api = {
       method: 'POST', body: JSON.stringify({}),
     })
   },
+  getEpisodeContent(projectId, episodeRunId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content`)
+  },
+  updateEpisodeContent(projectId, episodeRunId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content`, {
+      method: 'PATCH', body: JSON.stringify(payload),
+    })
+  },
   getReviews(params = {}) {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/reviews?${query}`)
@@ -57,6 +65,9 @@ export const api = {
   },
   decideReview(reviewId, payload) {
     return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })
+  },
+  regenerateReview(reviewId, payload) {
+    return request(`/reviews/${encodeURIComponent(reviewId)}/regenerate`, { method: 'POST', body: JSON.stringify(payload) })
   },
   getDiagnostics() {
     return request('/diagnostics')

@@ -84,6 +84,9 @@ func (f *fakeSourceV2) StartCompilerRun(context.Context, string, string, store.C
 func (f *fakeSourceV2) GetAdaptationPlan(context.Context, string) (json.RawMessage, string, error) {
 	return json.RawMessage(`{"schema_version":"compiler-plan.v2","compiler_run_id":"compiler_test","episodes":[],"diagnostics":[],"validation":{}}`), "tr_compile_test", nil
 }
+func (f *fakeSourceV2) GetLatestAdaptationPlan(context.Context, string) (json.RawMessage, string, error) {
+	return json.RawMessage(`{"schema_version":"compiler-plan.v2","adaptation_plan_id":"ap_latest","compiler_run_id":"compiler_test","episodes":[],"diagnostics":[],"validation":{}}`), "tr_compile_test", nil
+}
 func (f *fakeSourceV2) GetProjectImpact(context.Context, string, string) (store.ProjectImpact, string, error) {
 	return store.ProjectImpact{SourceChangeSetID: "change_test", Status: "needs_review", ChangedChapterIDs: []string{"chapter_test"},
 		ChangedEvents: []store.ImpactChange{}, ChangedCharacterStates: []store.ImpactChange{}, AffectedStoryArcs: []store.ImpactChange{},
@@ -145,6 +148,28 @@ func TestSplitWholeBookChineseHeadings(t *testing.T) {
 		if item.Ordinal != index+1 || item.ClientItemKey == "" {
 			t.Fatalf("invalid generated identity: %#v", item)
 		}
+	}
+}
+
+func TestLatestAdaptationPlanReturnsReviewContent(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/adaptation-projects/project_test/adaptation-plans/latest", nil)
+
+	newSourceV2TestRouter(&fakeSourceV2{}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			AdaptationPlanID string `json:"adaptation_plan_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.AdaptationPlanID != "ap_latest" {
+		t.Fatalf("unexpected latest plan response: %#v", response)
 	}
 }
 

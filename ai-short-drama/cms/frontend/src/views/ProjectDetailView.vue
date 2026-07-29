@@ -1,12 +1,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle, SlidersHorizontal, GitCompareArrows, Coins, Gauge, LockKeyhole } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle, SlidersHorizontal, GitCompareArrows, Coins, Gauge, LockKeyhole, Eye } from 'lucide-vue-next'
 import { api } from '../services/api'
 import { getPipelineProgress, getPipelineStageIndex, getPipelineStageLabel, getStageUnitProgress, pipelineStages } from '../services/pipelineStage'
 import { getDisplayValueLabel } from '../services/displayLabels'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
+import EpisodeContentModal from '../components/EpisodeContentModal.vue'
 
 const route = useRoute()
 const project = ref(null)
@@ -19,6 +20,7 @@ const flowError = ref('')
 const flowLoading = ref(false)
 const retryingTaskId = ref('')
 const runningEpisodeId = ref('')
+const selectedEpisodeRun = ref(null)
 const stages = pipelineStages
 const currentIndex = computed(() => {
   if (!project.value) return -1
@@ -154,6 +156,19 @@ async function load() {
   catch (err) { error.value = err.message }
   finally { loading.value = false }
 }
+
+function openEpisodeContent(run) {
+  selectedEpisodeRun.value = run
+}
+
+async function handleEpisodeContentSaved() {
+  await load()
+  if (selectedEpisodeRun.value) {
+    selectedEpisodeRun.value = episodeRuns.value.find(
+      (run) => run.episode_run_id === selectedEpisodeRun.value.episode_run_id,
+    ) || selectedEpisodeRun.value
+  }
+}
 onMounted(() => {
   if (route.query.created === '1') {
     try {
@@ -207,10 +222,13 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
               <p>当前节点：{{ getPipelineStageLabel(run.current_stage, run.status === 'completed' ? 'completed' : '') }}</p>
               <small><Gauge :size="13" />视频每批最多 {{ run.max_video_batch }} 个镜头 <Coins :size="13" />Token {{ Number(run.token_spent || 0).toLocaleString('zh-CN') }}<template v-if="run.token_budget"> / {{ Number(run.token_budget).toLocaleString('zh-CN') }}</template> · 费用 ¥{{ Number(run.cost_spent || 0).toFixed(2) }}<template v-if="run.cost_budget"> / ¥{{ Number(run.cost_budget).toFixed(2) }}</template></small>
             </div>
-            <button v-if="run.status !== 'completed' && run.status !== 'cancelled'" class="button button-primary" :disabled="!canStartEpisode(run)" @click="runFlowAction('resume', '', run.episode_run_id)">
-              <LoaderCircle v-if="runningEpisodeId === run.episode_run_id" :size="16" class="spin" /><Play v-else :size="16" />{{ episodeActionLabel(run) }}
-            </button>
-            <span v-else class="episode-run-done">本集已完成</span>
+            <div class="episode-run-actions">
+              <button class="button button-secondary episode-content-button" @click="openEpisodeContent(run)"><Eye :size="15" />查看内容</button>
+              <button v-if="run.status !== 'completed' && run.status !== 'cancelled'" class="button button-primary" :disabled="!canStartEpisode(run)" @click="runFlowAction('resume', '', run.episode_run_id)">
+                <LoaderCircle v-if="runningEpisodeId === run.episode_run_id" :size="16" class="spin" /><Play v-else :size="16" />{{ episodeActionLabel(run) }}
+              </button>
+              <span v-else class="episode-run-done">本集已完成</span>
+            </div>
           </article>
         </div>
         <div class="rolling-next-hint">下一集只有在上一集完成质检与发布后才会解锁。你可以先检查本集剧本、分镜和样片，再决定是否继续。</div>
@@ -270,6 +288,14 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
         </div>
         <DetailDataTable v-if="activeTab" :items="activeTab.items || []" :columns="activeTab.columns" @row-action="handleTableAction" />
       </article>
+
+      <EpisodeContentModal
+        v-if="selectedEpisodeRun"
+        :project-id="project.project_id"
+        :episode-run="selectedEpisodeRun"
+        @close="selectedEpisodeRun = null"
+        @saved="handleEpisodeContentSaved"
+      />
     </template>
   </section>
 </template>

@@ -1176,6 +1176,16 @@ func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewCo
 	return review, err
 }
 
+func (s *Store) NextVisualAssetGenerationVersion(ctx context.Context, projectID, profileID, assetType string) (int, error) {
+	var version int
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(generation_version),0)+1
+		FROM drama.generated_assets
+		WHERE project_id=$1 AND profile_id=$2 AND asset_type=$3`,
+		projectID, profileID, assetType,
+	).Scan(&version)
+	return version, err
+}
+
 func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID string) (FlowActionContext, error) {
 	var action FlowActionContext
 	err := s.pool.QueryRow(ctx, `SELECT p.project_id,p.novel_name,p.target_episode_count,

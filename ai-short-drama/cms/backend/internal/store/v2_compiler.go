@@ -152,3 +152,19 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 	}
 	return plan, traceID, err
 }
+
+func (s *Store) GetLatestAdaptationPlan(ctx context.Context, projectID string) (json.RawMessage, string, error) {
+	var adaptationPlanID string
+	err := s.pool.QueryRow(ctx, `SELECT adaptation_plan_id
+		FROM drama.adaptation_plans
+		WHERE project_id=$1
+		ORDER BY created_at DESC,id DESC
+		LIMIT 1`, projectID).Scan(&adaptationPlanID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return s.GetAdaptationPlan(ctx, adaptationPlanID)
+}

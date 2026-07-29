@@ -150,6 +150,26 @@ func TestReviewWebhookRoute(t *testing.T) {
 	}
 }
 
+func TestNormalizeVisualAssetRegenerationMode(t *testing.T) {
+	tests := []struct {
+		mode, reviewStatus, want string
+		ok                       bool
+	}{
+		{"", "approved", "variant", true},
+		{"", "rejected", "replace", true},
+		{" VARIANT ", "approved", "variant", true},
+		{"replace", "rejected", "replace", true},
+		{"overwrite", "rejected", "overwrite", false},
+	}
+	for _, test := range tests {
+		got, ok := normalizeVisualAssetRegenerationMode(test.mode, test.reviewStatus)
+		if got != test.want || ok != test.ok {
+			t.Fatalf("normalizeVisualAssetRegenerationMode(%q,%q) = %q/%v, want %q/%v",
+				test.mode, test.reviewStatus, got, ok, test.want, test.ok)
+		}
+	}
+}
+
 func TestN8NReturnedFailure(t *testing.T) {
 	failed, message := n8nReturnedFailure(map[string]any{
 		"success": false,

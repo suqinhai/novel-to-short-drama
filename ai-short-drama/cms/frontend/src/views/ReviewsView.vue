@@ -6,6 +6,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ReviewContentViewer from '../components/ReviewContentViewer.vue'
 import { getDisplayValueLabel } from '../services/displayLabels'
+import { getVisualRegenerationAction, isVisualAssetReview, regenerationNeedsPrompt } from '../services/reviewRegeneration'
 
 const data = ref(null)
 const loading = ref(true)
@@ -13,7 +14,8 @@ const error = ref('')
 const result = ref(null)
 const filters = reactive({ project_id: '', stage: '', status: '' })
 const decision = reactive({
-  open: false, item: null, review_status: 'approved', review_comment: '', rejection_reason: '',
+  open: false, item: null, operation: 'decision', regeneration_mode: 'replace',
+  review_status: 'approved', review_comment: '', rejection_reason: '',
   revision_instruction: '', prompt_adjustment: '', selected_as_primary: true, lock_after_approval: true,
   provider_voice_id: '',
 })
@@ -53,9 +55,21 @@ function webhookStage(item) {
 
 function openDecision(item, status) {
   Object.assign(decision, {
-    open: true, item, review_status: status, review_comment: '', rejection_reason: '', revision_instruction: '',
+    open: true, item, operation: 'decision', regeneration_mode: 'replace',
+    review_status: status, review_comment: '', rejection_reason: '', revision_instruction: '',
     prompt_adjustment: '', selected_as_primary: true, lock_after_approval: true,
     provider_voice_id: '',
+  })
+}
+
+function openRegeneration(item) {
+  const action = getVisualRegenerationAction(item)
+  if (!action) return
+  Object.assign(decision, {
+    open: true, item, operation: action.operation, regeneration_mode: action.mode,
+    review_status: action.operation === 'reject_regenerate' ? 'rejected' : item.review_status,
+    review_comment: '', rejection_reason: item.rejection_reason || '', revision_instruction: '',
+    prompt_adjustment: '', selected_as_primary: false, lock_after_approval: false, provider_voice_id: '',
   })
 }
 
@@ -81,12 +95,14 @@ function closeDecision() {
 
 async function submitDecision() {
   if (!decision.item || submitting.value) return
-  if (decision.review_status === 'rejected' && !decision.rejection_reason.trim()) return
-  if (isVoiceProfile.value && decision.review_status === 'approved' && !decision.provider_voice_id.trim()) return
+  if (decision.operation === 'decision' && decision.review_status === 'rejected' && !decision.rejection_reason.trim()) return
+  if (decision.operation === 'reject_regenerate' && !decision.rejection_reason.trim()) return
+  if (isRegeneration.value && regenerationNeedsPrompt(decision.regeneration_mode) && !decision.prompt_adjustment.trim() && !decision.revision_instruction.trim()) return
+  if (decision.operation === 'decision' && isVoiceProfile.value && decision.review_status === 'approved' && !decision.provider_voice_id.trim()) return
   submitting.value = true
   error.value = ''
   try {
-    const response = await api.decideReview(decision.item.review_id, {
+    const reviewPayload = {
       review_status: decision.review_status,
       review_comment: decision.review_comment.trim(),
       rejection_reason: decision.rejection_reason.trim(),
@@ -95,7 +111,28 @@ async function submitDecision() {
       provider_voice_id: decision.provider_voice_id.trim(),
       selected_as_primary: decision.selected_as_primary,
       lock_after_approval: decision.lock_after_approval,
-    })
+    }
+    let response
+    if (decision.operation === 'reject_regenerate') {
+      await api.decideReview(decision.item.review_id, { ...reviewPayload, review_status: 'rejected' })
+      response = await api.regenerateReview(decision.item.review_id, {
+        mode: 'replace',
+        review_comment: reviewPayload.review_comment,
+        rejection_reason: reviewPayload.rejection_reason,
+        revision_instruction: reviewPayload.revision_instruction,
+        prompt_adjustment: reviewPayload.prompt_adjustment,
+      })
+    } else if (decision.operation === 'regenerate') {
+      response = await api.regenerateReview(decision.item.review_id, {
+        mode: decision.regeneration_mode,
+        review_comment: reviewPayload.review_comment,
+        rejection_reason: reviewPayload.rejection_reason,
+        revision_instruction: reviewPayload.revision_instruction,
+        prompt_adjustment: reviewPayload.prompt_adjustment,
+      })
+    } else {
+      response = await api.decideReview(decision.item.review_id, reviewPayload)
+    }
     result.value = response
     decision.open = false
     Object.assign(preview, { open: false, item: null, content: null, loading: false, error: '' })
@@ -109,6 +146,17 @@ async function submitDecision() {
 
 const isVisualAsset = computed(() => decision.item?.stage === 'visual_asset')
 const isVoiceProfile = computed(() => decision.item?.stage === 'voice_profile')
+const isRegeneration = computed(() => decision.operation === 'regenerate' || decision.operation === 'reject_regenerate')
+const modalTitle = computed(() => {
+  if (decision.operation === 'reject_regenerate') return '退回并重新生成'
+  if (decision.operation === 'regenerate') return decision.regeneration_mode === 'variant' ? '生成新变体' : '按意见重新生成'
+  return decision.review_status === 'approved' ? '通过审核' : '拒绝审核'
+})
+const submitLabel = computed(() => isRegeneration.value ? '确认重新生成' : `确认${decision.review_status === 'approved' ? '通过' : '拒绝'}`)
+const submitDisabled = computed(() => submitting.value
+  || ((decision.operation === 'decision' && decision.review_status === 'rejected') || decision.operation === 'reject_regenerate') && !decision.rejection_reason.trim()
+  || (isRegeneration.value && regenerationNeedsPrompt(decision.regeneration_mode) && !decision.prompt_adjustment.trim() && !decision.revision_instruction.trim())
+  || (decision.operation === 'decision' && isVoiceProfile.value && decision.review_status === 'approved' && !decision.provider_voice_id.trim()))
 const supportsPromptAdjustment = computed(() => ['visual_asset', 'storyboard_image', 'shot_video', 'dialogue_audio'].includes(decision.item?.stage))
 const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
 </script>
@@ -159,27 +207,29 @@ const formatTime = (value) => value ? new Intl.DateTimeFormat('zh-CN', { month: 
           <ReviewContentViewer v-else-if="preview.content" :content="preview.content" />
         </div>
         <footer class="review-drawer-actions">
-          <span v-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，当前为只读查看。</span>
+          <span v-if="preview.item?.review_status !== 'pending'">该任务已经完成审核，原审核结论不会因重新生成而改变。</span>
           <template v-else>
-            <button class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />退回修改</button>
-            <button class="button button-primary" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('approved')"><CircleCheckBig :size="16" />通过审核</button>
+            <button class="button button-danger" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('rejected')"><CircleX :size="16" />拒绝</button>
           </template>
+          <button v-if="getVisualRegenerationAction(preview.item)" class="button button-secondary" :disabled="preview.loading || !!preview.error" @click="openRegeneration(preview.item)"><RefreshCw :size="16" />{{ getVisualRegenerationAction(preview.item).label }}</button>
+          <button v-if="preview.item?.review_status === 'pending'" class="button button-primary" :disabled="preview.loading || !!preview.error" @click="decideFromPreview('approved')"><CircleCheckBig :size="16" />通过并锁定</button>
         </footer>
       </aside>
     </div>
 
     <div v-if="decision.open" class="modal-backdrop" @click.self="closeDecision">
-      <div class="review-modal" role="dialog" aria-modal="true" :aria-label="decision.review_status === 'approved' ? '通过审核' : '拒绝审核'">
-        <div class="modal-head"><div><span>{{ decision.item ? webhookStage(decision.item) : '' }}审核</span><h3>{{ decision.review_status === 'approved' ? '通过审核' : '拒绝审核' }}</h3></div><button aria-label="关闭审核窗口" @click="closeDecision"><X :size="18" /></button></div>
+      <div class="review-modal" role="dialog" aria-modal="true" :aria-label="modalTitle">
+        <div class="modal-head"><div><span>{{ decision.item ? webhookStage(decision.item) : '' }}{{ isRegeneration ? '生成' : '审核' }}</span><h3>{{ modalTitle }}</h3></div><button aria-label="关闭审核窗口" @click="closeDecision"><X :size="18" /></button></div>
         <div class="decision-target"><strong>{{ stageLabels[decision.item?.stage] || decision.item?.stage }}</strong><code>{{ decision.item?.review_id }}</code><span>{{ decision.item?.entity_id }}</span></div>
         <label class="field"><span>审核意见</span><textarea v-model="decision.review_comment" rows="3" placeholder="可选：记录本次审核意见"></textarea></label>
-        <label v-if="decision.review_status === 'rejected'" class="field"><span>拒绝原因 <i>*</i></span><textarea v-model="decision.rejection_reason" rows="3" placeholder="请说明需要修改的问题" required></textarea></label>
-        <label v-if="decision.review_status === 'rejected'" class="field"><span>修改指令</span><textarea v-model="decision.revision_instruction" rows="2" placeholder="可选：给后续重做流程的具体指令"></textarea></label>
-        <label v-if="supportsPromptAdjustment" class="field"><span>Prompt 调整</span><textarea v-model="decision.prompt_adjustment" rows="2" placeholder="可选：用于视觉或音视频重新生成"></textarea></label>
-        <label v-if="isVoiceProfile && decision.review_status === 'approved'" class="field"><span>供应商音色 ID <i>*</i></span><input v-model="decision.provider_voice_id" type="text" placeholder="例如：Kore、Aoede、Puck" required /></label>
-        <div v-if="(isVisualAsset || isVoiceProfile) && decision.review_status === 'approved'" class="decision-options"><label v-if="isVisualAsset"><input v-model="decision.selected_as_primary" type="checkbox" />设为主资产</label><label><input v-model="decision.lock_after_approval" type="checkbox" />批准后锁定</label></div>
-        <div class="modal-notice"><Webhook :size="16" /><span>此操作将调用 n8n，不会由 CMS 直接更新 review_tasks。</span></div>
-        <div class="modal-actions"><button class="button button-secondary" :disabled="submitting" @click="closeDecision">取消</button><button class="button" :class="decision.review_status === 'approved' ? 'button-primary' : 'button-danger'" :disabled="submitting || (decision.review_status === 'rejected' && !decision.rejection_reason.trim()) || (isVoiceProfile && decision.review_status === 'approved' && !decision.provider_voice_id.trim())" @click="submitDecision"><LoaderCircle v-if="submitting" :size="16" class="spin" /><MessageSquareText v-else :size="16" />确认{{ decision.review_status === 'approved' ? '通过' : '拒绝' }}</button></div>
+        <label v-if="(decision.operation === 'decision' && decision.review_status === 'rejected') || decision.operation === 'reject_regenerate' || (isRegeneration && decision.regeneration_mode === 'replace')" class="field"><span>拒绝原因 <i v-if="decision.operation === 'reject_regenerate' || decision.operation === 'decision'">*</i></span><textarea v-model="decision.rejection_reason" rows="3" placeholder="请说明需要修改的问题"></textarea></label>
+        <label v-if="decision.review_status === 'rejected' || isRegeneration" class="field"><span>修改指令</span><textarea v-model="decision.revision_instruction" rows="2" placeholder="可选：给重新生成流程的具体指令"></textarea></label>
+        <label v-if="supportsPromptAdjustment && (decision.review_status === 'rejected' || isRegeneration)" class="field"><span>Prompt 调整 <i v-if="isRegeneration && decision.regeneration_mode === 'variant'">*</i></span><textarea v-model="decision.prompt_adjustment" rows="2" placeholder="描述新图片需要保持和改变的内容"></textarea></label>
+        <label v-if="decision.operation === 'decision' && isVoiceProfile && decision.review_status === 'approved'" class="field"><span>供应商音色 ID <i>*</i></span><input v-model="decision.provider_voice_id" type="text" placeholder="例如：Kore、Aoede、Puck" required /></label>
+        <div v-if="decision.operation === 'decision' && (isVisualAsset || isVoiceProfile) && decision.review_status === 'approved'" class="decision-options"><label v-if="isVisualAsset"><input v-model="decision.selected_as_primary" type="checkbox" />设为主资产</label><label><input v-model="decision.lock_after_approval" type="checkbox" />批准后锁定</label></div>
+        <div v-if="isRegeneration && decision.regeneration_mode === 'variant'" class="modal-notice regeneration"><RefreshCw :size="16" /><span>当前已通过的主图会继续生效；新变体生成后仍需单独审核，不会自动重做已有分镜或视频。</span></div>
+        <div v-else class="modal-notice"><Webhook :size="16" /><span>{{ isRegeneration ? '系统会创建新版本和新的待审核记录，保留当前图片作为历史。' : '此操作将调用 n8n，不会由 CMS 直接更新 review_tasks。' }}</span></div>
+        <div class="modal-actions"><button class="button button-secondary" :disabled="submitting" @click="closeDecision">取消</button><button class="button" :class="decision.operation === 'decision' && decision.review_status === 'rejected' ? 'button-danger' : 'button-primary'" :disabled="submitDisabled" @click="submitDecision"><LoaderCircle v-if="submitting" :size="16" class="spin" /><MessageSquareText v-else :size="16" />{{ submitLabel }}</button></div>
       </div>
     </div>
   </section>

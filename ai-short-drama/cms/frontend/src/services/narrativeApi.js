@@ -174,6 +174,9 @@ export const narrativeApi = {
   getAdaptationPlan(adaptationPlanId) {
     return request(`/adaptation-plans/${id(adaptationPlanId)}`)
   },
+  getLatestAdaptationPlan(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/adaptation-plans/latest`)
+  },
   getCachedVersionETag(sourceVersionId) {
     return cachedETag('source-version', sourceVersionId)
   },

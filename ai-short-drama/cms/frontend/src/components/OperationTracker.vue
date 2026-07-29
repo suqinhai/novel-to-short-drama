@@ -5,8 +5,11 @@ import { narrativeApi } from '../services/narrativeApi'
 import { createTerminalNotifier, isFailedOperation, isReviewOperation, isTerminalOperation } from '../services/operationTerminal'
 import { getDisplayValueLabel, getStatusLabel } from '../services/displayLabels'
 
-const props = defineProps({ operation: { type: Object, default: null } })
-const emit = defineEmits(['terminal'])
+const props = defineProps({
+  operation: { type: Object, default: null },
+  reviewActionLabel: { type: String, default: '' },
+})
+const emit = defineEmits(['terminal', 'review'])
 const current = ref(props.operation)
 const error = ref('')
 const polling = ref(false)
@@ -72,5 +75,6 @@ onBeforeUnmount(stop)
       <p v-if="error" class="operation-error">状态刷新失败：{{ error }}</p>
     </div>
     <button v-if="error" class="button button-secondary" @click="refresh"><RefreshCw :size="15" />重试查询</button>
+    <button v-else-if="reviewable && reviewActionLabel" class="button button-primary" @click="emit('review')">{{ reviewActionLabel }}</button>
   </article>
 </template>

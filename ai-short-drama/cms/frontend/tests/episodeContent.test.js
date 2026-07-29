@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { buildEpisodeContentPayload, cloneEpisodeContent, episodeContentChanged } from '../src/services/episodeContent.js'
+
+const fixture = {
+  outline: {
+    title: '第1集', logline: '危机出现', opening_hook: '门被撞开', story_goal: '找出真相',
+    main_conflict: '双方对峙', climax: '身份揭晓', ending_hook: '电话响起',
+    estimated_duration_seconds: 180, status: 'approved',
+  },
+  script: {
+    script_id: 'script_1', title: '第1集', opening_hook: '门被撞开', climax: '身份揭晓',
+    ending_hook: '电话响起', status: 'approved', scenes: [{
+      scene_id: 'scene_1', scene_number: 1, location_name: '旧仓库', time_of_day: '夜',
+      interior_exterior: '内景', scene_purpose: '建立危机',
+      actions: ['主角冲向门口'], emotional_change: '警惕转为震惊',
+      estimated_duration_seconds: 30, dialogues: [{
+        dialogue_id: 'dialogue_1', dialogue_type: 'dialogue', speaker_name: '主角',
+        text: '谁在那里？', emotion: '警惕', performance_instruction: '压低声音',
+        estimated_duration_ms: 1800, character_id: 'character_1',
+      }],
+    }],
+  },
+}
+
+test('cloneEpisodeContent normalizes action strings without mutating source', () => {
+  const cloned = cloneEpisodeContent(fixture)
+  assert.deepEqual(cloned.script.scenes[0].actions, [{ description: '主角冲向门口' }])
+  cloned.script.scenes[0].actions[0].description = '修改'
+  assert.equal(fixture.script.scenes[0].actions[0], '主角冲向门口')
+})
+
+test('cloneEpisodeContent accepts reactive proxy values', () => {
+  const cloned = cloneEpisodeContent(new Proxy(fixture, {}))
+  assert.equal(cloned.outline.title, fixture.outline.title)
+  assert.deepEqual(cloned.script.scenes[0].actions, [{ description: '主角冲向门口' }])
+})
+
+test('clone and payload preserve text-based action schemas', () => {
+  const content = structuredClone(fixture)
+  content.script.scenes[0].actions = [{ text: '主角冲向门口', adaptation_added: true }]
+  const cloned = cloneEpisodeContent(content)
+  assert.equal(cloned.script.scenes[0].actions[0].description, '主角冲向门口')
+  cloned.script.scenes[0].actions[0].description = '主角停在门前'
+  assert.deepEqual(buildEpisodeContentPayload(cloned).script.scenes[0].actions, [{
+    text: '主角停在门前',
+    adaptation_added: true,
+  }])
+})
+
+test('buildEpisodeContentPayload strips read-only fields', () => {
+  const payload = buildEpisodeContentPayload(cloneEpisodeContent(fixture))
+  assert.equal(payload.outline.status, undefined)
+  assert.equal(payload.script.status, undefined)
+  assert.equal(payload.script.scenes[0].scene_number, undefined)
+  assert.equal(payload.script.scenes[0].dialogues[0].character_id, undefined)
+  assert.equal(payload.script.scenes[0].actions[0].description, '主角冲向门口')
+})
+
+test('episodeContentChanged detects editable changes', () => {
+  const draft = cloneEpisodeContent(fixture)
+  assert.equal(episodeContentChanged(fixture, draft), false)
+  draft.script.scenes[0].dialogues[0].text = '你是谁？'
+  assert.equal(episodeContentChanged(fixture, draft), true)
+})
