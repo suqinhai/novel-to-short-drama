@@ -15,6 +15,14 @@ export function canRecoverMediaAsset(item) {
   return isMediaAssetRecoverable(item) && !hasMediaAssetSuccessor(item)
 }
 
+export function getMediaAssetSourceLabel(item) {
+  if (!item?.predecessor_asset_id) return ''
+  const version = Number(item.generation_version)
+  const versionLabel = Number.isInteger(version) && version > 0 ? ` · 版本 v${version}` : ''
+  const operation = item.provider === 'manual_upload' ? '上传替换' : '重新生成'
+  return `由 ${item.predecessor_asset_id} ${operation}${versionLabel}`
+}
+
 export function getMediaAssetSuccessorState(item) {
   if (!hasMediaAssetSuccessor(item)) return null
   const version = item.successor_generation_version || '?'

@@ -210,41 +210,42 @@ type ReviewContent struct {
 }
 
 type MediaAsset struct {
-	AssetID           string    `json:"asset_id"`
-	AssetType         string    `json:"asset_type"`
-	ProjectID         string    `json:"project_id"`
-	NovelName         string    `json:"novel_name"`
-	EpisodeID         *string   `json:"episode_id,omitempty"`
-	EntityType        string    `json:"entity_type"`
-	EntityID          string    `json:"entity_id"`
-	Subtype           string    `json:"subtype"`
-	MediaKind         string    `json:"media_kind"`
-	Status            string    `json:"status"`
-	ReviewStatus      string    `json:"review_status"`
-	OriginalURL       *string   `json:"original_url,omitempty"`
-	StorageURL        *string   `json:"storage_url,omitempty"`
-	ThumbnailURL      *string   `json:"thumbnail_url,omitempty"`
-	MediaURL          *string   `json:"media_url,omitempty"`
-	PreviewURL        *string   `json:"preview_url,omitempty"`
-	Width             *int      `json:"width,omitempty"`
-	Height            *int      `json:"height,omitempty"`
-	DurationMS        *int64    `json:"duration_ms,omitempty"`
-	Provider          *string   `json:"provider,omitempty"`
-	Model             *string   `json:"model,omitempty"`
-	GenerationVersion int       `json:"generation_version"`
-	IsCurrent         bool      `json:"is_current"`
-	SuccessorAssetID  *string   `json:"successor_asset_id,omitempty"`
-	SuccessorVersion  *int      `json:"successor_generation_version,omitempty"`
-	SuccessorStatus   *string   `json:"successor_status,omitempty"`
-	SuccessorProvider *string   `json:"successor_provider,omitempty"`
-	ErrorCode         *string   `json:"error_code,omitempty"`
-	ErrorMessage      *string   `json:"error_message,omitempty"`
-	TaskID            *string   `json:"task_id,omitempty"`
-	RetryCount        int       `json:"retry_count"`
-	MaxRetries        int       `json:"max_retries"`
-	TestMode          bool      `json:"test_mode"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	AssetID            string    `json:"asset_id"`
+	AssetType          string    `json:"asset_type"`
+	ProjectID          string    `json:"project_id"`
+	NovelName          string    `json:"novel_name"`
+	EpisodeID          *string   `json:"episode_id,omitempty"`
+	EntityType         string    `json:"entity_type"`
+	EntityID           string    `json:"entity_id"`
+	Subtype            string    `json:"subtype"`
+	MediaKind          string    `json:"media_kind"`
+	Status             string    `json:"status"`
+	ReviewStatus       string    `json:"review_status"`
+	OriginalURL        *string   `json:"original_url,omitempty"`
+	StorageURL         *string   `json:"storage_url,omitempty"`
+	ThumbnailURL       *string   `json:"thumbnail_url,omitempty"`
+	MediaURL           *string   `json:"media_url,omitempty"`
+	PreviewURL         *string   `json:"preview_url,omitempty"`
+	Width              *int      `json:"width,omitempty"`
+	Height             *int      `json:"height,omitempty"`
+	DurationMS         *int64    `json:"duration_ms,omitempty"`
+	Provider           *string   `json:"provider,omitempty"`
+	Model              *string   `json:"model,omitempty"`
+	GenerationVersion  int       `json:"generation_version"`
+	IsCurrent          bool      `json:"is_current"`
+	PredecessorAssetID *string   `json:"predecessor_asset_id,omitempty"`
+	SuccessorAssetID   *string   `json:"successor_asset_id,omitempty"`
+	SuccessorVersion   *int      `json:"successor_generation_version,omitempty"`
+	SuccessorStatus    *string   `json:"successor_status,omitempty"`
+	SuccessorProvider  *string   `json:"successor_provider,omitempty"`
+	ErrorCode          *string   `json:"error_code,omitempty"`
+	ErrorMessage       *string   `json:"error_message,omitempty"`
+	TaskID             *string   `json:"task_id,omitempty"`
+	RetryCount         int       `json:"retry_count"`
+	MaxRetries         int       `json:"max_retries"`
+	TestMode           bool      `json:"test_mode"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type MediaAssetReplacement struct {
@@ -454,11 +455,24 @@ const mediaAssetsCTE = `WITH media_asset_versions AS (
 	LEFT JOIN drama.render_jobs rj ON rj.render_job_id=em.render_job_id
 ), media_assets AS (
 	SELECT asset.*,
+		predecessor.asset_id predecessor_asset_id,
 		successor.asset_id successor_asset_id,
 		successor.generation_version successor_generation_version,
 		successor.status successor_status,
 		successor.provider successor_provider
 	FROM media_asset_versions asset
+	LEFT JOIN LATERAL (
+		SELECT candidate.asset_id
+		FROM media_asset_versions candidate
+		WHERE candidate.asset_type=asset.asset_type
+		  AND candidate.project_id=asset.project_id
+		  AND candidate.entity_type=asset.entity_type
+		  AND candidate.entity_id=asset.entity_id
+		  AND candidate.subtype=asset.subtype
+		  AND candidate.generation_version<asset.generation_version
+		ORDER BY candidate.generation_version DESC,candidate.created_at DESC
+		LIMIT 1
+	) predecessor ON true
 	LEFT JOIN LATERAL (
 		SELECT candidate.asset_id,candidate.generation_version,candidate.status,candidate.provider
 		FROM media_asset_versions candidate
@@ -787,7 +801,7 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 	rows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
 		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
-		successor_asset_id,successor_generation_version,successor_status,successor_provider,
+		predecessor_asset_id,successor_asset_id,successor_generation_version,successor_status,successor_provider,
 		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets `+where+`
 		ORDER BY updated_at DESC,asset_id
@@ -803,7 +817,7 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 			&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
 			&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
 			&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
-			&item.GenerationVersion, &item.IsCurrent, &item.SuccessorAssetID, &item.SuccessorVersion,
+			&item.GenerationVersion, &item.IsCurrent, &item.PredecessorAssetID, &item.SuccessorAssetID, &item.SuccessorVersion,
 			&item.SuccessorStatus, &item.SuccessorProvider, &item.ErrorCode, &item.ErrorMessage,
 			&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
 			&item.CreatedAt, &item.UpdatedAt); err != nil {
@@ -843,14 +857,14 @@ func (s *Store) GetMediaAsset(ctx context.Context, assetType, assetID string) (M
 	err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
 		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
-		successor_asset_id,successor_generation_version,successor_status,successor_provider,
+		predecessor_asset_id,successor_asset_id,successor_generation_version,successor_status,successor_provider,
 		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets WHERE asset_type=$1 AND asset_id=$2`, assetType, assetID).Scan(
 		&item.AssetID, &item.AssetType, &item.ProjectID, &item.NovelName,
 		&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
 		&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
 		&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
-		&item.GenerationVersion, &item.IsCurrent, &item.SuccessorAssetID, &item.SuccessorVersion,
+		&item.GenerationVersion, &item.IsCurrent, &item.PredecessorAssetID, &item.SuccessorAssetID, &item.SuccessorVersion,
 		&item.SuccessorStatus, &item.SuccessorProvider, &item.ErrorCode, &item.ErrorMessage,
 		&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
 		&item.CreatedAt, &item.UpdatedAt,

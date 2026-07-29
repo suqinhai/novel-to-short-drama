@@ -1,12 +1,13 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import {
-  AlertTriangle, AudioLines, CheckCircle2, CirclePlay, ExternalLink, Film, Filter,
+  AlertTriangle, ArrowRight, AudioLines, CheckCircle2, CirclePlay, ExternalLink, Film, Filter,
   ImageOff, Images, Info, LoaderCircle, RefreshCw, RotateCcw, Upload, X,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
 import {
   canRecoverMediaAsset,
+  getMediaAssetSourceLabel,
   getMediaAssetSuccessorState,
   hasMediaAssetSuccessor,
   isMediaAssetRecoverable,
@@ -73,6 +74,7 @@ const assetTitle = (item) => subtypeLabels[item.subtype] || item.subtype || type
 const isRecoverable = isMediaAssetRecoverable
 const canRecover = canRecoverMediaAsset
 const successorState = getMediaAssetSuccessorState
+const sourceLabel = getMediaAssetSourceLabel
 const acceptFor = (item) => ({
   image: 'image/jpeg,image/png,image/webp,image/gif',
   video: 'video/mp4,video/quicktime,video/webm',
@@ -96,6 +98,22 @@ function openAction(mode, item) {
 
 function closeAction() {
   if (!action.working) action.open = false
+}
+
+async function viewSuccessor(item) {
+  if (!item?.successor_asset_id) return
+  if (!items.value.some(candidate => candidate.asset_id === item.successor_asset_id)) {
+    Object.assign(filters, {
+      project_id: item.project_id,
+      type: item.asset_type,
+      review_status: '',
+    })
+    await load()
+  }
+  await nextTick()
+  const target = document.getElementById(`media-asset-${item.successor_asset_id}`)
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target?.focus({ preventScroll: true })
 }
 
 async function readMediaMetadata(file, kind) {
@@ -212,7 +230,7 @@ async function submitAction() {
       <div v-if="loading" class="media-loading"><span v-for="i in 8" :key="i"></span></div>
       <EmptyState v-else-if="items.length === 0" title="没有匹配的媒体资产" description="当前项目或筛选条件下还没有可展示的媒体文件。" />
       <div v-else class="media-grid">
-        <article v-for="item in items" :key="`${item.asset_type}:${item.asset_id}`" class="media-card" :class="{ 'media-card-error': canRecover(item), 'media-card-superseded': hasMediaAssetSuccessor(item) }">
+        <article v-for="item in items" :id="`media-asset-${item.asset_id}`" :key="`${item.asset_type}:${item.asset_id}`" class="media-card" :class="{ 'media-card-error': canRecover(item), 'media-card-superseded': hasMediaAssetSuccessor(item) }" tabindex="-1">
           <div class="media-preview" :class="`kind-${item.media_kind}`">
             <img v-if="item.media_kind === 'image' && item.media_url" :src="item.preview_url || item.media_url" :alt="assetTitle(item)" loading="lazy" />
             <video v-else-if="item.media_kind === 'video' && item.media_url" :src="item.media_url" :poster="item.preview_url || undefined" controls preload="metadata">当前浏览器不支持视频播放。</video>
@@ -233,6 +251,10 @@ async function submitAction() {
           <div class="media-card-body">
             <div class="media-card-title"><div><span>{{ item.novel_name }}</span><h3>{{ assetTitle(item) }}</h3></div><StatusBadge :status="successorState(item)?.badgeStatus || item.status" /></div>
             <code class="media-asset-id" :title="item.asset_id">{{ item.asset_id }}</code>
+            <div v-if="sourceLabel(item)" class="media-version-lineage"><RefreshCw :size="13" /><span>{{ sourceLabel(item) }}</span></div>
+            <button v-if="hasMediaAssetSuccessor(item)" class="media-successor-link" @click="viewSuccessor(item)">
+              <span>{{ successorState(item).label }}</span><ArrowRight :size="13" /><strong>查看新版本</strong>
+            </button>
             <div class="media-review-line"><span>审核状态</span><StatusBadge :status="item.review_status" /></div>
             <dl class="media-meta">
               <div><dt>项目</dt><dd>{{ item.project_id }}</dd></div>
