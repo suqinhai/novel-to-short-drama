@@ -282,15 +282,17 @@ type MediaAssetListResult struct {
 }
 
 type ReviewContext struct {
-	ReviewID     string          `json:"review_id"`
-	ProjectID    string          `json:"project_id"`
-	Stage        string          `json:"stage"`
-	EntityType   string          `json:"entity_type"`
-	EntityID     string          `json:"entity_id"`
-	ReviewStatus string          `json:"review_status"`
-	Metadata     json.RawMessage `json:"metadata"`
-	EpisodeID    *string         `json:"episode_id,omitempty"`
-	TestMode     bool            `json:"test_mode"`
+	ReviewID      string          `json:"review_id"`
+	ProjectID     string          `json:"project_id"`
+	Stage         string          `json:"stage"`
+	EntityType    string          `json:"entity_type"`
+	EntityID      string          `json:"entity_id"`
+	ReviewStatus  string          `json:"review_status"`
+	Metadata      json.RawMessage `json:"metadata"`
+	EpisodeID     *string         `json:"episode_id,omitempty"`
+	TestMode      bool            `json:"test_mode"`
+	ProjectStage  string          `json:"project_stage"`
+	ProjectStatus string          `json:"project_status"`
 }
 
 type FailedTaskContext struct {
@@ -1472,7 +1474,7 @@ func firstNonEmpty(values ...string) string {
 func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewContext, error) {
 	var review ReviewContext
 	err := s.pool.QueryRow(ctx, `SELECT r.review_id,r.project_id,r.stage,r.entity_type,r.entity_id,
-		r.review_status,COALESCE(r.metadata,'{}'::jsonb),p.test_mode,
+		r.review_status,COALESCE(r.metadata,'{}'::jsonb),p.test_mode,p.current_stage,p.status,
 		COALESCE(NULLIF(r.metadata->>'episode_id',''),
 			(SELECT episode_id FROM drama.shot_videos WHERE shot_video_id=r.entity_id),
 			(SELECT episode_id FROM drama.dialogue_audio WHERE dialogue_audio_id=r.entity_id),
@@ -1480,11 +1482,31 @@ func (s *Store) GetReviewContext(ctx context.Context, reviewID string) (ReviewCo
 			(SELECT episode_id FROM drama.publication_metadata WHERE metadata_id=r.entity_id))
 		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id
 		WHERE r.review_id=$1`, reviewID).Scan(&review.ReviewID, &review.ProjectID, &review.Stage,
-		&review.EntityType, &review.EntityID, &review.ReviewStatus, &review.Metadata, &review.TestMode, &review.EpisodeID)
+		&review.EntityType, &review.EntityID, &review.ReviewStatus, &review.Metadata, &review.TestMode,
+		&review.ProjectStage, &review.ProjectStatus, &review.EpisodeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReviewContext{}, ErrNotFound
 	}
 	return review, err
+}
+
+func (s *Store) RestoreProjectStateAfterLateStage3Review(
+	ctx context.Context, projectID, previousStage, previousStatus string,
+) error {
+	_, err := s.writer.Exec(ctx, `UPDATE drama.projects
+		SET current_stage=$2,status=$3
+		WHERE project_id=$1
+		  AND $2 NOT IN (
+			'storyboard_approved','stage_2_completed','visual_assets','visual_asset_review',
+			'visual_assets_locked','storyboard_images','storyboard_image_review',
+			'storyboard_images_approved','stage_3_completed','stage_3_failed'
+		  )
+		  AND current_stage IN (
+			'storyboard_approved','stage_2_completed','visual_assets','visual_asset_review',
+			'visual_assets_locked','storyboard_images','storyboard_image_review',
+			'storyboard_images_approved','stage_3_completed','stage_3_failed'
+		  )`, projectID, previousStage, previousStatus)
+	return err
 }
 
 func (s *Store) NextVisualAssetGenerationVersion(ctx context.Context, projectID, profileID, assetType string) (int, error) {

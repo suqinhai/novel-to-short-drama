@@ -7,6 +7,8 @@ const load = workflow.nodes.find((node) => node.name === 'Load Approved Images a
 const prepare = workflow.nodes.find((node) => node.name === 'Validate Media and Build Video Dispatch Items').parameters.jsCode;
 const state = workflow.nodes.find((node) => node.name === 'Aggregate Video Dispatch State').parameters.query;
 const adapter = workflow.nodes.find((node) => node.name === 'Execute 09a Video Provider').parameters.workflowInputs.value;
+const placeholder = workflow.nodes.find((node) => node.name === 'Save Video Task Placeholder').parameters.query;
+const normalizeFailure = workflow.nodes.find((node) => node.name === 'Normalize Video Workflow Failure').parameters.jsCode;
 
 assert.match(gate, /status='completed' AND \$4::text='resume' THEN 'running'/);
 assert.match(gate, /action=EXCLUDED\.action/);
@@ -19,4 +21,7 @@ assert.match(state, /ORDER BY vt\.updated_at DESC,vt\.created_at DESC LIMIT 1/);
 assert.match(state, /\) succeeded,/);
 assert.match(state, /NOT approved AND NOT succeeded AND task_status IN/);
 assert.match(state, /NOT approved AND \(succeeded OR task_status IN/);
+assert.doesNotMatch(placeholder, /old_version AS/);
+assert.match(normalizeFailure, /Restore Video Request/);
+assert.match(normalizeFailure, /Video Workflow Task Gate/);
 console.log('PASS video resume recovery');

@@ -959,6 +959,15 @@ func (h *Handler) decideReview(c *gin.Context) {
 		}})
 		return
 	}
+	if webhookStage == "stage3" {
+		if restoreErr := h.store.RestoreProjectStateAfterLateStage3Review(
+			c.Request.Context(), review.ProjectID, review.ProjectStage, review.ProjectStatus,
+		); restoreErr != nil {
+			respondError(c, http.StatusInternalServerError, "PROJECT_STAGE_RESTORE_FAILED",
+				"审核已完成，但无法恢复审核前的后续生产阶段："+restoreErr.Error())
+			return
+		}
+	}
 	if review.EpisodeID != nil && *review.EpisodeID != "" {
 		run, runErr := h.store.GetEpisodeProductionRunByEpisodeID(
 			c.Request.Context(), review.ProjectID, *review.EpisodeID,

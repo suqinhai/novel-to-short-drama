@@ -45,6 +45,11 @@ const resumeDisabledReason = computed(() => {
   return ''
 })
 const canResume = computed(() => !resumeDisabledReason.value)
+const episodeRunDisplayStatus = (run) => (
+  run?.status === 'waiting_review' && project.value?.counts?.pending_reviews === 0
+    ? 'ready_to_continue'
+    : run?.status
+)
 const canStartEpisode = (run) => {
   if (!run) return false
   if (flowLoading.value || activeWorkflowTasks.value > 0 || project.value?.counts?.pending_reviews > 0) return false
@@ -218,7 +223,7 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
           <article v-for="run in episodeRuns" :key="run.episode_run_id" class="episode-run-card" :class="{ current: currentEpisodeRun?.episode_run_id === run.episode_run_id, completed: run.status === 'completed' }">
             <div class="episode-run-number">{{ run.status === 'completed' ? '✓' : run.episode_number }}</div>
             <div class="episode-run-copy">
-              <div><strong>第 {{ run.episode_number }} 集 · {{ run.title }}</strong><StatusBadge :status="run.status" /></div>
+              <div><strong>第 {{ run.episode_number }} 集 · {{ run.title }}</strong><StatusBadge :status="episodeRunDisplayStatus(run)" /></div>
               <p>当前节点：{{ getPipelineStageLabel(run.current_stage, run.status === 'completed' ? 'completed' : '') }}</p>
               <small><Gauge :size="13" />视频每批最多 {{ run.max_video_batch }} 个镜头 <Coins :size="13" />Token {{ Number(run.token_spent || 0).toLocaleString('zh-CN') }}<template v-if="run.token_budget"> / {{ Number(run.token_budget).toLocaleString('zh-CN') }}</template> · 费用 ¥{{ Number(run.cost_spent || 0).toFixed(2) }}<template v-if="run.cost_budget"> / ¥{{ Number(run.cost_budget).toFixed(2) }}</template></small>
             </div>
