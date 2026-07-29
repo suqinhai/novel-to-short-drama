@@ -26,6 +26,10 @@ const {
   sniffImageMime,
   taskIdForIdempotency,
 } = require('../lib')
+const {
+  buildVertexTtsPayload,
+  normalizeVertexTtsRequest,
+} = require('../server')
 
 test('maps arbitrary shot durations to Veo-supported values', () => {
   assert.equal(normalizeDuration(2), 4)
@@ -143,4 +147,46 @@ test('creates a signed service-account JWT', () => {
     private_key: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
   }, 1000)
   assert.equal(jwt.split('.').length, 3)
+})
+
+test('normalizes a safe Vertex Gemini TTS request', () => {
+  const normalized = normalizeVertexTtsRequest({
+    model: 'gemini-3.1-flash-tts-preview',
+    text: '你好，世界。',
+    emotion: '平静、温暖',
+    voice_id: 'Kore',
+    language: 'zh-CN',
+  })
+  assert.equal(normalized.language, 'cmn-CN')
+  assert.equal(normalized.location, 'global')
+  assert.match(normalized.contents, /平静、温暖/)
+  assert.deepEqual(buildVertexTtsPayload(normalized), {
+    contents: {
+      role: 'user',
+      parts: { text: normalized.contents },
+    },
+    generation_config: {
+      speech_config: {
+        language_code: 'cmn-CN',
+        voice_config: {
+          prebuilt_voice_config: { voice_name: 'Kore' },
+        },
+      },
+    },
+  })
+})
+
+test('rejects unsupported Vertex TTS models and voices', () => {
+  assert.throws(() => normalizeVertexTtsRequest({
+    model: 'gemini-text-only',
+    text: 'hello',
+    voice_id: 'Kore',
+    language: 'en-US',
+  }), /unsupported Vertex TTS model/)
+  assert.throws(() => normalizeVertexTtsRequest({
+    model: 'gemini-3.1-flash-tts-preview',
+    text: 'hello',
+    voice_id: '../Kore',
+    language: 'en-US',
+  }), /voice_id is invalid/)
 })

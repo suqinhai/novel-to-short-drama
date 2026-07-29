@@ -25,12 +25,15 @@ const optionLabels = {
   'gemini-3.1-flash-tts-preview': 'Gemini 3.1 Flash TTS Preview（推荐）',
   'gemini-2.5-flash-preview-tts': 'Gemini 2.5 Flash Preview TTS',
   'gemini-2.5-pro-preview-tts': 'Gemini 2.5 Pro Preview TTS',
+  'gemini-2.5-flash-tts': 'Vertex Gemini 2.5 Flash TTS',
+  'gemini-2.5-pro-tts': 'Vertex Gemini 2.5 Pro TTS',
+  'gemini-2.5-flash-lite-preview-tts': 'Vertex Gemini 2.5 Flash-Lite TTS Preview',
   'chirp-3-hd': 'Chirp 3 HD',
 }
 const defaultPlan = {
   AI_CONNECTION_MODE: 'hybrid', TEXT_API_SOURCE: 'gateway', IMAGE_API_SOURCE: 'native',
   VIDEO_API_SOURCE: 'native', TTS_API_SOURCE: 'native', VIDEO_USE_GENERATED_AUDIO: 'false',
-  VEO_LOCATION: 'us-central1', VEO_OUTPUT_MODE: 'local',
+  VEO_LOCATION: 'us-central1', VEO_OUTPUT_MODE: 'local', TTS_VERTEX_LOCATION: 'global',
 }
 const googleVideoModels = [
   { id: 'gemini-omni-flash-preview', title: 'Gemini Omni Flash', badge: '推荐', description: '3–10 秒、720p，速度快、角色一致性好；当前为 Preview。' },
@@ -39,14 +42,19 @@ const googleVideoModels = [
 ]
 const googleSpeechModels = [
   { provider: 'google_gemini_speech', model: 'gemini-3.1-flash-tts-preview', title: 'Gemini Speech', badge: '可控', description: '原生 Gemini TTS，支持用自然语言控制语气、节奏和表现；当前为 Preview。', baseUrl: 'https://generativelanguage.googleapis.com', voice: 'Kore' },
+  { provider: 'google_vertex_gemini_speech', model: 'gemini-3.1-flash-tts-preview', title: 'Vertex AI Gemini TTS', badge: '生产', description: '通过 Google Cloud 服务账号调用 Vertex AI，支持项目结算、IAM 与区域配置。', baseUrl: 'http://veo-adapter:8091', voice: 'Kore' },
   { provider: 'google_chirp3_hd', model: 'chirp-3-hd', title: 'Chirp 3 HD', badge: '稳定', description: 'Google Cloud 高保真语音，普通话使用 cmn-CN-Chirp3-HD-* 完整声线 ID。', baseUrl: 'https://texttospeech.googleapis.com', voice: 'cmn-CN-Chirp3-HD-Kore' },
 ]
 const geminiSpeechModelOptions = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
+const vertexSpeechModelOptions = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-tts', 'gemini-2.5-pro-tts', 'gemini-2.5-flash-lite-preview-tts']
 const googleVideoFieldKeys = new Set([
   'VIDEO_PROVIDER', 'VIDEO_MODEL', 'VIDEO_USE_GENERATED_AUDIO',
   'VEO_OUTPUT_MODE', 'VEO_PROJECT_ID', 'VEO_LOCATION', 'VEO_GCS_OUTPUT_URI',
 ])
-const googleAudioFieldKeys = new Set(['TTS_PROVIDER', 'TTS_MODEL', 'DEFAULT_NARRATOR_VOICE_ID'])
+const googleAudioFieldKeys = new Set([
+  'TTS_PROVIDER', 'TTS_MODEL', 'DEFAULT_NARRATOR_VOICE_ID',
+  'TTS_VERTEX_PROJECT_ID', 'TTS_VERTEX_LOCATION',
+])
 const connectionModes = [
   {
     id: 'hybrid', title: '混合路由', icon: Waypoints, recommended: true,
@@ -269,30 +277,41 @@ onMounted(load)
 
       <article class="panel padded google-audio-panel">
         <div class="section-title"><div><span>GOOGLE SPEECH</span><h3>Google 语音模型</h3></div><div class="section-icon"><Mic2 :size="19" /></div></div>
-        <p class="plan-intro">Gemini Speech 与 Chirp 3 HD 已直接接入语音工作流。点击模型卡会自动填写供应商、官方 Base URL、模型和中文旁白默认声线。</p>
+        <p class="plan-intro">支持 Gemini Developer API、Vertex AI Gemini TTS 与 Chirp 3 HD。Vertex AI 路由使用与 Veo 共用的服务账号完成 OAuth，不会把私钥放入工作流执行数据。</p>
         <div class="google-model-grid google-speech-model-grid">
           <button v-for="item in googleSpeechModels" :key="item.provider" type="button" class="google-model-card" :class="{ active: drafts.TTS_PROVIDER === item.provider }" @click="selectGoogleSpeechModel(item)">
             <span><Mic2 :size="19" /></span><div><strong>{{ item.title }}<i>{{ item.badge }}</i></strong><code>{{ item.model }}</code><small>{{ item.description }}</small></div><b></b>
           </button>
         </div>
         <div class="google-config-grid">
-          <label v-if="drafts.TTS_PROVIDER === 'google_gemini_speech'" class="config-edit-field">
-            <span class="config-field-head"><strong>Gemini Speech 模型</strong><i v-if="fieldsByKey.TTS_MODEL?.has_managed_override">待重启覆盖</i></span>
+          <label v-if="['google_gemini_speech', 'google_vertex_gemini_speech'].includes(drafts.TTS_PROVIDER)" class="config-edit-field">
+            <span class="config-field-head"><strong>{{ drafts.TTS_PROVIDER === 'google_vertex_gemini_speech' ? 'Vertex AI Gemini TTS 模型' : 'Gemini Speech 模型' }}</strong><i v-if="fieldsByKey.TTS_MODEL?.has_managed_override">待重启覆盖</i></span>
             <code>TTS_MODEL</code>
-            <select v-model="drafts.TTS_MODEL" class="select-control"><option v-for="model in geminiSpeechModelOptions" :key="model" :value="model">{{ optionLabels[model] }}</option></select>
-            <small>3.1 支持最新 TTS 能力；2.5 Flash / Pro 可用于兼容已有账号与配额。</small>
+            <select v-model="drafts.TTS_MODEL" class="select-control"><option v-for="model in drafts.TTS_PROVIDER === 'google_vertex_gemini_speech' ? vertexSpeechModelOptions : geminiSpeechModelOptions" :key="model" :value="model">{{ optionLabels[model] }}</option></select>
+            <small>{{ drafts.TTS_PROVIDER === 'google_vertex_gemini_speech' ? '3.1 Flash TTS 使用 global；2.5 系列可按合规与容量需求选择区域。' : '使用 Gemini API Key 和 Interactions API；Preview 模型频率限制通常更严格。' }}</small>
           </label>
           <label v-else-if="drafts.TTS_PROVIDER === 'google_chirp3_hd'" class="config-edit-field">
             <span class="config-field-head"><strong>Chirp 模型</strong><i v-if="fieldsByKey.TTS_MODEL?.has_managed_override">待重启覆盖</i></span>
             <code>TTS_MODEL</code><input v-model="drafts.TTS_MODEL" type="text" readonly /><small>Chirp 3 HD 的具体语言和音色由完整声线 ID 决定。</small>
           </label>
-          <label v-if="['google_gemini_speech', 'google_chirp3_hd'].includes(drafts.TTS_PROVIDER)" class="config-edit-field">
+          <label v-if="drafts.TTS_PROVIDER === 'google_vertex_gemini_speech'" class="config-edit-field">
+            <span class="config-field-head"><strong>Vertex AI Project ID</strong><i v-if="fieldsByKey.TTS_VERTEX_PROJECT_ID?.has_managed_override">待重启覆盖</i></span>
+            <code>TTS_VERTEX_PROJECT_ID</code><input v-model="drafts.TTS_VERTEX_PROJECT_ID" type="text" placeholder="可留空，从服务账号自动读取" spellcheck="false" />
+            <small>填写 Google Cloud 项目 ID，不是项目显示名称。</small>
+          </label>
+          <label v-if="drafts.TTS_PROVIDER === 'google_vertex_gemini_speech'" class="config-edit-field">
+            <span class="config-field-head"><strong>Vertex AI TTS 区域</strong><i v-if="fieldsByKey.TTS_VERTEX_LOCATION?.has_managed_override">待重启覆盖</i></span>
+            <code>TTS_VERTEX_LOCATION</code><select v-model="drafts.TTS_VERTEX_LOCATION" class="select-control"><option v-for="location in fieldsByKey.TTS_VERTEX_LOCATION?.options || ['global']" :key="location" :value="location">{{ location }}</option></select>
+            <small>Gemini 3.1 Flash TTS 请选择 global。</small>
+          </label>
+          <label v-if="['google_gemini_speech', 'google_vertex_gemini_speech', 'google_chirp3_hd'].includes(drafts.TTS_PROVIDER)" class="config-edit-field">
             <span class="config-field-head"><strong>默认旁白声线</strong><i v-if="fieldsByKey.DEFAULT_NARRATOR_VOICE_ID?.has_managed_override">待重启覆盖</i></span>
             <code>DEFAULT_NARRATOR_VOICE_ID</code><input v-model="drafts.DEFAULT_NARRATOR_VOICE_ID" type="text" :placeholder="drafts.TTS_PROVIDER === 'google_chirp3_hd' ? 'cmn-CN-Chirp3-HD-Kore' : 'Kore'" spellcheck="false" />
             <small>角色声线仍可在声音档案审核时分别填写；Gemini 使用短声线名，Chirp 使用完整 locale-model-voice ID。</small>
           </label>
         </div>
-        <div class="config-notice managed-config-notice"><ShieldCheck :size="18" /><div><strong>共用语音 API Key</strong><p>请在上方“语音合成”卡片填写 TTS_API_KEY。密钥通过 x-goog-api-key 请求头发送，不会进入 URL、数据库或工作流输出。</p></div><span>{{ secretsByKey.TTS_API_KEY?.configured ? '当前已配置' : '尚未配置' }}</span></div>
+        <div v-if="drafts.TTS_PROVIDER === 'google_vertex_gemini_speech'" class="config-notice managed-config-notice"><ShieldCheck :size="18" /><div><strong>Vertex AI 服务账号</strong><p>与 Google 视频模型共用 VEO_SERVICE_ACCOUNT_JSON；服务账号至少需要 Vertex AI User（aiplatform.endpoints.predict）权限，并在项目中启用 Vertex AI API 与结算。</p></div><span>{{ googleCredential?.configured || googleCredential?.managed_override_configured ? '当前已配置' : '尚未配置' }}</span></div>
+        <div v-else class="config-notice managed-config-notice"><ShieldCheck :size="18" /><div><strong>共用语音 API Key</strong><p>Gemini Developer API 与 Chirp 3 HD 使用上方语音合成卡片的 TTS_API_KEY；密钥只通过请求头发送。</p></div><span>{{ secretsByKey.TTS_API_KEY?.configured ? '当前已配置' : '尚未配置' }}</span></div>
       </article>
 
       <article v-for="group in categories" :key="group.name" class="panel padded ai-config-group">

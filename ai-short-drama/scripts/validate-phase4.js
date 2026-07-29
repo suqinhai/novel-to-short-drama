@@ -27,7 +27,8 @@ const requiredEnv = [
   'VIDEO_REQUEST_INTERVAL_MS','VIDEO_POLL_INTERVAL_SECONDS','VIDEO_MAX_POLL_COUNT','VIDEO_MAX_WAIT_MINUTES',
   'VIDEO_POLLER_BATCH_SIZE','VIDEO_DEFAULT_DURATION_SECONDS','VIDEO_DEFAULT_ASPECT_RATIO','VIDEO_DEFAULT_RESOLUTION',
   'VIDEO_DEFAULT_FPS','VIDEO_DURATION_TOLERANCE_PERCENT','TEST_MAX_VIDEO_SHOTS',
-  'TTS_PROVIDER','TTS_MODEL','TTS_API_BASE_URL','TTS_API_KEY','TTS_PROVIDER_MODE','TTS_REQUEST_TIMEOUT_SECONDS',
+  'TTS_PROVIDER','TTS_MODEL','TTS_API_BASE_URL','TTS_API_KEY','TTS_VERTEX_PROJECT_ID','TTS_VERTEX_LOCATION',
+  'TTS_PROVIDER_MODE','TTS_REQUEST_TIMEOUT_SECONDS',
   'TTS_MAX_RETRIES','TTS_MAX_CONCURRENCY','TTS_REQUEST_INTERVAL_MS','TTS_POLL_INTERVAL_SECONDS','TTS_MAX_POLL_COUNT',
   'TTS_MAX_WAIT_MINUTES','TTS_DEFAULT_LANGUAGE','TTS_DEFAULT_FORMAT','TTS_DEFAULT_SAMPLE_RATE','TTS_TARGET_LOUDNESS_LUFS',
   'TTS_MAX_PEAK_DB','TTS_MAX_TEXT_LENGTH','DEFAULT_NARRATOR_VOICE_ID','TEST_MAX_DIALOGUES',
@@ -131,13 +132,15 @@ assert(videoAdapterWorkflow.includes('model: task.model, ...request'), '09a-vide
 assert(videoAdapterWorkflow.includes("const { URL: URLCtor } = require('url')"), '09a-video-provider-adapter.json: endpoint validation must use the sandbox-safe URL implementation');
 assert(videoAdapterWorkflow.includes('Normalize Provider Response v3'), '09a-video-provider-adapter.json: provider responses must use the nested-response-safe allowlisted normalizer');
 assert(videoAdapterWorkflow.includes("createHash('sha256')") && videoAdapterWorkflow.includes('recovered_provider_task_id'), '09a-video-provider-adapter.json: Veo task IDs must be recoverable without persisting raw HTTP objects');
-for (const provider of ['google_gemini_speech', 'google_chirp3_hd']) {
+for (const provider of ['google_gemini_speech', 'google_vertex_gemini_speech', 'google_chirp3_hd']) {
   assert(ttsAdapterWorkflow.includes(provider), `10a-tts-provider-adapter.json: missing ${provider} route`);
 }
 assert(ttsAdapterWorkflow.includes('generativelanguage.googleapis.com') && ttsAdapterWorkflow.includes('/v1beta/interactions'), '10a-tts-provider-adapter.json: Gemini Speech Interactions endpoint missing');
 assert(ttsAdapterWorkflow.includes('response_format') && ttsAdapterWorkflow.includes('output_audio'), '10a-tts-provider-adapter.json: Gemini Speech Interactions payload or response handling missing');
 assert(ttsAdapterWorkflow.includes('"name": "Google Gemini Speech Submit"') && ttsAdapterWorkflow.includes('"type": "n8n-nodes-base.httpRequest"'), '10a-tts-provider-adapter.json: Gemini Speech submit must use the n8n HTTP Request node');
 assert(ttsAdapterWorkflow.includes('"Build Gemini Speech Request Body"') && ttsAdapterWorkflow.includes('"jsonBody": "={{$json.gemini_body}}"'), '10a-tts-provider-adapter.json: Gemini Speech HTTP body must be prebuilt before submit');
+assert(ttsAdapterWorkflow.includes('http://veo-adapter:8091/vertex/tts') && ttsAdapterWorkflow.includes('"Vertex AI Gemini TTS Submit"'), '10a-tts-provider-adapter.json: Vertex AI Gemini TTS adapter route missing');
+assert(ttsAdapterWorkflow.includes("'Bearer '+$env.VIDEO_API_KEY"), '10a-tts-provider-adapter.json: Vertex TTS adapter must use the internal adapter credential');
 assert(!ttsAdapterWorkflow.includes('AbortController') && !ttsAdapterWorkflow.includes('fetch('), '10a-tts-provider-adapter.json: Gemini Speech code must avoid sandbox-only HTTP globals');
 assert(ttsAdapterWorkflow.includes('texttospeech.googleapis.com') && ttsAdapterWorkflow.includes('/v1/text:synthesize'), '10a-tts-provider-adapter.json: Chirp 3 HD endpoint missing');
 assert(ttsAdapterWorkflow.includes('x-goog-api-key') && !ttsAdapterWorkflow.includes('?key='), '10a-tts-provider-adapter.json: Google credentials must use a header, never a URL query');

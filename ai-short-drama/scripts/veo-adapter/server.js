@@ -38,6 +38,18 @@ const requestedOutputMode = String(process.env.VEO_OUTPUT_MODE || 'auto').trim()
 const outputMode = requestedOutputMode === 'auto'
   ? (configuredOutputUri ? 'gcs' : 'local')
   : requestedOutputMode
+const VERTEX_TTS_MODELS = new Set([
+  'gemini-3.1-flash-tts-preview',
+  'gemini-2.5-flash-tts',
+  'gemini-2.5-pro-tts',
+  'gemini-2.5-flash-lite-preview-tts',
+])
+const VERTEX_TTS_LOCATIONS = new Set([
+  'global',
+  'us-central1', 'us-east1', 'us-east4', 'us-east5', 'us-south1', 'us-west1', 'us-west4',
+  'europe-central2', 'europe-north1', 'europe-southwest1', 'europe-west1', 'europe-west4',
+  'northamerica-northeast1',
+])
 
 const config = {
   port: clampInteger(process.env.VEO_ADAPTER_PORT, 8091, 1, 65535),
@@ -46,6 +58,8 @@ const config = {
   credentialJson: String(process.env.VEO_SERVICE_ACCOUNT_JSON || ''),
   projectId: String(process.env.VEO_PROJECT_ID || '').trim(),
   location: String(process.env.VEO_LOCATION || 'us-central1').trim(),
+  ttsProjectId: String(process.env.TTS_VERTEX_PROJECT_ID || '').trim(),
+  ttsLocation: String(process.env.TTS_VERTEX_LOCATION || 'global').trim(),
   defaultModel: String(process.env.VEO_DEFAULT_MODEL || 'veo-3.1-fast-generate-001').trim(),
   outputMode,
   outputUri: configuredOutputUri,
@@ -135,9 +149,9 @@ class GoogleServiceAccountAuth {
     return parsed
   }
 
-  async projectId() {
+  async projectId(override = '') {
     const serviceAccount = await this.load()
-    return config.projectId || String(serviceAccount.project_id || '').trim()
+    return String(override || config.projectId || serviceAccount.project_id || '').trim()
   }
 
   async accessToken() {
@@ -191,6 +205,57 @@ async function readJson(request) {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
   } catch {
     throw new HttpError(400, 'request body must be valid JSON', 'INVALID_JSON')
+  }
+}
+
+function normalizeVertexTtsRequest(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new HttpError(400, 'Vertex TTS request must be an object', 'INVALID_TTS_REQUEST')
+  }
+  const model = String(input.model || '').trim()
+  if (!VERTEX_TTS_MODELS.has(model)) {
+    throw new HttpError(400, `unsupported Vertex TTS model: ${model}`, 'UNSUPPORTED_TTS_MODEL')
+  }
+  const text = String(input.text || '').trim().replace(/\s+/g, ' ')
+  const emotion = String(input.emotion || '').trim().replace(/\s+/g, ' ')
+  const voiceId = String(input.voice_id || '').trim()
+  const languageMap = { 'zh-CN': 'cmn-CN', 'zh-TW': 'cmn-TW' }
+  const language = languageMap[String(input.language || '').trim()] || String(input.language || 'cmn-CN').trim()
+  const location = config.ttsLocation || 'global'
+  if (!VERTEX_TTS_LOCATIONS.has(location)) {
+    throw new HttpError(503, `unsupported Vertex TTS location: ${location}`, 'VERTEX_TTS_LOCATION_INVALID')
+  }
+  if (model === 'gemini-3.1-flash-tts-preview' && location !== 'global') {
+    throw new HttpError(400, 'Gemini 3.1 Flash TTS Preview requires the global Vertex AI location', 'VERTEX_TTS_LOCATION_INVALID')
+  }
+  if (!text) throw new HttpError(400, 'Vertex TTS text is required', 'INVALID_TTS_TEXT')
+  if (!/^[A-Za-z][A-Za-z0-9_-]{1,63}$/.test(voiceId)) {
+    throw new HttpError(400, 'Vertex TTS voice_id is invalid', 'VOICE_NOT_SUPPORTED')
+  }
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){1,2}$/.test(language)) {
+    throw new HttpError(400, 'Vertex TTS language is invalid', 'INVALID_TTS_LANGUAGE')
+  }
+  const contents = `Synthesize speech. ${emotion ? `Performance direction: ${emotion}\n` : ''}Transcript:\n${text}`
+  if (Buffer.byteLength(contents, 'utf8') > 8000) {
+    throw new HttpError(400, 'Vertex TTS prompt exceeds the 8000-byte limit', 'TTS_TEXT_TOO_LONG')
+  }
+  return { model, text, emotion, voice_id: voiceId, language, location, contents }
+}
+
+function buildVertexTtsPayload(normalized) {
+  return {
+    contents: {
+      role: 'user',
+      parts: { text: normalized.contents },
+    },
+    generation_config: {
+      speech_config: {
+        language_code: normalized.language,
+        voice_config: {
+          prebuilt_voice_config: { voice_name: normalized.voice_id },
+        },
+      },
+    },
   }
 }
 
@@ -532,6 +597,22 @@ async function handleGenerate(request, response) {
   sendJson(response, 200, providerPayload(request, task))
 }
 
+async function handleVertexTts(request, response) {
+  requireApiKey(request)
+  if (request.method !== 'POST') throw new HttpError(405, 'method not allowed', 'METHOD_NOT_ALLOWED')
+  const normalized = normalizeVertexTtsRequest(await readJson(request))
+  const projectId = await googleAuth.projectId(config.ttsProjectId)
+  if (!projectId) throw new HttpError(503, 'Vertex TTS project ID is not configured', 'GOOGLE_PROJECT_NOT_CONFIGURED')
+  const origin = vertexApiOrigin(normalized.location)
+  const url = `${origin}/v1beta1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(normalized.location)}/publishers/google/models/${encodeURIComponent(normalized.model)}:generateContent`
+  const payload = await fetchGoogleJson(url, {
+    method: 'POST',
+    headers: { 'x-goog-user-project': projectId },
+    body: JSON.stringify(buildVertexTtsPayload(normalized)),
+  })
+  sendJson(response, 200, payload)
+}
+
 async function refreshTask(task) {
   if (task.status !== 'processing') return task
   if (task.provider === 'vertex-omni') return refreshOmniTask(task)
@@ -719,10 +800,13 @@ async function route(request, response) {
       gcs_output_configured: Boolean(config.outputUri),
       veo_location: config.location, omni_location: 'global', default_model: config.defaultModel,
       supported_models: ['gemini-omni-flash-preview', 'veo-3.1-generate-001', 'veo-3.1-fast-generate-001'],
+      vertex_tts_location: config.ttsLocation,
+      supported_tts_models: [...VERTEX_TTS_MODELS],
       credential_readable: credentialReadable,
     })
   }
   if (url.pathname === '/generate') return handleGenerate(request, response)
+  if (url.pathname === '/vertex/tts') return handleVertexTts(request, response)
   const taskMatch = url.pathname.match(/^\/tasks\/(veo_[a-f0-9]{24})$/)
   if (taskMatch) return handleTask(request, response, taskMatch[1])
   const mediaMatch = url.pathname.match(/^\/media\/(veo_[a-f0-9]{24})\/(\d+)$/)
@@ -737,6 +821,9 @@ async function main() {
     throw new Error('VEO_OUTPUT_MODE must be local, gcs, or auto')
   }
   normalizeModel(config.defaultModel)
+  if (!VERTEX_TTS_LOCATIONS.has(config.ttsLocation)) {
+    throw new Error('TTS_VERTEX_LOCATION is not supported')
+  }
   const server = http.createServer((request, response) => {
     route(request, response).catch((error) => {
       const statusCode = Number(error.statusCode || 500)
@@ -760,4 +847,12 @@ if (require.main === module) {
   })
 }
 
-module.exports = { config, normalizeGenerateRequest, providerPayload }
+module.exports = {
+  VERTEX_TTS_LOCATIONS,
+  VERTEX_TTS_MODELS,
+  buildVertexTtsPayload,
+  config,
+  normalizeGenerateRequest,
+  normalizeVertexTtsRequest,
+  providerPayload,
+}

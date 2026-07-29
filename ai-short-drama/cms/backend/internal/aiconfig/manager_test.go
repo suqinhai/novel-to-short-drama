@@ -96,6 +96,10 @@ func TestManagerSaveAcceptsGoogleSpeechProvidersAndModels(t *testing.T) {
 	}{
 		{provider: "google_gemini_speech", model: "gemini-3.1-flash-tts-preview", voice: "Kore"},
 		{provider: "google_gemini_speech", model: "gemini-2.5-flash-preview-tts", voice: "Puck"},
+		{provider: "google_vertex_gemini_speech", model: "gemini-3.1-flash-tts-preview", voice: "Kore"},
+		{provider: "google_vertex_gemini_speech", model: "gemini-2.5-flash-tts", voice: "Leda"},
+		{provider: "google_vertex_gemini_speech", model: "gemini-2.5-pro-tts", voice: "Charon"},
+		{provider: "google_vertex_gemini_speech", model: "gemini-2.5-flash-lite-preview-tts", voice: "Puck"},
 		{provider: "google_chirp3_hd", model: "chirp-3-hd", voice: "cmn-CN-Chirp3-HD-Kore"},
 	} {
 		path := filepath.Join(t.TempDir(), "cms-managed.env")
@@ -107,6 +111,29 @@ func TestManagerSaveAcceptsGoogleSpeechProvidersAndModels(t *testing.T) {
 		}, nil); err != nil {
 			t.Fatalf("save Google speech config %+v: %v", test, err)
 		}
+	}
+}
+
+func TestManagerSaveAcceptsVertexTTSRouting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cms-managed.env")
+	manager := New(path, "unused")
+	if _, err := manager.Save(map[string]string{
+		"TTS_PROVIDER":          "google_vertex_gemini_speech",
+		"TTS_MODEL":             "gemini-3.1-flash-tts-preview",
+		"TTS_VERTEX_PROJECT_ID": "example-project",
+		"TTS_VERTEX_LOCATION":   "global",
+	}, nil); err != nil {
+		t.Fatalf("save Vertex TTS routing: %v", err)
+	}
+	values, _, err := readEnvFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["TTS_VERTEX_PROJECT_ID"] != "example-project" || values["TTS_VERTEX_LOCATION"] != "global" {
+		t.Fatalf("Vertex TTS routing did not round-trip: %+v", values)
+	}
+	if _, err := manager.Save(map[string]string{"TTS_VERTEX_LOCATION": "invalid-region"}, nil); err != ErrInvalidInput {
+		t.Fatalf("expected invalid Vertex TTS location to be rejected, got %v", err)
 	}
 }
 
