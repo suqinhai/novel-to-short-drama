@@ -266,6 +266,14 @@ type MediaAssetSummary struct {
 	Audio  int `json:"audio"`
 }
 
+type MediaAssetTaskSummary struct {
+	Current    int `json:"current"`
+	Pending    int `json:"pending"`
+	Attention  int `json:"attention"`
+	Processing int `json:"processing"`
+	History    int `json:"history"`
+}
+
 type MediaAssetFacets struct {
 	Projects []ReviewProjectOption `json:"projects"`
 	Types    []string              `json:"types"`
@@ -273,12 +281,25 @@ type MediaAssetFacets struct {
 }
 
 type MediaAssetListResult struct {
-	Items   []MediaAsset      `json:"items"`
-	Total   int               `json:"total"`
-	Page    int               `json:"page"`
-	Limit   int               `json:"limit"`
-	Summary MediaAssetSummary `json:"summary"`
-	Facets  MediaAssetFacets  `json:"facets"`
+	Items       []MediaAsset          `json:"items"`
+	Total       int                   `json:"total"`
+	Page        int                   `json:"page"`
+	Limit       int                   `json:"limit"`
+	Summary     MediaAssetSummary     `json:"summary"`
+	TaskSummary MediaAssetTaskSummary `json:"task_summary"`
+	Facets      MediaAssetFacets      `json:"facets"`
+}
+
+type MediaAssetListFilter struct {
+	ProjectID    string
+	AssetType    string
+	MediaKind    string
+	ReviewStatus string
+	Scope        string
+	Query        string
+	Sort         string
+	Page         int
+	Limit        int
 }
 
 type ReviewContext struct {
@@ -780,25 +801,77 @@ func (s *Store) RestoreProject(ctx context.Context, projectID string) (ProjectAr
 	return ProjectArchiveResult{ProjectID: projectID, Status: "failed", ChangedAt: changedAt}, nil
 }
 
-func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, reviewStatus string, page, limit int) (MediaAssetListResult, error) {
-	projectID = strings.TrimSpace(projectID)
-	assetType = strings.TrimSpace(assetType)
-	reviewStatus = strings.TrimSpace(reviewStatus)
-	where := `WHERE ($1='' OR project_id=$1)
-		AND ($2='' OR asset_type=$2)
-		AND ($3='' OR review_status=$3)`
+func (s *Store) ListMediaAssets(ctx context.Context, filter MediaAssetListFilter) (MediaAssetListResult, error) {
+	filter.ProjectID = strings.TrimSpace(filter.ProjectID)
+	filter.AssetType = strings.TrimSpace(filter.AssetType)
+	filter.MediaKind = strings.TrimSpace(filter.MediaKind)
+	filter.ReviewStatus = strings.TrimSpace(filter.ReviewStatus)
+	filter.Scope = strings.TrimSpace(filter.Scope)
+	filter.Query = strings.TrimSpace(filter.Query)
+	filter.Sort = strings.TrimSpace(filter.Sort)
 
-	result := MediaAssetListResult{Page: page, Limit: limit}
+	baseWhere := `WHERE ($1='' OR project_id=$1)
+		AND ($2='' OR asset_type=$2)
+		AND ($3='' OR media_kind=$3)
+		AND ($4='' OR asset_id ILIKE '%'||$4||'%'
+			OR novel_name ILIKE '%'||$4||'%'
+			OR COALESCE(episode_id,'') ILIKE '%'||$4||'%'
+			OR entity_id ILIKE '%'||$4||'%'
+			OR subtype ILIKE '%'||$4||'%')`
+	where := baseWhere + `
+		AND ($5='' OR review_status=$5)
+		AND (
+			$6='' OR
+			($6='current' AND successor_asset_id IS NULL) OR
+			($6='pending' AND successor_asset_id IS NULL AND review_status='pending') OR
+			($6='attention' AND successor_asset_id IS NULL AND (
+				status IN ('failed','timeout','cancelled') OR
+				(COALESCE(storage_url,'')='' AND COALESCE(original_url,'')=''
+					AND status NOT IN ('pending','submitting','generating','processing','rendering'))
+			)) OR
+			($6='processing' AND successor_asset_id IS NULL
+				AND status IN ('pending','submitting','generating','processing','rendering')) OR
+			($6='history' AND successor_asset_id IS NOT NULL)
+		)`
+
+	orderBy := "updated_at DESC,asset_id"
+	switch filter.Sort {
+	case "oldest":
+		orderBy = "updated_at ASC,asset_id"
+	case "type":
+		orderBy = "media_kind,subtype,updated_at DESC,asset_id"
+	}
+
+	result := MediaAssetListResult{Page: filter.Page, Limit: filter.Limit}
 	if err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT COUNT(*),
 		COUNT(*) FILTER (WHERE media_kind='image'),
 		COUNT(*) FILTER (WHERE media_kind='video'),
 		COUNT(*) FILTER (WHERE media_kind='audio')
-		FROM media_assets `+where, projectID, assetType, reviewStatus).Scan(
+		FROM media_assets `+where, filter.ProjectID, filter.AssetType, filter.MediaKind, filter.Query,
+		filter.ReviewStatus, filter.Scope).Scan(
 		&result.Total, &result.Summary.Images, &result.Summary.Videos, &result.Summary.Audio,
 	); err != nil {
 		return MediaAssetListResult{}, err
 	}
 	result.Summary.Total = result.Total
+
+	if err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT
+		COUNT(*) FILTER (WHERE successor_asset_id IS NULL),
+		COUNT(*) FILTER (WHERE successor_asset_id IS NULL AND review_status='pending'),
+		COUNT(*) FILTER (WHERE successor_asset_id IS NULL AND (
+			status IN ('failed','timeout','cancelled') OR
+			(COALESCE(storage_url,'')='' AND COALESCE(original_url,'')=''
+				AND status NOT IN ('pending','submitting','generating','processing','rendering'))
+		)),
+		COUNT(*) FILTER (WHERE successor_asset_id IS NULL
+			AND status IN ('pending','submitting','generating','processing','rendering')),
+		COUNT(*) FILTER (WHERE successor_asset_id IS NOT NULL)
+		FROM media_assets `+baseWhere, filter.ProjectID, filter.AssetType, filter.MediaKind, filter.Query).Scan(
+		&result.TaskSummary.Current, &result.TaskSummary.Pending, &result.TaskSummary.Attention,
+		&result.TaskSummary.Processing, &result.TaskSummary.History,
+	); err != nil {
+		return MediaAssetListResult{}, err
+	}
 
 	rows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
@@ -806,8 +879,9 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 		predecessor_asset_id,successor_asset_id,successor_generation_version,successor_status,successor_provider,
 		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets `+where+`
-		ORDER BY updated_at DESC,asset_id
-		LIMIT $4 OFFSET $5`, projectID, assetType, reviewStatus, limit, (page-1)*limit)
+		ORDER BY `+orderBy+`
+		LIMIT $7 OFFSET $8`, filter.ProjectID, filter.AssetType, filter.MediaKind, filter.Query,
+		filter.ReviewStatus, filter.Scope, filter.Limit, (filter.Page-1)*filter.Limit)
 	if err != nil {
 		return MediaAssetListResult{}, err
 	}
@@ -1166,24 +1240,32 @@ func (s *Store) reviewTasks(ctx context.Context, projectID string) ([]ReviewTask
 	return items, rows.Err()
 }
 
-func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string, page, limit int) (ReviewListResult, error) {
+func (s *Store) ListReviews(ctx context.Context, projectID, stage, status, query string, page, limit int) (ReviewListResult, error) {
 	projectID = strings.TrimSpace(projectID)
 	stage = strings.TrimSpace(stage)
 	status = strings.TrimSpace(status)
+	query = strings.TrimSpace(query)
 	where := `WHERE ($1 = '' OR r.project_id = $1)
 		AND ($2 = '' OR r.stage = $2)
-		AND ($3 = '' OR r.review_status = $3)`
+		AND ($3 = '' OR ($3 = 'processed' AND r.review_status IN ('approved','rejected')) OR r.review_status = $3)
+		AND ($4 = '' OR r.entity_id ILIKE '%' || $4 || '%'
+			OR r.entity_type ILIKE '%' || $4 || '%'
+			OR r.stage ILIKE '%' || $4 || '%'
+			OR EXISTS (
+				SELECT 1 FROM drama.projects qp
+				WHERE qp.project_id = r.project_id AND qp.novel_name ILIKE '%' || $4 || '%'
+			))`
 
 	var result ReviewListResult
 	result.Page, result.Limit = page, limit
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM drama.review_tasks r `+where, projectID, stage, status).Scan(&result.Total); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM drama.review_tasks r `+where, projectID, stage, status, query).Scan(&result.Total); err != nil {
 		return ReviewListResult{}, err
 	}
 	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*),
 		COUNT(*) FILTER (WHERE r.review_status='pending'),
 		COUNT(*) FILTER (WHERE r.review_status='approved'),
 		COUNT(*) FILTER (WHERE r.review_status='rejected')
-		FROM drama.review_tasks r `+where, projectID, stage, status).Scan(
+		FROM drama.review_tasks r `+where, projectID, stage, status, query).Scan(
 		&result.Summary.Total, &result.Summary.Pending, &result.Summary.Approved, &result.Summary.Rejected,
 	); err != nil {
 		return ReviewListResult{}, err
@@ -1215,7 +1297,7 @@ func (s *Store) ListReviews(ctx context.Context, projectID, stage, status string
 		r.created_at, r.reviewed_at
 		FROM drama.review_tasks r JOIN drama.projects p ON p.project_id=r.project_id `+where+`
 		ORDER BY CASE r.review_status WHEN 'pending' THEN 0 ELSE 1 END, r.created_at DESC
-		LIMIT $4 OFFSET $5`, projectID, stage, status, limit, (page-1)*limit)
+		LIMIT $5 OFFSET $6`, projectID, stage, status, query, limit, (page-1)*limit)
 	if err != nil {
 		return ReviewListResult{}, err
 	}

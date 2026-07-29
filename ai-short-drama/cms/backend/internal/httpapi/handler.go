@@ -431,7 +431,15 @@ func (h *Handler) listReviews(c *gin.Context) {
 	if limit > 200 {
 		limit = 200
 	}
-	result, err := h.store.ListReviews(c.Request.Context(), c.Query("project_id"), c.Query("stage"), c.Query("status"), page, limit)
+	result, err := h.store.ListReviews(
+		c.Request.Context(),
+		c.Query("project_id"),
+		c.Query("stage"),
+		c.Query("status"),
+		c.Query("q"),
+		page,
+		limit,
+	)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "REVIEW_LIST_FAILED", "审核任务读取失败")
 		return
@@ -469,24 +477,51 @@ var mediaReviewStatuses = map[string]bool{
 	"pending": true, "approved": true, "rejected": true, "regenerating": true,
 }
 
+var mediaAssetScopes = map[string]bool{
+	"current": true, "pending": true, "attention": true, "processing": true, "history": true,
+}
+
+var mediaKinds = map[string]bool{"image": true, "video": true, "audio": true}
+
+var mediaAssetSorts = map[string]bool{"latest": true, "oldest": true, "type": true}
+
 func (h *Handler) listMediaAssets(c *gin.Context) {
 	page := positiveInt(c.DefaultQuery("page", "1"), 1)
-	limit := positiveInt(c.DefaultQuery("limit", "60"), 60)
-	if limit > 200 {
-		limit = 200
+	limit := positiveInt(c.DefaultQuery("limit", "24"), 24)
+	if limit > 100 {
+		limit = 100
 	}
 	assetType := strings.TrimSpace(c.Query("type"))
+	mediaKind := strings.TrimSpace(c.Query("media_kind"))
 	reviewStatus := strings.TrimSpace(c.Query("review_status"))
+	scope := strings.TrimSpace(c.DefaultQuery("scope", "current"))
+	sortBy := strings.TrimSpace(c.DefaultQuery("sort", "latest"))
 	if assetType != "" && !mediaAssetTypes[assetType] {
 		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_TYPE", "不支持的媒体资产类型")
+		return
+	}
+	if mediaKind != "" && !mediaKinds[mediaKind] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_KIND", "不支持的媒体文件类型")
 		return
 	}
 	if reviewStatus != "" && !mediaReviewStatuses[reviewStatus] {
 		respondError(c, http.StatusBadRequest, "INVALID_REVIEW_STATUS", "不支持的审核状态")
 		return
 	}
+	if scope != "" && !mediaAssetScopes[scope] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_SCOPE", "不支持的资产视图")
+		return
+	}
+	if !mediaAssetSorts[sortBy] {
+		respondError(c, http.StatusBadRequest, "INVALID_MEDIA_SORT", "不支持的排序方式")
+		return
+	}
 
-	result, err := h.store.ListMediaAssets(c.Request.Context(), c.Query("project_id"), assetType, reviewStatus, page, limit)
+	result, err := h.store.ListMediaAssets(c.Request.Context(), store.MediaAssetListFilter{
+		ProjectID: c.Query("project_id"), AssetType: assetType, MediaKind: mediaKind,
+		ReviewStatus: reviewStatus, Scope: scope, Query: c.Query("q"), Sort: sortBy,
+		Page: page, Limit: limit,
+	})
 	if err != nil {
 		log.Printf("list media assets: %v", err)
 		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_LIST_FAILED", "媒体资产读取失败")
