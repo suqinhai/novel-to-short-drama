@@ -47,6 +47,8 @@ export const statusLabels = {
   skipped: '已跳过',
   archived: '已归档',
   superseded: '已被替代',
+  regenerated: '已重新生成',
+  replaced: '已上传替换',
   removed: '已移除',
   dismissed: '已忽略',
   manual_required: '需人工处理',
@@ -57,7 +59,7 @@ export const statusLabels = {
 export const statusTones = {
   completed: 'success', succeeded: 'success', ready: 'success', valid: 'success', passed: 'success',
   approved: 'success', published: 'success', reviewed: 'success', aligned: 'success', active: 'success',
-  locked: 'success', healthy: 'success',
+  locked: 'success', healthy: 'success', regenerated: 'success', replaced: 'success',
   running: 'info', generating: 'info', processing: 'info', rendering: 'info', validating: 'info',
   staging: 'info', rebuilding: 'info', uploading: 'info', submitting: 'info', regenerating: 'info',
   waiting_review: 'warning', waiting_next_episode: 'warning', pending_review: 'warning', needs_review: 'warning', warning: 'warning',

@@ -5,6 +5,12 @@ import {
   ImageOff, Images, Info, LoaderCircle, RefreshCw, RotateCcw, Upload, X,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
+import {
+  canRecoverMediaAsset,
+  getMediaAssetSuccessorState,
+  hasMediaAssetSuccessor,
+  isMediaAssetRecoverable,
+} from '../services/mediaAssetVersions'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
@@ -64,7 +70,9 @@ const formatDuration = (value) => {
   return seconds >= 60 ? `${Math.floor(seconds / 60)}分${seconds % 60}秒` : `${seconds}秒`
 }
 const assetTitle = (item) => subtypeLabels[item.subtype] || item.subtype || typeLabels[item.asset_type] || item.asset_type
-const isRecoverable = (item) => ['failed', 'timeout'].includes(item.status) || (!item.media_url && !['pending', 'submitting', 'generating', 'processing', 'rendering'].includes(item.status))
+const isRecoverable = isMediaAssetRecoverable
+const canRecover = canRecoverMediaAsset
+const successorState = getMediaAssetSuccessorState
 const acceptFor = (item) => ({
   image: 'image/jpeg,image/png,image/webp,image/gif',
   video: 'video/mp4,video/quicktime,video/webm',
@@ -79,6 +87,7 @@ const replacementHint = computed(() => {
 })
 
 function openAction(mode, item) {
+  if (mode !== 'details' && !canRecover(item)) return
   Object.assign(action, {
     open: true, mode, item, prompt_adjustment: '', file: null,
     metadata: null, working: false, error: '',
@@ -203,11 +212,16 @@ async function submitAction() {
       <div v-if="loading" class="media-loading"><span v-for="i in 8" :key="i"></span></div>
       <EmptyState v-else-if="items.length === 0" title="没有匹配的媒体资产" description="当前项目或筛选条件下还没有可展示的媒体文件。" />
       <div v-else class="media-grid">
-        <article v-for="item in items" :key="`${item.asset_type}:${item.asset_id}`" class="media-card" :class="{ 'media-card-error': isRecoverable(item) }">
+        <article v-for="item in items" :key="`${item.asset_type}:${item.asset_id}`" class="media-card" :class="{ 'media-card-error': canRecover(item), 'media-card-superseded': hasMediaAssetSuccessor(item) }">
           <div class="media-preview" :class="`kind-${item.media_kind}`">
             <img v-if="item.media_kind === 'image' && item.media_url" :src="item.preview_url || item.media_url" :alt="assetTitle(item)" loading="lazy" />
             <video v-else-if="item.media_kind === 'video' && item.media_url" :src="item.media_url" :poster="item.preview_url || undefined" controls preload="metadata">当前浏览器不支持视频播放。</video>
             <div v-else-if="item.media_kind === 'audio' && item.media_url" class="audio-player"><AudioLines :size="34" /><strong>{{ assetTitle(item) }}</strong><audio :src="item.media_url" controls preload="metadata">当前浏览器不支持音频播放。</audio></div>
+            <div v-else-if="hasMediaAssetSuccessor(item)" class="media-missing superseded">
+              <CheckCircle2 :size="28" />
+              <span>{{ successorState(item).label }}</span>
+              <small>{{ successorState(item).detail }}</small>
+            </div>
             <div v-else class="media-missing" :class="{ error: isRecoverable(item) }">
               <AlertTriangle v-if="isRecoverable(item)" :size="28" />
               <ImageOff v-else :size="28" />
@@ -217,7 +231,7 @@ async function submitAction() {
             <span class="media-kind-chip"><CirclePlay v-if="item.media_kind !== 'image'" :size="12" /><Images v-else :size="12" />{{ typeLabels[item.asset_type] || item.asset_type }}</span>
           </div>
           <div class="media-card-body">
-            <div class="media-card-title"><div><span>{{ item.novel_name }}</span><h3>{{ assetTitle(item) }}</h3></div><StatusBadge :status="item.status" /></div>
+            <div class="media-card-title"><div><span>{{ item.novel_name }}</span><h3>{{ assetTitle(item) }}</h3></div><StatusBadge :status="successorState(item)?.badgeStatus || item.status" /></div>
             <code class="media-asset-id" :title="item.asset_id">{{ item.asset_id }}</code>
             <div class="media-review-line"><span>审核状态</span><StatusBadge :status="item.review_status" /></div>
             <dl class="media-meta">
@@ -226,10 +240,11 @@ async function submitAction() {
               <div v-if="item.width && item.height"><dt>尺寸</dt><dd>{{ item.width }} × {{ item.height }}</dd></div>
               <div v-if="item.duration_ms"><dt>时长</dt><dd>{{ formatDuration(item.duration_ms) }}</dd></div>
               <div v-if="item.provider"><dt>模型</dt><dd>{{ item.provider }} · {{ item.model || '—' }}</dd></div>
-              <div><dt>版本</dt><dd>v{{ item.generation_version || 1 }}{{ item.is_current ? ' · 当前' : '' }}</dd></div>
+              <div><dt>版本</dt><dd>v{{ item.generation_version || 1 }}{{ hasMediaAssetSuccessor(item) ? ' · 历史' : item.is_current ? ' · 当前' : '' }}</dd></div>
+              <div v-if="hasMediaAssetSuccessor(item)"><dt>后继</dt><dd>v{{ item.successor_generation_version }} · {{ item.successor_asset_id }}</dd></div>
               <div><dt>更新</dt><dd>{{ formatTime(item.updated_at) }}</dd></div>
             </dl>
-            <div v-if="isRecoverable(item)" class="media-recovery-actions">
+            <div v-if="canRecover(item)" class="media-recovery-actions">
               <button class="media-primary-action" @click="openAction('regenerate', item)"><RotateCcw :size="14" />重新生成</button>
               <button @click="openAction('replace', item)"><Upload :size="14" />上传替换</button>
               <button class="media-icon-action" title="查看异常详情" aria-label="查看异常详情" @click="openAction('details', item)"><Info :size="15" /></button>

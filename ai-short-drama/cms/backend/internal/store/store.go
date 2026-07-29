@@ -230,6 +230,10 @@ type MediaAsset struct {
 	Model             *string   `json:"model,omitempty"`
 	GenerationVersion int       `json:"generation_version"`
 	IsCurrent         bool      `json:"is_current"`
+	SuccessorAssetID  *string   `json:"successor_asset_id,omitempty"`
+	SuccessorVersion  *int      `json:"successor_generation_version,omitempty"`
+	SuccessorStatus   *string   `json:"successor_status,omitempty"`
+	SuccessorProvider *string   `json:"successor_provider,omitempty"`
 	ErrorCode         *string   `json:"error_code,omitempty"`
 	ErrorMessage      *string   `json:"error_message,omitempty"`
 	TaskID            *string   `json:"task_id,omitempty"`
@@ -385,7 +389,7 @@ type ProjectArchiveResult struct {
 	ChangedAt time.Time `json:"changed_at"`
 }
 
-const mediaAssetsCTE = `WITH media_assets AS (
+const mediaAssetsCTE = `WITH media_asset_versions AS (
 	SELECT 'generated_assets'::text asset_type,ga.asset_id,ga.project_id,p.novel_name,
 		NULL::text episode_id,ga.entity_type,ga.entity_id,ga.asset_type subtype,'image'::text media_kind,
 		ga.status,ga.review_status,ga.original_url,ga.storage_url,ga.thumbnail_url,ga.width,ga.height,
@@ -445,6 +449,25 @@ const mediaAssetsCTE = `WITH media_assets AS (
 		ORDER BY f.reviewed_at DESC NULLS LAST,f.created_at DESC LIMIT 1
 	) fr ON true
 	LEFT JOIN drama.render_jobs rj ON rj.render_job_id=em.render_job_id
+), media_assets AS (
+	SELECT asset.*,
+		successor.asset_id successor_asset_id,
+		successor.generation_version successor_generation_version,
+		successor.status successor_status,
+		successor.provider successor_provider
+	FROM media_asset_versions asset
+	LEFT JOIN LATERAL (
+		SELECT candidate.asset_id,candidate.generation_version,candidate.status,candidate.provider
+		FROM media_asset_versions candidate
+		WHERE candidate.asset_type=asset.asset_type
+		  AND candidate.project_id=asset.project_id
+		  AND candidate.entity_type=asset.entity_type
+		  AND candidate.entity_id=asset.entity_id
+		  AND candidate.subtype=asset.subtype
+		  AND candidate.generation_version>asset.generation_version
+		ORDER BY candidate.generation_version DESC,candidate.created_at DESC
+		LIMIT 1
+	) successor ON true
 ) `
 
 func New(ctx context.Context, databaseURL string) (*Store, error) {
@@ -761,6 +784,7 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 	rows, err := s.pool.Query(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
 		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
+		successor_asset_id,successor_generation_version,successor_status,successor_provider,
 		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets `+where+`
 		ORDER BY updated_at DESC,asset_id
@@ -776,7 +800,8 @@ func (s *Store) ListMediaAssets(ctx context.Context, projectID, assetType, revie
 			&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
 			&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
 			&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
-			&item.GenerationVersion, &item.IsCurrent, &item.ErrorCode, &item.ErrorMessage,
+			&item.GenerationVersion, &item.IsCurrent, &item.SuccessorAssetID, &item.SuccessorVersion,
+			&item.SuccessorStatus, &item.SuccessorProvider, &item.ErrorCode, &item.ErrorMessage,
 			&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
 			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			return MediaAssetListResult{}, err
@@ -815,13 +840,15 @@ func (s *Store) GetMediaAsset(ctx context.Context, assetType, assetID string) (M
 	err := s.pool.QueryRow(ctx, mediaAssetsCTE+`SELECT asset_id,asset_type,project_id,novel_name,
 		episode_id,entity_type,entity_id,subtype,media_kind,status,review_status,original_url,storage_url,
 		thumbnail_url,width,height,duration_ms,provider,model,generation_version,is_current,
+		successor_asset_id,successor_generation_version,successor_status,successor_provider,
 		error_code,error_message,task_id,retry_count,max_retries,test_mode,created_at,updated_at
 		FROM media_assets WHERE asset_type=$1 AND asset_id=$2`, assetType, assetID).Scan(
 		&item.AssetID, &item.AssetType, &item.ProjectID, &item.NovelName,
 		&item.EpisodeID, &item.EntityType, &item.EntityID, &item.Subtype, &item.MediaKind,
 		&item.Status, &item.ReviewStatus, &item.OriginalURL, &item.StorageURL, &item.ThumbnailURL,
 		&item.Width, &item.Height, &item.DurationMS, &item.Provider, &item.Model,
-		&item.GenerationVersion, &item.IsCurrent, &item.ErrorCode, &item.ErrorMessage,
+		&item.GenerationVersion, &item.IsCurrent, &item.SuccessorAssetID, &item.SuccessorVersion,
+		&item.SuccessorStatus, &item.SuccessorProvider, &item.ErrorCode, &item.ErrorMessage,
 		&item.TaskID, &item.RetryCount, &item.MaxRetries, &item.TestMode,
 		&item.CreatedAt, &item.UpdatedAt,
 	)

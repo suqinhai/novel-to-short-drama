@@ -529,6 +529,10 @@ func (h *Handler) regenerateMediaAsset(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_READ_FAILED", "无法读取媒体资产")
 		return
 	}
+	if asset.SuccessorAssetID != nil {
+		respondError(c, http.StatusConflict, "MEDIA_ASSET_SUPERSEDED", "该资产已有后继版本，请在最新版本上继续操作")
+		return
+	}
 	if matchesAny(asset.Status, "", "pending", "submitting", "generating", "processing", "rendering") {
 		respondError(c, http.StatusConflict, "MEDIA_ASSET_BUSY", "该资产仍在处理中，请稍后刷新状态")
 		return
@@ -640,6 +644,10 @@ func (h *Handler) replaceMediaAsset(c *gin.Context) {
 	}
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "MEDIA_ASSET_READ_FAILED", "无法读取媒体资产")
+		return
+	}
+	if source.SuccessorAssetID != nil {
+		respondError(c, http.StatusConflict, "MEDIA_ASSET_SUPERSEDED", "该资产已有后继版本，请在最新版本上继续操作")
 		return
 	}
 
