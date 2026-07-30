@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/contracts/performance-bible.v1.json",
+  "title": "Character Performance Bible v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "bible_id", "project_id", "character_id", "character_version",
+    "version", "speech", "acting", "relational_voices", "appearance", "stage_states",
+    "locked_fields", "allowed_fields", "change_reasons", "source_refs"
+  ],
+  "properties": {
+    "schema_version": {"const": "performance-bible.v1"},
+    "bible_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "character_id": {"type": "string", "minLength": 1},
+    "character_version": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["draft", "approved", "locked", "archived"]},
+    "speech": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rate_wpm", "pitch", "pause_habits", "catchphrases", "voice_identity"],
+      "properties": {
+        "rate_wpm": {"type": "integer", "minimum": 40, "maximum": 400},
+        "pitch": {"type": "string"},
+        "pause_habits": {"type": "array", "items": {"type": "string"}},
+        "catchphrases": {"type": "array", "items": {"type": "string"}},
+        "voice_identity": {"type": "string", "minLength": 1}
+      }
+    },
+    "acting": {
+      "type": "object",
+      "required": ["emotion_style", "body_habits", "prohibited_acts"],
+      "properties": {
+        "emotion_style": {"type": "object", "additionalProperties": {"type": "string"}},
+        "body_habits": {"type": "array", "items": {"type": "string"}},
+        "prohibited_acts": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "relational_voices": {"type": "object", "additionalProperties": {"$ref": "#/$defs/speech"}},
+    "appearance": {
+      "type": "object",
+      "required": ["face_shape", "hairstyle", "apparent_age", "body_type", "posture"],
+      "properties": {
+        "face_shape": {"type": "string"},
+        "hairstyle": {"type": "string"},
+        "apparent_age": {"type": "string"},
+        "body_type": {"type": "string"},
+        "posture": {"type": "string"}
+      }
+    },
+    "stage_states": {"type": "array", "items": {"$ref": "#/$defs/stageState"}},
+    "locked_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "allowed_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "change_reasons": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "source_refs": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "speech": {
+      "type": "object",
+      "required": ["rate_wpm", "pitch", "pause_habits", "catchphrases", "voice_identity"],
+      "properties": {
+        "rate_wpm": {"type": "integer", "minimum": 40, "maximum": 400},
+        "pitch": {"type": "string"},
+        "pause_habits": {"type": "array", "items": {"type": "string"}},
+        "catchphrases": {"type": "array", "items": {"type": "string"}},
+        "voice_identity": {"type": "string"}
+      }
+    },
+    "stageState": {
+      "type": "object",
+      "required": ["stage_key", "episode_from", "costume", "scars", "props", "psychology", "relationships"],
+      "properties": {
+        "stage_key": {"type": "string", "minLength": 1},
+        "episode_from": {"type": "integer", "minimum": 1},
+        "episode_to": {"type": ["integer", "null"], "minimum": 1},
+        "costume": {"type": "string"},
+        "scars": {"type": "array", "items": {"type": "string"}},
+        "props": {"type": "array", "items": {"type": "string"}},
+        "psychology": {"type": "string"},
+        "relationships": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "name": "16 表演连续性与跨镜头视觉 QC",
+  "id": "wf_performance_continuity_qc",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {"name": "project_id"},
+            {"name": "episode_id"},
+            {"name": "shot_id"},
+            {"name": "artifact_kind"},
+            {"name": "action"},
+            {"name": "payload", "type": "object"}
+          ]
+        }
+      },
+      "id": "16-trigger",
+      "name": "Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-900, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},clean=v=>String(v||'').trim();const project_id=clean(i.project_id||p.project_id),episode_id=clean(i.episode_id||p.episode_id),shot_id=clean(i.shot_id||p.shot_id),artifact_kind=clean(i.artifact_kind||p.artifact_kind||'video'),action=clean(i.action||p.action||'prepare_generation');if(!project_id||!episode_id)throw new Error('INVALID_INPUT: project_id and episode_id are required');if(!['script','storyboard','image','video','tts'].includes(artifact_kind))throw new Error('INVALID_INPUT: unsupported artifact_kind');return [{json:{...i,payload:p,project_id,episode_id,shot_id,artifact_kind,action,context_id:'gcr_'+crypto.createHash('sha1').update([project_id,episode_id,shot_id||episode_id,artifact_kind].join(':')).digest('hex').slice(0,20)}}];"
+      },
+      "id": "16-normalize",
+      "name": "Normalize Context Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-680, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH shot AS(SELECT * FROM drama.storyboard_shots WHERE project_id=$1 AND episode_id=$2 AND ($3='' OR shot_id=$3) ORDER BY shot_order LIMIT 1),ledger AS(SELECT * FROM drama.continuity_ledger_entries WHERE project_id=$1 AND episode_id=$2 AND validation_status='valid' AND (shot_id=(SELECT shot_id FROM shot) OR (shot_id IS NULL AND scene_id=(SELECT scene_id FROM shot))) ORDER BY shot_id NULLS LAST LIMIT 1),bibles AS(SELECT coalesce(jsonb_object_agg(ref.character_id,ref.performance_bible_id),'{}') refs FROM drama.artifact_performance_bible_refs ref JOIN drama.character_performance_bibles bible ON bible.performance_bible_id=ref.performance_bible_id AND bible.status='locked' WHERE ref.project_id=$1 AND ref.native_entity_id IN((SELECT shot_id FROM shot),(SELECT storyboard_id FROM shot)) AND ref.character_id IN(SELECT jsonb_array_elements_text((SELECT character_ids FROM shot)))),handoff AS(SELECT * FROM drama.shot_handoffs WHERE project_id=$1 AND episode_id=$2 AND to_shot_id=(SELECT shot_id FROM shot) AND status IN('ready','validated') ORDER BY version DESC LIMIT 1)SELECT $4::jsonb request,(SELECT to_jsonb(shot) FROM shot) shot,(SELECT to_jsonb(ledger) FROM ledger) ledger,(SELECT refs FROM bibles) performance_bible_refs,(SELECT to_jsonb(handoff) FROM handoff) handoff;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id,JSON.stringify($json)]}}"
+        }
+      },
+      "id": "16-load",
+      "name": "Read Bible Ledger and Handoff",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-440, 0],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const x=$json,r=x.request||{},diagnostics=[];if(!x.shot&&['storyboard','image','video'].includes(r.artifact_kind))diagnostics.push({code:'SHOT_NOT_FOUND',severity:'blocking',path:'shot_id',message:'目标镜头不存在'});if(!x.ledger)diagnostics.push({code:'CONTINUITY_LEDGER_REQUIRED',severity:'blocking',path:'continuity_entry_id',message:'生成前必须读取有效连续性账本'});const refs=x.performance_bible_refs||{},ids=Array.isArray(x.shot?.character_ids)?x.shot.character_ids:[];for(const id of ids)if(!refs[id])diagnostics.push({code:'PERFORMANCE_BIBLE_REF_REQUIRED',severity:'blocking',path:'performance_bible_refs.'+id,message:'缺少锁定表演圣经版本'});if(r.artifact_kind==='video'&&!x.handoff)diagnostics.push({code:'SHOT_HANDOFF_REQUIRED',severity:'blocking',path:'shot_handoff_id',message:'视频生成缺少目标尾帧/参考首帧和动作接力'});if(Array.isArray(x.ledger?.diagnostics)&&x.ledger.diagnostics.some(d=>['blocking','critical'].includes(d.severity)))diagnostics.push(...x.ledger.diagnostics);if(diagnostics.length)throw new Error('GENERATION_CONTEXT_BLOCKED: '+JSON.stringify(diagnostics));const constraints={performance_bible_refs:refs,continuity_entry_id:x.ledger.continuity_entry_id,shot_handoff_id:x.handoff?.shot_handoff_id||null,pose:x.handoff?.pose_constraints||{},gaze:x.handoff?.gaze_constraint||'',motion_direction:x.handoff?.motion_direction||'',action_relay:[x.handoff?.from_action_phase||'',x.handoff?.to_action_phase||''],shot_size:x.handoff?.shot_size_constraint||'',composition:x.handoff?.composition_constraint||''};const video_prompt=[x.shot?.video_prompt_base,'表演圣经：'+JSON.stringify(refs),'连续性输入：'+JSON.stringify(x.ledger.input_state),'动作接力：'+constraints.action_relay.join('→'),'姿态：'+JSON.stringify(constraints.pose),'视线：'+constraints.gaze,'运动方向：'+constraints.motion_direction,'景别：'+constraints.shot_size,'构图：'+constraints.composition].filter(Boolean).join('；');return [{json:{...r,allowed:true,diagnostics:[],resolved_constraints:constraints,video_prompt}}];"
+      },
+      "id": "16-gate",
+      "name": "Block Conflicts and Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-180, 0],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO drama.generation_context_reads(generation_context_read_id,project_id,artifact_kind,target_entity_id,continuity_entry_id,shot_handoff_id,performance_bible_refs,resolved_constraints,diagnostics,allowed,prompt_hash)VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,'[]',true,encode(drama.digest($9::text,'sha256'),'hex'))ON CONFLICT(artifact_kind,target_entity_id)DO UPDATE SET continuity_entry_id=excluded.continuity_entry_id,shot_handoff_id=excluded.shot_handoff_id,performance_bible_refs=excluded.performance_bible_refs,resolved_constraints=excluded.resolved_constraints,diagnostics='[]',allowed=true,prompt_hash=excluded.prompt_hash RETURNING *;",
+        "options": {
+          "queryReplacement": "={{[$json.context_id,$json.project_id,$json.artifact_kind,$json.shot_id||$json.episode_id,$json.resolved_constraints.continuity_entry_id,$json.resolved_constraints.shot_handoff_id,JSON.stringify($json.resolved_constraints.performance_bible_refs),JSON.stringify($json.resolved_constraints),$json.video_prompt||'']]}}"
+        }
+      },
+      "id": "16-audit",
+      "name": "Audit Generation Context Read",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [80, 0],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Sub-workflow Trigger": {"main": [[{"node": "Normalize Context Request", "type": "main", "index": 0}]]},
+    "Normalize Context Request": {"main": [[{"node": "Read Bible Ledger and Handoff", "type": "main", "index": 0}]]},
+    "Read Bible Ledger and Handoff": {"main": [[{"node": "Block Conflicts and Build Prompt", "type": "main", "index": 0}]]},
+    "Block Conflicts and Build Prompt": {"main": [[{"node": "Audit Generation Context Read", "type": "main", "index": 0}], []]}
+  },
+  "pinData": {},
+  "tags": []
+}

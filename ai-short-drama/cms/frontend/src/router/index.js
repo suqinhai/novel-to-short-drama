@@ -14,6 +14,7 @@ import ImpactAnalysisView from '../views/ImpactAnalysisView.vue'
 import AdaptationDiagnosticsView from '../views/AdaptationDiagnosticsView.vue'
 import CandidateWorkbenchView from '../views/CandidateWorkbenchView.vue'
 import LocalEditingWorkbenchView from '../views/LocalEditingWorkbenchView.vue'
+import PerformanceContinuityView from '../views/PerformanceContinuityView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -21,6 +22,7 @@ const router = createRouter({
     { path: '/', redirect: '/projects' },
     { path: '/projects/:projectId/candidates', name: 'project-candidates', component: CandidateWorkbenchView, meta: { title: '候选工作台', eyebrow: 'CANDIDATE WORKBENCH' } },
     { path: '/projects/:projectId/local-edit', name: 'project-local-edit', component: LocalEditingWorkbenchView, meta: { title: '局部精修工作台', eyebrow: 'LOCAL EDITING' } },
+    { path: '/projects/:projectId/performance-continuity', name: 'project-performance-continuity', component: PerformanceContinuityView, meta: { title: '表演与连续性', eyebrow: 'PERFORMANCE & CONTINUITY' } },
     { path: '/projects', name: 'projects', component: ProjectsView, meta: { title: '项目列表', eyebrow: 'PRODUCTION OVERVIEW' } },
     { path: '/projects/new', name: 'project-new', component: NewProjectView, meta: { title: '新建项目', eyebrow: 'CREATE PRODUCTION' } },
     { path: '/projects/:projectId', name: 'project-detail', component: ProjectDetailView, meta: { title: '项目详情', eyebrow: 'PROJECT WORKSPACE' } },

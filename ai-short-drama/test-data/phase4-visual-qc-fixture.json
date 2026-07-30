@@ -1,0 +1,51 @@
+{
+  "project_id": "project_phase4_fixture",
+  "episode_id": "episode_01",
+  "fixture_id": "phase4_acceptance_v1",
+  "frames": [
+    {
+      "locator": {"episode_id": "episode_01", "scene_id": "scene_01", "shot_id": "shot_01", "timecode_ms": 1900, "frame": 48},
+      "character_ids": ["char_lin"],
+      "identity_scores": {"char_lin": 0.97},
+      "ages": {"char_lin": "28"},
+      "hairstyles": {"char_lin": "low_ponytail"},
+      "costumes": {"char_lin": "blue_coat_v1"},
+      "scars": {"char_lin": ["right_brow"]},
+      "props": {"prop_letter": true},
+      "positions": {"char_lin": 0.2},
+      "gaze_directions": {"char_lin": "right"},
+      "motion_direction": "left_to_right",
+      "axis": "lin-left_to_zhou-right",
+      "background_id": "room_night_rain",
+      "defects": [],
+      "subtitle_boxes": [],
+      "flicker_score": 0.02,
+      "melt_score": 0.01,
+      "pose": {"char_lin": "start:slap"},
+      "shot_size": "medium",
+      "composition": "lin left"
+    },
+    {
+      "locator": {"episode_id": "episode_01", "scene_id": "scene_01", "shot_id": "shot_02", "timecode_ms": 40, "frame": 1},
+      "character_ids": ["char_lin"],
+      "identity_scores": {"char_lin": 0.61},
+      "ages": {"char_lin": "42"},
+      "hairstyles": {"char_lin": "short_bob"},
+      "costumes": {"char_lin": "red_dress"},
+      "scars": {"char_lin": []},
+      "props": {"prop_letter": false},
+      "positions": {"char_lin": 0.8},
+      "gaze_directions": {"char_lin": "left"},
+      "motion_direction": "right_to_left",
+      "axis": "zhou-left_to_lin-right",
+      "background_id": "room_day_clear",
+      "defects": ["extra_hand", "face_deformation"],
+      "subtitle_boxes": [{"x": 0.01, "y": 0.4, "width": 0.5, "height": 0.2, "overlaps_face": true}],
+      "flicker_score": 0.38,
+      "melt_score": 0.31,
+      "pose": {"char_lin": "idle"},
+      "shot_size": "close",
+      "composition": "lin right"
+    }
+  ]
+}

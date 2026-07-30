@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/contracts/shot-handoff.v1.json",
+  "title": "Adjacent Shot Handoff v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "handoff_id", "project_id", "episode_id", "from_shot_id", "to_shot_id",
+    "target_tail_frame_ref", "reference_head_frame_ref", "pose_constraints", "gaze_constraint",
+    "motion_direction", "from_action_phase", "to_action_phase", "shot_size_constraint",
+    "composition_constraint", "version"
+  ],
+  "properties": {
+    "schema_version": {"const": "shot-handoff.v1"},
+    "handoff_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": "string", "minLength": 1},
+    "from_shot_id": {"type": "string", "minLength": 1},
+    "to_shot_id": {"type": "string", "minLength": 1},
+    "target_tail_frame_ref": {"type": "string", "minLength": 1},
+    "reference_head_frame_ref": {"type": "string", "minLength": 1},
+    "pose_constraints": {"type": "object", "additionalProperties": {"type": "string"}},
+    "gaze_constraint": {"type": "string"},
+    "motion_direction": {"type": "string"},
+    "from_action_phase": {"type": "string", "minLength": 1},
+    "to_action_phase": {"type": "string", "minLength": 1},
+    "shot_size_constraint": {"type": "string"},
+    "composition_constraint": {"type": "string"},
+    "version": {"type": "integer", "minimum": 1}
+  }
+}

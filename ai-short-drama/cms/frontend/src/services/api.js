@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || '/api/v1'
 
 async function request(path, options = {}) {
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -109,6 +109,44 @@ export const api = {
     return request(`/projects/${encodeURIComponent(projectId)}/change-comments`, {
       method: 'POST', body: JSON.stringify(payload),
     })
+  },
+  getPerformanceBibles(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`)
+  },
+  createPerformanceBibleVersion(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  lockPerformanceBible(performanceBibleId) {
+    return request(`/performance-bibles/${encodeURIComponent(performanceBibleId)}/lock`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
+  getContinuityLedger(projectId, episodeId = '') {
+    return request(`/projects/${encodeURIComponent(projectId)}/continuity-ledger?${new URLSearchParams({ episode_id: episodeId })}`)
+  },
+  prepareGenerationContext(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/generation-context/prepare`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  getVisualQCIssues(projectId, filters = {}) {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))
+    return request(`/projects/${encodeURIComponent(projectId)}/visual-qc/issues?${query}`)
+  },
+  runVisualQCFixture(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/visual-qc/run-fixture`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  createVisualQCRedo(issueId, payload = {}) {
+    return request(`/visual-qc/issues/${encodeURIComponent(issueId)}/create-local-redo`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  getShotHandoffs(projectId, episodeId = '') {
+    return request(`/projects/${encodeURIComponent(projectId)}/shot-handoffs?${new URLSearchParams({ episode_id: episodeId })}`)
   },
   decideReview(reviewId, payload) {
     return request(`/reviews/${encodeURIComponent(reviewId)}/decision`, { method: 'POST', body: JSON.stringify(payload) })

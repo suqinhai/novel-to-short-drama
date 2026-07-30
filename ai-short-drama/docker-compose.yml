@@ -34,6 +34,8 @@ services:
       - ./database/14-multi-candidate-selection.sql:/opt/drama/14-multi-candidate-selection.sql:ro
       - ./database/14-verify-multi-candidate-selection.sql:/opt/drama/14-verify-multi-candidate-selection.sql:ro
       - ./database/15-local-editing-workbench.sql:/opt/drama/15-local-editing-workbench.sql:ro
+      - ./database/16-performance-continuity-visual-qc.sql:/opt/drama/16-performance-continuity-visual-qc.sql:ro
+      - ./database/16-verify-performance-continuity-visual-qc.sql:/opt/drama/16-verify-performance-continuity-visual-qc.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

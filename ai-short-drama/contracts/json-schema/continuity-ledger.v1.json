@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/contracts/continuity-ledger.v1.json",
+  "title": "Continuity Ledger Entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "entry_id", "project_id", "episode_id", "episode_number",
+    "scene_id", "shot_id", "shot_order", "input_state", "output_state"
+  ],
+  "properties": {
+    "schema_version": {"const": "continuity-ledger.v1"},
+    "entry_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": "string", "minLength": 1},
+    "episode_number": {"type": "integer", "minimum": 1},
+    "scene_id": {"type": "string"},
+    "shot_id": {"type": "string"},
+    "shot_order": {"type": "integer", "minimum": 0},
+    "input_state": {"$ref": "#/$defs/state"},
+    "output_state": {"$ref": "#/$defs/state"},
+    "inherited_from": {"type": "string"}
+  },
+  "$defs": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["characters", "props", "environment", "axis"],
+      "properties": {
+        "characters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/characterState"}},
+        "props": {"type": "object", "additionalProperties": {"$ref": "#/$defs/propState"}},
+        "environment": {"$ref": "#/$defs/environment"},
+        "axis": {"type": "string"}
+      }
+    },
+    "characterState": {
+      "type": "object",
+      "required": [
+        "position", "screen_x", "facing", "gaze_target", "posture", "costume",
+        "hairstyle", "scars", "held_props", "knows", "does_not_know",
+        "relationships", "emotion", "physical_state", "identity_ref"
+      ],
+      "properties": {
+        "position": {"type": "string"},
+        "screen_x": {"type": "number", "minimum": 0, "maximum": 1},
+        "facing": {"type": "string"},
+        "gaze_target": {"type": "string"},
+        "posture": {"type": "string"},
+        "costume": {"type": "string"},
+        "hairstyle": {"type": "string"},
+        "scars": {"type": "array", "items": {"type": "string"}},
+        "held_props": {"type": "array", "items": {"type": "string"}},
+        "knows": {"type": "array", "items": {"type": "string"}},
+        "does_not_know": {"type": "array", "items": {"type": "string"}},
+        "relationships": {"type": "object", "additionalProperties": {"type": "string"}},
+        "emotion": {"type": "string"},
+        "physical_state": {"type": "string"},
+        "identity_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "propState": {
+      "type": "object",
+      "required": ["owner_character_id", "position", "condition", "visible"],
+      "properties": {
+        "owner_character_id": {"type": "string"},
+        "position": {"type": "string"},
+        "condition": {"type": "string"},
+        "visible": {"type": "boolean"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["location_id", "time", "weather", "lighting"],
+      "properties": {
+        "location_id": {"type": "string"},
+        "time": {"type": "string"},
+        "weather": {"type": "string"},
+        "lighting": {"type": "string"}
+      }
+    }
+  }
+}

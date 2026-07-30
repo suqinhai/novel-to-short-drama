@@ -1034,6 +1034,97 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ChangePlanRecord'}
+  /adaptation-projects/{project_id}/performance-bibles:
+    get:
+      tags: [Lineage]
+      operationId: listCharacterPerformanceBibles
+      summary: List explicit character and character-version performance contracts
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Performance bible versions and lock state}
+    post:
+      tags: [Lineage]
+      operationId: createCharacterPerformanceBibleVersion
+      summary: Create a new version; locked fields require explicit editor authority and a reason
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schema_version, character_id, character_version, change_reason]
+              properties:
+                schema_version: {type: string, const: performance-bible.v1}
+                character_id: {$ref: '#/components/schemas/ID'}
+                character_version: {type: string, minLength: 1}
+                change_reason: {type: string, minLength: 1}
+      responses:
+        '201': {description: Version created}
+        '409': {description: Locked field mutation rejected}
+  /performance-bibles/{performance_bible_id}:lock:
+    post:
+      tags: [Lineage]
+      operationId: lockCharacterPerformanceBible
+      summary: Lock the exact performance bible version used by generation artifacts
+      parameters:
+        - {name: performance_bible_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Bible version locked}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-projects/{project_id}/continuity-ledger:
+    get:
+      tags: [Lineage]
+      operationId: getContinuityTimeline
+      summary: Read ordered scene and shot input/output states, including cross-episode inheritance
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: episode_id, in: query, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Ordered continuity ledger}
+  /adaptation-projects/{project_id}/generation-context:prepare:
+    post:
+      tags: [Lineage]
+      operationId: prepareContinuityBoundGeneration
+      summary: Read performance bible, ledger and handoff; block instead of silently generating on conflict
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Resolved prompt constraints and explicit references}
+        '422': {description: Explainable continuity diagnostics; generation was not started}
+  /adaptation-projects/{project_id}/visual-qc/issues:
+    get:
+      tags: [Lineage]
+      operationId: listFrameLocatedVisualQCIssues
+      summary: List cross-shot issues at episode, scene, shot, timecode and frame granularity
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: episode_id, in: query, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: severity, in: query, schema: {type: string, enum: [minor, major, critical, blocking]}}
+      responses:
+        '200': {description: Visual QC issue list}
+  /visual-qc/issues/{visual_qc_issue_id}:create-local-redo:
+    post:
+      tags: [Lineage]
+      operationId: createLocalRedoFromVisualQCIssue
+      summary: Create a confirmed-gated local change plan from the exact issue range
+      parameters:
+        - {name: visual_qc_issue_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '201': {description: Local redo plan created; only adjacent handoffs are dirty}
+  /adaptation-projects/{project_id}/shot-handoffs:
+    get:
+      tags: [Lineage]
+      operationId: listAdjacentShotHandoffs
+      summary: Compare saved target tail and reference head frames with action relay constraints
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: episode_id, in: query, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Adjacent shot handoff list}
 components:
   securitySchemes:
     bearerAuth:

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/contracts/visual-qc-report.v1.json",
+  "title": "Cross-shot Visual QC Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "provider", "issues"],
+  "properties": {
+    "schema_version": {"const": "visual-qc-report.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "provider": {"const": "deterministic_mock"},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_id", "category", "severity", "locator", "evidence", "recommendation", "status", "local_redo"],
+        "properties": {
+          "issue_id": {"type": "string", "minLength": 1},
+          "category": {
+            "enum": [
+              "identity_drift", "age_drift", "hairstyle_change", "costume_change", "scar_change",
+              "prop_disappeared", "background_change", "limb_deformation", "face_deformation",
+              "screen_position_jump", "gaze_error", "motion_direction_error", "axis_error",
+              "object_appeared", "object_disappeared", "video_flicker", "background_melt",
+              "subtitle_over_face", "subtitle_outside_safe_area", "action_discontinuity", "handoff_failure"
+            ]
+          },
+          "severity": {"enum": ["minor", "major", "critical", "blocking"]},
+          "locator": {
+            "type": "object",
+            "required": ["episode_id", "scene_id", "shot_id", "timecode_ms", "frame"],
+            "properties": {
+              "episode_id": {"type": "string"},
+              "scene_id": {"type": "string"},
+              "shot_id": {"type": "string"},
+              "timecode_ms": {"type": "integer", "minimum": 0},
+              "frame": {"type": "integer", "minimum": 0}
+            }
+          },
+          "evidence": {"type": "string", "minLength": 1},
+          "recommendation": {"type": "string", "minLength": 1},
+          "status": {"enum": ["open", "planned", "resolved", "wont_fix"]},
+          "local_redo": {
+            "type": "object",
+            "required": ["entity_type", "entity_id", "allowed_fields", "start_ms", "end_ms"],
+            "properties": {
+              "entity_type": {"enum": ["shot", "shot_video"]},
+              "entity_id": {"type": "string", "minLength": 1},
+              "allowed_fields": {"type": "array", "items": {"type": "string"}},
+              "start_ms": {"type": "integer", "minimum": 0},
+              "end_ms": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}
