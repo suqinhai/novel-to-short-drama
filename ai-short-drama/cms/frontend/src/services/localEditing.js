@@ -29,12 +29,18 @@ export function buildChangePlanRequest(form) {
 }
 
 export function planDiffRows(plan) {
-  return (plan?.expected_changes || []).map((change) => ({
-    field: change.field,
-    operation: change.operation,
-    before: change.before ?? (change.operation === 'adjust' ? '当前值' : '当前版本'),
-    after: change.after ?? change.delta ?? change.value ?? `${change.start_ms}–${change.end_ms}ms`,
-  }))
+  return (plan?.expected_changes || []).map((change) => {
+    const row = {
+      field: change.field,
+      operation: change.operation,
+      before: change.before ?? (change.operation === 'adjust' ? '当前值' : '当前版本'),
+      after: change.after ?? change.delta ?? change.value ?? `${change.start_ms}–${change.end_ms}ms`,
+    }
+    if (change.start_ms != null && change.end_ms != null) {
+      row.range = `${change.start_ms}–${change.end_ms}ms`
+    }
+    return row
+  })
 }
 
 export function rebuildLabels(plan) {

@@ -192,7 +192,7 @@ async function restoreVersion(item) {
 
       <section class="plan-section">
         <h4><GitCompareArrows :size="16" />字段 diff</h4>
-        <table><thead><tr><th>字段</th><th>操作</th><th>修改前</th><th>修改后</th></tr></thead><tbody><tr v-for="row in diffRows" :key="row.field"><td><code>{{ row.field }}</code></td><td>{{ row.operation }}</td><td>{{ row.before }}</td><td class="diff-after">{{ typeof row.after === 'object' ? JSON.stringify(row.after) : row.after }}</td></tr></tbody></table>
+        <table><thead><tr><th>字段 / 重建区间</th><th>操作</th><th>修改前</th><th>修改后</th></tr></thead><tbody><tr v-for="row in diffRows" :key="row.field"><td><code>{{ row.field }}</code><small v-if="row.range"> · {{ row.range }}</small></td><td>{{ row.operation }}</td><td>{{ row.before }}</td><td class="diff-after">{{ typeof row.after === 'object' ? JSON.stringify(row.after) : row.after }}</td></tr></tbody></table>
       </section>
 
       <div class="change-plan-grid">

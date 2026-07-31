@@ -66,6 +66,45 @@ func enrichChangesWithDiff(
 	return result, nil
 }
 
+func enrichChangeTimeRanges(
+	ctx context.Context, tx pgx.Tx, entityType, entityID string, changes []localedit.Change,
+) ([]localedit.Change, error) {
+	result := append([]localedit.Change(nil), changes...)
+	for index := range result {
+		if result[index].StartMS != nil && result[index].EndMS != nil {
+			continue
+		}
+		dialogueID := ""
+		switch entityType {
+		case "dialogue":
+			dialogueID = entityID
+		case "episode_content":
+			parts := strings.Split(result[index].Field, ".")
+			if len(parts) == 3 && parts[0] == "dialogue" {
+				dialogueID = parts[1]
+			}
+		}
+		if dialogueID == "" {
+			continue
+		}
+		var startMS, endMS int64
+		err := tx.QueryRow(ctx, `SELECT min(start_ms),max(end_ms)
+			FROM drama.subtitle_cues
+			WHERE dialogue_id=$1 AND is_current
+			HAVING count(*)>0`, dialogueID).Scan(&startMS, &endMS)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if endMS > startMS {
+			result[index].StartMS, result[index].EndMS = &startMS, &endMS
+		}
+	}
+	return result, nil
+}
+
 func materializeVersionedChange(
 	ctx context.Context, tx pgx.Tx, projectID, entityType, entityID string,
 	before json.RawMessage, changes []localedit.Change, fingerprint string,
@@ -754,7 +793,10 @@ func resolvePendingRebuildTargets(
 	}
 	switch entityType {
 	case "dialogue":
-		startMS, endMS := fallbackStart, fallbackEnd
+		startMS, endMS := matchingChangeRange(changes, entityType, entityID)
+		if startMS == nil || endMS == nil {
+			startMS, endMS = fallbackStart, fallbackEnd
+		}
 		if startMS == nil || endMS == nil {
 			var start, end int64
 			err := tx.QueryRow(ctx, `SELECT min(start_ms),max(end_ms) FROM drama.subtitle_cues
@@ -932,6 +974,22 @@ func resolvePendingRebuildTargets(
 		}
 	}
 	return targets, nil
+}
+
+func matchingChangeRange(
+	changes []localedit.Change, entityType, entityID string,
+) (*int64, *int64) {
+	for _, change := range changes {
+		matches := entityType != "dialogue"
+		if entityType == "dialogue" {
+			parts := strings.Split(change.Field, ".")
+			matches = len(parts) != 3 || parts[0] != "dialogue" || parts[1] == entityID
+		}
+		if matches && change.StartMS != nil && change.EndMS != nil {
+			return change.StartMS, change.EndMS
+		}
+	}
+	return nil, nil
 }
 
 func sceneReorderRange(changes []localedit.Change, entityID string) (float64, float64, bool) {

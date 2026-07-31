@@ -26,7 +26,7 @@ func (h *Handler) getEpisodeRunContent(c *gin.Context) {
 }
 
 func (h *Handler) createEpisodeContentChangePlan(c *gin.Context) {
-	var input store.UpdateEpisodeContentInput
+	var input store.EpisodeContentChangePlanInput
 	decoder := json.NewDecoder(io.LimitReader(c.Request.Body, 4<<20))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {

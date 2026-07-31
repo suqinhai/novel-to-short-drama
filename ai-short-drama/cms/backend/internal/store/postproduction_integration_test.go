@@ -196,6 +196,13 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
+		if len(record.Plan.ExpectedChanges) != 1 ||
+			record.Plan.ExpectedChanges[0].StartMS == nil ||
+			record.Plan.ExpectedChanges[0].EndMS == nil ||
+			*record.Plan.ExpectedChanges[0].StartMS != 800 ||
+			*record.Plan.ExpectedChanges[0].EndMS != 2600 {
+			t.Fatalf("preview omitted the exact rebuild interval: %#v", record.Plan.ExpectedChanges)
+		}
 		record, err = database.ConfirmChangePlan(ctx, projectID, record.ChangePlanID, nil)
 		if err != nil {
 			t.Fatal(err)

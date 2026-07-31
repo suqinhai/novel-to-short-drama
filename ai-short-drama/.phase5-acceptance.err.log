@@ -1,3 +1,0 @@
-psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "short_drama_phase5_legacy_upgrade" does not exist
-
-PHASE 5 FAILED: legacy upgrade database/16-performance-continuity-visual-qc.sql [short_drama_phase5_legacy_upgrade] failed with exit 2

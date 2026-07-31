@@ -126,3 +126,23 @@ func TestRejectsRebuildOutsideCalculatedImpact(t *testing.T) {
 		t.Fatalf("expected rebuild scope validation error, got %v", err)
 	}
 }
+
+func TestEarlyEditCanExplicitlyQueueNoRebuildsButStillHasAPlan(t *testing.T) {
+	plan, err := Build(Request{
+		Instruction:  "save an early outline version",
+		Target:       Target{EntityType: "outline", EntityID: "episode-1", Version: 1},
+		Changes:      []Change{{Operation: "replace", Field: "title", Value: "new title"}},
+		RebuildTasks: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Impact.RebuildTasks) != 0 ||
+		plan.Rebuild.Voice || plan.Rebuild.Subtitle || plan.Rebuild.Image ||
+		plan.Rebuild.Video || plan.Rebuild.Edit || plan.Rebuild.Continuity {
+		t.Fatalf("explicit no-downstream selection was not preserved: %+v", plan)
+	}
+	if plan.Target.Version != 1 || len(plan.ExpectedChanges) != 1 {
+		t.Fatalf("early edit did not retain versioned plan semantics: %+v", plan)
+	}
+}

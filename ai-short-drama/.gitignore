@@ -4,6 +4,7 @@ cms/config/cms-managed.env
 secrets/*.json
 *.dump
 *.backup
+.phase5-*.log
 storage/novels/*
 storage/results/*
 storage/logs/*

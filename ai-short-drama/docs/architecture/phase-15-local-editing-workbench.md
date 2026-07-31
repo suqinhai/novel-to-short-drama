@@ -78,4 +78,4 @@ python scripts/validate-phase1-json-schemas.py
 node scripts/validate-phase15.js
 ```
 
-数据库 E2E 覆盖对白修改、场景缩短、镜头动作修改、视频片段重做、未确认不写正式数据、失败事务无半成品 current，以及回滚/重新应用仍需 change plan。全部 Mock 都是确定性的，不调用付费模型。
+数据库 E2E 覆盖对白修改、场景缩短、场景换序与相邻连续性、镜头动作修改、视频片段重做、并发旧版本冲突、未确认不写正式数据、失败事务无半成品 current，以及回滚/重新应用仍需 change plan。重建任务只创建为 `pending/workflow`，只有真实 worker 状态回报才能进入 `running`、`succeeded` 或 `failed`，不再用 deterministic mock 冒充媒体重建完成。

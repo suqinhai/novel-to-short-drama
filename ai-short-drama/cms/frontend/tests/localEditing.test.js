@@ -40,12 +40,13 @@ test('renders server-materialized before and after values', () => {
   const plan = {
     expected_changes: [{
       operation: 'replace', field: 'text', value: 'new line',
-      before: 'old line', after: 'new line',
+      before: 'old line', after: 'new line', start_ms: 800, end_ms: 2600,
     }],
     rebuild: { voice: true, subtitle: true, video: true, edit: true, continuity: false },
   }
   assert.deepEqual(planDiffRows(plan), [{
     field: 'text', operation: 'replace', before: 'old line', after: 'new line',
+    range: '800–2600ms',
   }])
   assert.equal(rebuildLabels(plan).length, 4)
 })

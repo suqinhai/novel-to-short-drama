@@ -134,7 +134,7 @@ type EpisodeScriptUpdate struct {
 	Scenes      []EpisodeSceneUpdate `json:"scenes"`
 }
 
-type UpdateEpisodeContentInput struct {
+type EpisodeContentChangePlanInput struct {
 	ExpectedVersion int                  `json:"expected_version"`
 	Outline         EpisodeOutlineUpdate `json:"outline"`
 	Script          *EpisodeScriptUpdate `json:"script,omitempty"`
@@ -288,10 +288,10 @@ func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID s
 func (s *Store) CreateEpisodeContentChangePlan(
 	ctx context.Context,
 	projectID, episodeRunID string,
-	input UpdateEpisodeContentInput,
+	input EpisodeContentChangePlanInput,
 	requestedBy *string,
 ) (ChangePlan, error) {
-	if err := validateEpisodeContentUpdate(input); err != nil {
+	if err := validateEpisodeContentChangePlanInput(input); err != nil {
 		return ChangePlan{}, err
 	}
 	current, err := s.GetEpisodeContent(ctx, strings.TrimSpace(projectID), strings.TrimSpace(episodeRunID))
@@ -337,7 +337,7 @@ func (s *Store) CreateEpisodeContentChangePlan(
 }
 
 func episodeContentChanges(
-	current EpisodeContent, input UpdateEpisodeContentInput,
+	current EpisodeContent, input EpisodeContentChangePlanInput,
 ) ([]localedit.Change, error) {
 	changes := make([]localedit.Change, 0)
 	add := func(path string, before, after any) {
@@ -426,7 +426,7 @@ func episodeContentChanges(
 	return changes, nil
 }
 
-func validateEpisodeContentUpdate(input UpdateEpisodeContentInput) error {
+func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) error {
 	outline := input.Outline
 	if strings.TrimSpace(outline.Title) == "" || len([]rune(outline.Title)) > 400 {
 		return fmt.Errorf("%w: outline title is required and must be at most 400 characters", ErrInvalidEpisodeContent)

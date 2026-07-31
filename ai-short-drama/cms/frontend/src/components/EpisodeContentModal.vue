@@ -228,7 +228,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
           </div>
           <div class="episode-plan-diff">
             <div class="episode-plan-diff-head"><b>字段</b><b>修改前</b><b>修改后</b></div>
-            <div v-for="row in planDiff" :key="row.field"><code>{{ row.field }}</code><span>{{ formatDiffValue(row.before) }}</span><span>{{ formatDiffValue(row.after) }}</span></div>
+            <div v-for="row in planDiff" :key="row.field"><code>{{ row.field }}<small v-if="row.start_ms != null">重建 {{ row.start_ms }}–{{ row.end_ms }}ms</small></code><span>{{ formatDiffValue(row.before) }}</span><span>{{ formatDiffValue(row.after) }}</span></div>
           </div>
           <div class="episode-plan-risks"><b>风险</b><span v-for="risk in pendingPlan.plan.risks" :key="risk"><AlertTriangle :size="12" />{{ risk }}</span></div>
           <footer>

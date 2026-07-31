@@ -8,7 +8,8 @@ const {compile} = require('./adaptation-compiler');
 const root = path.resolve(__dirname, '..');
 const database = process.env.PHASE3_TEST_DATABASE || 'short_drama_phase3_integration';
 const container = process.env.PHASE3_POSTGRES_CONTAINER || 'ai-short-drama-postgres-1';
-if (!/^short_drama_phase3_[a-z0-9_]+$/.test(database) && database !== 'short_drama_phase5_legacy_upgrade') {
+if (!/^short_drama_phase3_[a-z0-9_]+$/.test(database) &&
+    !/^short_drama_phase5_[a-z0-9_]+$/.test(database)) {
   throw new Error('refusing to run against a non-acceptance test database');
 }
 

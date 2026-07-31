@@ -155,6 +155,12 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 		if err != nil {
 			return ChangePlan{}, err
 		}
+		plan.ExpectedChanges, err = enrichChangeTimeRanges(
+			ctx, tx, plan.Target.EntityType, plan.Target.EntityID, plan.ExpectedChanges,
+		)
+		if err != nil {
+			return ChangePlan{}, err
+		}
 	}
 	fingerprint := localedit.Fingerprint(plan)
 	mustPreserve, _ := json.Marshal(plan.MustPreserve)
