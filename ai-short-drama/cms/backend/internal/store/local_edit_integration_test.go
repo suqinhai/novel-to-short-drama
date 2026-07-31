@@ -28,6 +28,7 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 	id := func(prefix string) string { return prefix + suffix }
 	projectID, storyBibleID, seasonID := id("p15_p_"), id("p15_b_"), id("p15_season_")
 	episodeID, scriptID, sceneID := id("p15_ep_"), id("p15_script_"), id("p15_scene_")
+	scene2ID, scene3ID := id("p15_scene2_"), id("p15_scene3_")
 	dialogueID, storyboardID := id("p15_dialogue_"), id("p15_board_")
 	shotID, otherShotID := id("p15_shot_"), id("p15_other_shot_")
 	imageID, videoID := id("p15_image_"), id("p15_video_")
@@ -55,7 +56,10 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 			VALUES($1,$2,$3,$4,1,'script',90,1,'approved')`, []any{scriptID, projectID, seasonID, episodeID}},
 		{`INSERT INTO drama.script_scenes(scene_id,script_id,project_id,episode_id,scene_number,
 			scene_purpose,actions,estimated_duration_seconds)
-			VALUES($1,$2,$3,$4,1,'identity reveal','[]',50)`, []any{sceneID, scriptID, projectID, episodeID}},
+			VALUES($1,$2,$3,$4,1,'identity reveal','[]',50),
+			      ($5,$2,$3,$4,2,'pursuit','[]',20),
+			      ($6,$2,$3,$4,3,'aftermath','[]',20)`,
+			[]any{sceneID, scriptID, projectID, episodeID, scene2ID, scene3ID}},
 		{`INSERT INTO drama.dialogues(dialogue_id,project_id,episode_id,scene_id,sequence_number,
 			dialogue_type,speaker_name,text,emotion,estimated_duration_ms)
 			VALUES($1,$2,$3,$4,1,'dialogue','heroine','old line','tense',2000)`, []any{dialogueID, projectID, episodeID, sceneID}},
@@ -156,8 +160,9 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 				t.Fatalf("execute: status=%s err=%v", record.Status, err)
 			}
 			for _, task := range record.RebuildTasks {
-				if task.Status != "completed" || task.Provider != "deterministic_mock" {
-					t.Fatalf("non-deterministic or incomplete rebuild: %+v", task)
+				if task.Status != "pending" || task.Provider != "workflow" ||
+					task.CompletedAt != nil {
+					t.Fatalf("rebuild was falsely completed without execution: %+v", task)
 				}
 			}
 		})
@@ -181,10 +186,9 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 		if err != nil || rollback.Status != "validated" {
 			t.Fatalf("rollback preview: %+v err=%v", rollback, err)
 		}
-		var emotion string
-		_ = database.pool.QueryRow(ctx, `SELECT emotion FROM drama.dialogues WHERE dialogue_id=$1`, dialogueID).Scan(&emotion)
+		emotion := currentEntityString(t, ctx, database, "dialogue", dialogueID, "emotion")
 		if emotion != "restrained" {
-			t.Fatalf("rollback preview changed data: %s", emotion)
+			t.Fatalf("rollback preview changed current version: %s", emotion)
 		}
 		rollback, err = database.ConfirmChangePlan(ctx, projectID, rollback.ChangePlanID, nil)
 		if err == nil {
@@ -193,7 +197,7 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 		if err != nil || rollback.Status != "applied" {
 			t.Fatalf("rollback execute: %+v err=%v", rollback, err)
 		}
-		_ = database.pool.QueryRow(ctx, `SELECT emotion FROM drama.dialogues WHERE dialogue_id=$1`, dialogueID).Scan(&emotion)
+		emotion = currentEntityString(t, ctx, database, "dialogue", dialogueID, "emotion")
 		if emotion != "tense" {
 			t.Fatalf("rollback did not restore v1: %s", emotion)
 		}
@@ -205,9 +209,17 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 		if err == nil {
 			reapply, err = database.ExecuteChangePlan(ctx, projectID, reapply.ChangePlanID)
 		}
-		_ = database.pool.QueryRow(ctx, `SELECT emotion FROM drama.dialogues WHERE dialogue_id=$1`, dialogueID).Scan(&emotion)
+		emotion = currentEntityString(t, ctx, database, "dialogue", dialogueID, "emotion")
 		if err != nil || reapply.Status != "applied" || emotion != "restrained" {
 			t.Fatalf("reapply failed: status=%s emotion=%s err=%v", reapply.Status, emotion, err)
+		}
+		var formalEmotion string
+		if err = database.pool.QueryRow(ctx, `SELECT emotion FROM drama.dialogues
+			WHERE dialogue_id=$1`, dialogueID).Scan(&formalEmotion); err != nil {
+			t.Fatal(err)
+		}
+		if formalEmotion != "tense" {
+			t.Fatalf("rollback/reapply overwrote immutable formal row: %s", formalEmotion)
 		}
 	})
 
