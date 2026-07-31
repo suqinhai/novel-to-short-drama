@@ -28,14 +28,17 @@ type Change struct {
 	Delta     any    `json:"delta,omitempty"`
 	StartMS   *int64 `json:"start_ms,omitempty"`
 	EndMS     *int64 `json:"end_ms,omitempty"`
+	Before    any    `json:"before,omitempty"`
+	After     any    `json:"after,omitempty"`
 }
 
 type RebuildDecision struct {
-	Voice    bool `json:"voice"`
-	Image    bool `json:"image"`
-	Video    bool `json:"video"`
-	Edit     bool `json:"edit"`
-	Subtitle bool `json:"subtitle"`
+	Voice      bool `json:"voice"`
+	Image      bool `json:"image"`
+	Video      bool `json:"video"`
+	Edit       bool `json:"edit"`
+	Subtitle   bool `json:"subtitle"`
+	Continuity bool `json:"continuity"`
 }
 
 type Impact struct {
@@ -69,12 +72,15 @@ type Request struct {
 	Changes        []Change `json:"changes,omitempty"`
 	ChangeKind     string   `json:"change_kind,omitempty"`
 	SemanticChange *bool    `json:"semantic_change,omitempty"`
+	RebuildTasks   []string `json:"rebuild_tasks,omitempty"`
+	Locks          []string `json:"locks,omitempty"`
 }
 
 var allowedFields = map[string]map[string]bool{
 	"dialogue": {
 		"text": true, "emotion": true, "performance_instruction": true,
 		"estimated_duration_ms": true, "requested_speed": true, "production_mode": true,
+		"dialogue_type": true, "speaker_name": true,
 	},
 	"scene": {
 		"scene_purpose": true, "actions": true, "emotional_change": true,
@@ -92,6 +98,24 @@ var allowedFields = map[string]map[string]bool{
 	"media": {
 		"source_url": true, "storage_url": true, "content_hash": true,
 	},
+	"outline": {
+		"title": true, "logline": true, "opening_hook": true, "story_goal": true,
+		"main_conflict": true, "climax": true, "ending_hook": true,
+		"estimated_duration_seconds": true,
+	},
+	"script": {
+		"title": true, "opening_hook": true, "climax": true, "ending_hook": true,
+	},
+	"episode_content": {"*": true},
+	"timeline": {
+		"editing_template_version_id": true, "template_scope": true,
+		"override_config": true, "sound_style_group": true,
+		"restore_source_timeline_id": true, "items": true,
+	},
+	"timeline_item": {
+		"timeline_start_ms": true, "timeline_end_ms": true, "source_in_ms": true,
+		"source_out_ms": true, "duration_ms": true, "source_url": true,
+	},
 }
 
 func Build(req Request) (Plan, error) {
@@ -106,6 +130,7 @@ func Build(req Request) (Plan, error) {
 	}
 
 	changes, inferredPreserve, locks, inferredKind := interpret(req)
+	locks = append(locks, req.Locks...)
 	if len(req.Changes) > 0 {
 		changes = req.Changes
 	}
@@ -122,7 +147,7 @@ func Build(req Request) (Plan, error) {
 		}
 	}
 	for _, field := range fields {
-		if !allowedFields[req.Target.EntityType][field] {
+		if !isAllowedField(req.Target.EntityType, field) {
 			return Plan{}, fmt.Errorf("%w: field %s cannot change on %s", ErrInvalidPlan, field, req.Target.EntityType)
 		}
 	}
@@ -149,6 +174,16 @@ func Build(req Request) (Plan, error) {
 
 	preserve := unique(append(append([]string(nil), req.MustPreserve...), inferredPreserve...))
 	rebuild, impact := decideImpact(req.Target.EntityType, fields, changes, semantic)
+	if req.RebuildTasks != nil {
+		selected := unique(req.RebuildTasks)
+		for _, action := range selected {
+			if !contains(impact.RebuildTasks, action) {
+				return Plan{}, fmt.Errorf("%w: rebuild action %s is outside the calculated impact", ErrInvalidPlan, action)
+			}
+		}
+		impact.RebuildTasks = selected
+		rebuild = decisionForActions(selected)
+	}
 	plan := Plan{
 		SchemaVersion: SchemaVersion, UserIntent: req.Instruction, Target: req.Target,
 		MustPreserve: preserve, AllowedFields: unique(fields), ExpectedChanges: changes,
@@ -273,7 +308,7 @@ func validateChange(entityType string, change Change, allowed []string) error {
 	if change.Operation == "" {
 		return fmt.Errorf("%w: change operation is required", ErrInvalidPlan)
 	}
-	if change.Field != "" && (!allowedFields[entityType][change.Field] || !contains(allowed, change.Field)) {
+	if change.Field != "" && (!isAllowedField(entityType, change.Field) || !contains(allowed, change.Field)) {
 		return fmt.Errorf("%w: change field %s is not allowed", ErrInvalidPlan, change.Field)
 	}
 	switch change.Operation {
@@ -296,15 +331,15 @@ func decideImpact(entityType string, fields []string, changes []Change, semantic
 	var downstream []string
 	switch entityType {
 	case "dialogue":
-		rebuild.Subtitle, rebuild.Edit = true, true
-		downstream = append(downstream, "subtitle_cue", "edit_timeline_item")
+		rebuild.Subtitle, rebuild.Video, rebuild.Edit = true, true, true
+		downstream = append(downstream, "subtitle_cue", "storyboard_shot_interval", "edit_timeline_interval")
 		if contains(fields, "text") || contains(fields, "emotion") || contains(fields, "performance_instruction") || contains(fields, "requested_speed") {
 			rebuild.Voice = true
 			downstream = append(downstream, "dialogue_audio")
 		}
 	case "scene":
-		rebuild.Edit = true
-		downstream = append(downstream, "storyboard", "edit_timeline")
+		rebuild.Video, rebuild.Edit, rebuild.Continuity = true, true, true
+		downstream = append(downstream, "adjacent_continuity", "storyboard_shot_interval", "edit_timeline_interval")
 	case "shot":
 		rebuild.Image, rebuild.Video, rebuild.Edit = true, true, true
 		downstream = append(downstream, "storyboard_image", "shot_video", "edit_timeline_item")
@@ -314,6 +349,32 @@ func decideImpact(entityType string, fields []string, changes []Change, semantic
 	case "media":
 		rebuild.Edit = true
 		downstream = append(downstream, "edit_timeline_item")
+	case "outline", "script":
+		rebuild.Voice, rebuild.Subtitle, rebuild.Image = true, true, true
+		rebuild.Video, rebuild.Edit, rebuild.Continuity = true, true, true
+		downstream = append(downstream, "episode_script", "storyboard", "dialogue_audio",
+			"subtitle_cue", "storyboard_image", "shot_video", "edit_timeline")
+	case "episode_content":
+		for _, field := range fields {
+			switch {
+			case strings.HasPrefix(field, "dialogue."):
+				rebuild.Voice, rebuild.Subtitle, rebuild.Video, rebuild.Edit = true, true, true, true
+				downstream = append(downstream, "dialogue_audio", "subtitle_cue",
+					"storyboard_shot_interval", "edit_timeline_interval")
+			case strings.HasPrefix(field, "scene."):
+				rebuild.Video, rebuild.Edit, rebuild.Continuity = true, true, true
+				downstream = append(downstream, "adjacent_continuity",
+					"storyboard_shot_interval", "edit_timeline_interval")
+			default:
+				rebuild.Voice, rebuild.Subtitle, rebuild.Image = true, true, true
+				rebuild.Video, rebuild.Edit, rebuild.Continuity = true, true, true
+				downstream = append(downstream, "episode_script", "storyboard", "dialogue_audio",
+					"subtitle_cue", "storyboard_image", "shot_video", "edit_timeline")
+			}
+		}
+	case "timeline", "timeline_item":
+		rebuild.Edit = true
+		downstream = append(downstream, "edit_timeline", "episode_master")
 	}
 	tasks := make([]string, 0, 5)
 	if rebuild.Voice {
@@ -331,7 +392,59 @@ func decideImpact(entityType string, fields []string, changes []Change, semantic
 	if rebuild.Edit {
 		tasks = append(tasks, "recompose_timeline")
 	}
+	if rebuild.Continuity {
+		tasks = append(tasks, "update_continuity")
+	}
 	return rebuild, Impact{Upstream: []string{}, Downstream: unique(downstream), RebuildTasks: tasks}
+}
+
+func decisionForActions(actions []string) RebuildDecision {
+	var result RebuildDecision
+	for _, action := range actions {
+		switch action {
+		case "regenerate_voice":
+			result.Voice = true
+		case "update_subtitle":
+			result.Subtitle = true
+		case "regenerate_image":
+			result.Image = true
+		case "regenerate_video":
+			result.Video = true
+		case "recompose_timeline":
+			result.Edit = true
+		case "update_continuity":
+			result.Continuity = true
+		}
+	}
+	return result
+}
+
+func isAllowedField(entityType, field string) bool {
+	fields := allowedFields[entityType]
+	if fields == nil {
+		return false
+	}
+	if fields[field] {
+		return true
+	}
+	if !fields["*"] || entityType != "episode_content" {
+		return false
+	}
+	parts := strings.Split(field, ".")
+	if len(parts) == 2 && parts[0] == "outline" {
+		return allowedFields["outline"][parts[1]]
+	}
+	if len(parts) == 2 && parts[0] == "script" {
+		return allowedFields["script"][parts[1]]
+	}
+	if len(parts) == 3 && parts[0] == "scene" {
+		return strings.TrimSpace(parts[1]) != "" && allowedFields["scene"][parts[2]]
+	}
+	if len(parts) == 3 && parts[0] == "dialogue" {
+		return strings.TrimSpace(parts[1]) != "" && (allowedFields["dialogue"][parts[2]] ||
+			parts[2] == "dialogue_type" || parts[2] == "speaker_name")
+	}
+	return false
 }
 
 func validationFor(entityType string, preserve, locks []string) []string {
@@ -378,6 +491,10 @@ func normalizeEntityType(value string) string {
 		return "shot"
 	case "video":
 		return "shot_video"
+	case "episode", "episode_revision":
+		return "episode_content"
+	case "edit_timeline":
+		return "timeline"
 	default:
 		return value
 	}

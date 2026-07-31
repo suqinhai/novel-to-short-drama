@@ -4,15 +4,15 @@ import { useRoute } from 'vue-router'
 import {
   Activity, ArrowLeft, AudioLines, CheckCircle2, ChevronDown, Clock3, Film,
   GitCompareArrows, GripVertical, History, Layers3, MessageSquareText, Music2,
-  Pause, Play, RefreshCw, Scissors, ShieldAlert, Sparkles, Split, Subtitles,
+  Pause, Play, RefreshCw, Scissors, ShieldAlert, Sparkles, Subtitles,
   TimerReset, Undo2, UsersRound, Volume2, WandSparkles,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
 import {
   dialogueConversionPlan, dialogueEditPlan, dialoguesForScene, exactDialogueRebuildRange,
   issueEditLink, normalizeWorkbench, sceneDragPlan, shotsForScene, soundTrackLabels,
-  soundStyleReplacementPayload, templateApplyPayload, templateLabels, timelineLanes,
-  timingValidationItems,
+  templateLabels, timelineLanes, timelineRestoreChangePlan, timelineSoundStyleChangePlan,
+  timelineTemplateChangePlan, timingValidationItems,
 } from '../services/creativeWorkbench'
 
 const route = useRoute()
@@ -155,20 +155,6 @@ async function retimeShot(shot, deltaSeconds) {
   })
 }
 
-async function markShotStructure(shot, operation) {
-  const label = operation === 'split' ? '拆分' : operation === 'merge' ? '与下一镜合并' : '换序'
-  await createPlan({
-    instruction: `${label}镜头 ${shot.shot_id}；保持连续性账本与相邻首尾帧约束，生成结构化局部修改`,
-    target: { entity_type: 'shot', entity_id: shot.shot_id, version: Number(shot.generation_version || 1) },
-    allowed_fields: ['action_description'],
-    changes: [{
-      operation: 'regenerate', field: 'action_description',
-      value: `${shot.action_description} [workbench:${operation}]`,
-    }],
-    must_preserve: ['人物状态', '动作接力', '镜头轴线'],
-  })
-}
-
 async function validateTimings() {
   const items = timingValidationItems(workspace.value)
   if (!items.length) {
@@ -191,54 +177,20 @@ async function validateTimings() {
 }
 
 async function applyTemplate() {
-  if (!selectedTemplateId.value) return
-  saving.value = true
-  error.value = ''
-  try {
-    const timeline = await api.applyEditingTemplate(
-      projectId.value, episodeId.value,
-      templateApplyPayload(selectedTemplateId.value, templateScope.value),
-    )
-    selectedTimelineId.value = timeline.timeline_id
-    notice.value = `已应用${selectedTemplate.value?.name || '剪辑模板'}并创建时间线 v${timeline.version}，旧版本仍可查看和恢复。`
-    await load()
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    saving.value = false
-  }
+  if (!selectedTemplateId.value || !currentTimeline.value) return
+  await createPlan(timelineTemplateChangePlan(
+    currentTimeline.value, selectedTemplateId.value, templateScope.value,
+  ))
 }
 
 async function restoreTimeline(item) {
-  saving.value = true
-  try {
-    const restored = await api.restoreTimelineVersion(projectId.value, episodeId.value, item.timeline_id, {
-      actor: 'creative-workbench',
-    })
-    notice.value = `已从 v${item.version} 创建恢复版本 v${restored.version}；历史记录未被覆盖。`
-    await load()
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    saving.value = false
-  }
+  if (!currentTimeline.value) return
+  await createPlan(timelineRestoreChangePlan(currentTimeline.value, item))
 }
 
 async function replaceSoundStyle() {
-  if (!soundStyleTarget.value.trim()) return
-  saving.value = true
-  error.value = ''
-  try {
-    const result = await api.replaceEpisodeSoundStyle(
-      projectId.value, episodeId.value, soundStyleReplacementPayload(soundStyleTarget.value),
-    )
-    notice.value = `整集声音风格已替换为 ${result.to_style_group}，并创建时间线 v${result.timeline.version}；原声音资产、cue 与时间线保留为历史版本。`
-    await load()
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    saving.value = false
-  }
+  if (!soundStyleTarget.value.trim() || !currentTimeline.value) return
+  await createPlan(timelineSoundStyleChangePlan(currentTimeline.value, soundStyleTarget.value))
 }
 
 async function submitComment() {
@@ -288,7 +240,7 @@ onMounted(load)
         <div class="template-control">
           <label><span>剪辑策略</span><select v-model="selectedTemplateId"><option v-for="item in templates" :key="item.editing_template_version_id" :value="item.editing_template_version_id">{{ templateLabels[templateKey(item)] || item.name }} · v{{ item.version }}</option></select></label>
           <label><span>覆盖范围</span><select v-model="templateScope"><option value="episode">本集覆盖</option><option value="project">项目默认</option></select></label>
-          <button :disabled="saving || !selectedTemplateId" @click="applyTemplate"><WandSparkles :size="15" />应用并新建时间线</button>
+          <button :disabled="saving || !selectedTemplateId || !currentTimeline" @click="applyTemplate"><WandSparkles :size="15" />生成切换计划</button>
         </div>
         <button class="refresh-button" :disabled="loading" title="刷新" @click="load"><RefreshCw :size="17" /></button>
       </div>
@@ -355,14 +307,12 @@ onMounted(load)
 
           <section v-else-if="activeTab === 'storyboard'" class="canvas-stack">
             <article class="storyboard-panel">
-              <header><div><span>SHOT STORYBOARD</span><h3>分镜缩略图故事板</h3></div><small>拆分、合并、换序、调时长均生成局部计划</small></header>
+              <header><div><span>SHOT STORYBOARD</span><h3>分镜缩略图故事板</h3></div><small>镜头内容与时长修改统一生成局部计划</small></header>
               <div class="shot-strip">
-                <article v-for="(shot,index) in sceneShots" :key="shot.shot_id" class="shot-card">
+                <article v-for="shot in sceneShots" :key="shot.shot_id" class="shot-card">
                   <div class="shot-frame"><img v-if="shot.thumbnail_url" :src="shot.thumbnail_url" :alt="`镜头 ${shot.shot_number}`" /><span v-else><Film :size="28" />SHOT {{ shot.shot_number }}</span><b>{{ Number(shot.duration_seconds).toFixed(1) }}s</b></div>
                   <div class="shot-copy"><strong>{{ shot.shot_size }} · {{ shot.camera_motion }}</strong><p>{{ shot.action_description }}</p><code>{{ shot.shot_id }}</code></div>
                   <div class="shot-tools">
-                    <button title="拆分镜头" @click="markShotStructure(shot, 'split')"><Split :size="14" />拆分</button>
-                    <button :disabled="index === sceneShots.length - 1" title="与下一镜合并" @click="markShotStructure(shot, 'merge')"><Layers3 :size="14" />合并</button>
                     <button title="缩短 0.5 秒" @click="retimeShot(shot, -.5)"><TimerReset :size="14" />−0.5s</button>
                     <button title="延长 0.5 秒" @click="retimeShot(shot, .5)"><Clock3 :size="14" />+0.5s</button>
                   </div>
@@ -386,7 +336,7 @@ onMounted(load)
             </article>
 
             <article class="sound-panel">
-              <header><div><span>FORMAL SOUND TASKS</span><h3>BGM / SFX / 环境声</h3></div><div class="sound-style-control"><input v-model="soundStyleTarget" aria-label="目标声音风格" placeholder="cinematic_noir" /><button class="primary-mini" :disabled="saving || !soundStyleTarget.trim()" @click="replaceSoundStyle"><Music2 :size="14" />整集替换并新建版本</button></div></header>
+              <header><div><span>FORMAL SOUND TASKS</span><h3>BGM / SFX / 环境声</h3></div><div class="sound-style-control"><input v-model="soundStyleTarget" aria-label="目标声音风格" placeholder="cinematic_noir" /><button class="primary-mini" :disabled="saving || !soundStyleTarget.trim() || !currentTimeline" @click="replaceSoundStyle"><Music2 :size="14" />生成替换计划</button></div></header>
               <div v-for="cue in workspace.sound_cues" :key="cue.sound_cue_version_id" class="cue-row">
                 <i :class="cue.cue_type"><Volume2 :size="15" /></i>
                 <span><strong>{{ soundTrackLabels[cue.cue_type] || cue.cue_type }} · {{ cue.asset_name }}</strong><small>{{ cue.source_hint || cue.event_key || '正式声音任务' }}</small></span>

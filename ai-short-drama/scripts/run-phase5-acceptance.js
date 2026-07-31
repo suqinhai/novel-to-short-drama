@@ -28,6 +28,8 @@ const migrationFiles = [
   'database/15-local-editing-workbench.sql',
   'database/16-performance-continuity-visual-qc.sql',
   'database/17-post-production-creative-workbench.sql',
+  'database/18-effective-input-resolver.sql',
+  'database/19-unified-versioned-change-entry.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -37,6 +39,8 @@ const verifyFiles = [
   'database/14-verify-multi-candidate-selection.sql',
   'database/16-verify-performance-continuity-visual-qc.sql',
   'database/17-verify-post-production-creative-workbench.sql',
+  'database/18-verify-effective-input-resolver.sql',
+  'database/19-verify-unified-versioned-change-entry.sql',
 ];
 
 function loadEnv() {
@@ -106,6 +110,8 @@ try {
   sqlFile(legacyDatabase, 'test-data/phase1-contract-seed.sql', 'seed traced Narrative IR fixture');
   sqlFile(legacyDatabase, 'test-data/phase3-compiler-db-seed.sql', 'seed adaptation compiler fixture');
   sqlFile(legacyDatabase, 'test-data/phase5-postproduction-fixture.sql', 'seed complete Phase 5 post-production mock episode');
+  sqlFile(legacyDatabase, 'test-data/phase18-effective-input-resolver-acceptance.sql',
+    'Effective Input Resolver authority, isolation, blocking and provenance acceptance');
 
   const backendCwd = path.join(root, 'cms/backend');
   run('Go backend unit tests', 'go', ['test', '-p', '1', './...'], {cwd: backendCwd, env: commandEnv});
@@ -129,6 +135,8 @@ try {
     {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPhase5PostProductionMockChainIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE5_POST_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go Effective Input Resolver read-only integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestEffectiveInputResolverIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE18_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go backend vet', 'go', ['vet', './...'], {cwd: backendCwd, env: commandEnv});
 
   const frontendCwd = path.join(root, 'cms/frontend');
@@ -152,6 +160,7 @@ try {
     'validate-phase3-compiler.js', 'validate-phase4-impact.js', 'validate-phase4.js',
     'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
+    'validate-phase18.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
   }

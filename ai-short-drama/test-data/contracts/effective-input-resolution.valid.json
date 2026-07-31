@@ -1,0 +1,31 @@
+{
+  "schema_version": "effective-input-resolution.v1",
+  "resolver_version": "effective-input-resolver.v1",
+  "resolution_id": "eir_11111111111111111111111111111111",
+  "project_id": "project_1",
+  "episode_id": "episode_1",
+  "stage": "image_to_video",
+  "mode": "effective",
+  "status": "blocked",
+  "ready": false,
+  "context_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "resolution_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "items": [
+    {"kind":"narrative_ir","requirement":"required","state":"resolved","input_id":"ir1","input_ids":["ir1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"published","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"adaptation_spec","requirement":"required","state":"resolved","input_id":"spec1","input_ids":["spec1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"active","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"adaptation_plan","requirement":"required","state":"resolved","input_id":"plan1","input_ids":["plan1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"approved","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"episode_plan","requirement":"required","state":"resolved","input_id":"episode-plan1","input_ids":["episode-plan1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"approved","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"pacing_plan","requirement":"required","state":"resolved","input_id":"pacing1","input_ids":["pacing1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"published","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"candidate_selection","requirement":"optional","state":"missing","input_ids":[],"versions":[],"source_status":"missing","content":{},"artifact_ids":[],"reason":"NO_CANDIDATE_SET_FOR_TARGET","blocks":false},
+    {"kind":"performance_bible","requirement":"required","state":"blocked","input_ids":[],"versions":[],"source_status":"incomplete","content":{},"artifact_ids":[],"reason":"LOCKED_PERFORMANCE_BIBLE_MISSING_FOR_CHARACTER","blocks":true},
+    {"kind":"continuity_ledger","requirement":"required","state":"resolved","input_id":"ledger1","input_ids":["ledger1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"valid","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"visual_profiles","requirement":"required","state":"resolved","input_id":"profile1","input_ids":["profile1"],"versions":[1],"content_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","source_status":"approved_locked","content":{},"artifact_ids":[],"blocks":false},
+    {"kind":"editing_template","requirement":"optional","state":"missing","input_ids":[],"versions":[],"source_status":"missing","content":{},"artifact_ids":[],"reason":"CURRENT_EDITING_TEMPLATE_BINDING_REQUIRED","blocks":false},
+    {"kind":"timeline","requirement":"optional","state":"missing","input_ids":[],"versions":[],"source_status":"missing","content":{},"artifact_ids":[],"reason":"CURRENT_APPROVED_TIMELINE_REQUIRED","blocks":false}
+  ],
+  "context": {},
+  "missing": ["candidate_selection", "editing_template", "timeline"],
+  "blockers": [
+    {"kind":"performance_bible","state":"blocked","reason":"LOCKED_PERFORMANCE_BIBLE_MISSING_FOR_CHARACTER"}
+  ]
+}

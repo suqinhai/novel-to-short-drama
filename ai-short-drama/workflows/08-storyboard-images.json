@@ -172,7 +172,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const r=$('Restore Request').first().json,rows=$input.all().map(x=>x.json);if(!rows.length)throw new Error('STORYBOARD_NOT_APPROVED: no eligible approved shots');let missingChars=[],missingLocs=[];for(const s of rows){const got=new Set((s.characters||[]).filter(x=>x.asset_id&&x.costume_id).map(x=>x.character_id));for(const id of s.character_ids||[])if(!got.has(id))missingChars.push(id);if(s.location_id&&(!s.location||!s.location.asset_id))missingLocs.push(s.location_id);}missingChars=[...new Set(missingChars)];missingLocs=[...new Set(missingLocs)];if(($env.REQUIRE_LOCKED_ASSETS||'true')==='true'&&(missingChars.length||missingLocs.length)){const e=new Error('REQUIRED_ASSETS_NOT_LOCKED: '+JSON.stringify({missing_character_ids:missingChars,missing_location_ids:missingLocs,missing_costume_ids:[]}));throw e;}return rows.map(s=>{const refs=[...(s.characters||[]).map(x=>x.asset_id),s.location?.asset_id].filter(Boolean),charText=(s.characters||[]).map(x=>`${x.base_prompt}；当前服装：${x.costume_prompt}`).join('；'),prompt=[s.style_prompt,`${s.aspect_ratio}，${s.resolution_width}x${s.resolution_height}`,s.location?.base_prompt,`灯光：${s.lighting}，气氛：${s.atmosphere}`,charText,`动作与表情：${s.action_description}，${s.facial_expression}`,`镜头：${s.shot_size}，${s.camera_angle}，${s.camera_motion}，${s.composition}`,`连续性：${JSON.stringify(s.continuity_notes)}`,'高质量短剧关键帧，无文字无水印'].filter(Boolean).join('。');return {json:{...r,shot:s,reference_asset_ids:refs,reference_urls:[...(s.characters||[]).map(x=>x.reference_url),s.location?.reference_url].filter(Boolean),final_prompt:prompt,negative_prompt:[s.style_negative,...(s.characters||[]).map(x=>x.negative_prompt),s.location?.negative_prompt,'字幕，气泡，文字，水印，Logo'].filter(Boolean).join('，')}}});"
+        "jsCode": "const r=$('Restore Request').first().json,rows=$input.all().map(x=>x.json);if(!rows.length)throw new Error('STORYBOARD_NOT_APPROVED: no eligible approved shots');let missingChars=[],missingLocs=[];for(const s of rows){const got=new Set((s.characters||[]).filter(x=>x.asset_id&&x.costume_id).map(x=>x.character_id));for(const id of s.character_ids||[])if(!got.has(id))missingChars.push(id);if(s.location_id&&(!s.location||!s.location.asset_id))missingLocs.push(s.location_id);}missingChars=[...new Set(missingChars)];missingLocs=[...new Set(missingLocs)];if(($env.REQUIRE_LOCKED_ASSETS||'true')==='true'&&(missingChars.length||missingLocs.length)){const e=new Error('REQUIRED_ASSETS_NOT_LOCKED: '+JSON.stringify({missing_character_ids:missingChars,missing_location_ids:missingLocs,missing_costume_ids:[]}));throw e;}return rows.map(s=>{const refs=[...(s.characters||[]).map(x=>x.asset_id),s.location?.asset_id].filter(Boolean),charText=(s.characters||[]).map(x=>`${x.base_prompt}；当前服装：${x.costume_prompt}`).join('；'),prompt=[s.style_prompt,`${s.aspect_ratio}，${s.resolution_width}x${s.resolution_height}`,s.location?.base_prompt,`灯光：${s.lighting}，气氛：${s.atmosphere}`,charText,`动作与表情：${s.action_description}，${s.facial_expression}`,`镜头：${s.shot_size}，${s.camera_angle}，${s.camera_motion}，${s.composition}`,`连续性：${JSON.stringify(s.continuity_notes)}`,'权威输入约束：'+JSON.stringify(r.effective_context||{}),'高质量短剧关键帧，无文字无水印'].filter(Boolean).join('。');return {json:{...r,shot:s,reference_asset_ids:refs,reference_urls:[...(s.characters||[]).map(x=>x.reference_url),s.location?.reference_url].filter(Boolean),final_prompt:prompt,negative_prompt:[s.style_negative,...(s.characters||[]).map(x=>x.negative_prompt),s.location?.negative_prompt,'字幕，气泡，文字，水印，Logo'].filter(Boolean).join('，')}}});"
       },
       "id": "08-prepare",
       "name": "Validate Locks and Build Final Prompts",
@@ -403,6 +403,68 @@
         680,
         420
       ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT drama.claim_effective_inputs($1,NULLIF($2,''),$3,$4,$5) effective_inputs;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id||'','storyboard_images',$json.trace_id,Number($json.generation_version||1)]}}"
+        }
+      },
+      "id": "08-effective-input-resolve",
+      "name": "Resolve Effective Inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1040,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const request=$('Validate and Normalize').first().json,resolution=$json.effective_inputs;if(!resolution?.allowed){const error=new Error('EFFECTIVE_INPUTS_BLOCKED: '+JSON.stringify({resolution_id:resolution?.resolution_id,status:resolution?.status,missing:resolution?.missing||[],blockers:resolution?.blockers||[]}));error.name='EFFECTIVE_INPUTS_BLOCKED';throw error;}const effective_context=resolution.context||{};return [{json:{...request,effective_inputs:resolution,effective_context,payload:{...(request.payload||{}),effective_inputs:{resolution_id:resolution.resolution_id,context_hash:resolution.context_hash,resolution_hash:resolution.resolution_hash,context:effective_context}}}}];"
+      },
+      "id": "08-effective-input-guard",
+      "name": "Enforce Effective Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT $1::jsonb response,drama.record_effective_input_outputs($2,$3,NULLIF($4,'')) effective_input_provenance;",
+        "options": {
+          "queryReplacement": "={{[JSON.stringify($json.response),$('Enforce Effective Inputs').first().json.trace_id,'storyboard_images','']}}"
+        }
+      },
+      "id": "08-effective-input-provenance",
+      "name": "Record Effective Input Provenance",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1010,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
     }
   ],
   "connections": {
@@ -421,7 +483,7 @@
       "main": [
         [
           {
-            "node": "Idempotency Task Gate",
+            "node": "Resolve Effective Inputs",
             "type": "main",
             "index": 0
           }
@@ -609,7 +671,7 @@
       "main": [
         [
           {
-            "node": "Final Response",
+            "node": "Record Effective Input Provenance",
             "type": "main",
             "index": 0
           }
@@ -632,6 +694,60 @@
         [
           {
             "node": "Failed Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Enforce Effective Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Effective Input Provenance": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
             "type": "main",
             "index": 0
           }

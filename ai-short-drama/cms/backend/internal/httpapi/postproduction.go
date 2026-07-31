@@ -75,35 +75,13 @@ func (h *Handler) validateDialogueTimings(c *gin.Context) {
 }
 
 func (h *Handler) applyEditingTemplate(c *gin.Context) {
-	var input store.ApplyEditingTemplateInput
-	if err := c.ShouldBindJSON(&input); err != nil || input.EditingTemplateVersionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "editing_template_version_id is required"}})
-		return
-	}
-	result, err := h.store.ApplyEditingTemplate(
-		c.Request.Context(), c.Param("projectID"), c.Param("episodeID"), input,
-	)
-	if err != nil {
-		writePostProductionError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": result})
+	respondError(c, http.StatusGone, "DIRECT_TIMELINE_MUTATION_DISABLED",
+		"剪辑模板修改必须先创建 change plan，再确认并执行")
 }
 
 func (h *Handler) replaceEpisodeSoundStyle(c *gin.Context) {
-	var input store.ReplaceSoundStyleInput
-	if err := c.ShouldBindJSON(&input); err != nil || input.ToStyleGroup == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "to_style_group is required"}})
-		return
-	}
-	result, err := h.store.ReplaceEpisodeSoundStyle(
-		c.Request.Context(), c.Param("projectID"), c.Param("episodeID"), input,
-	)
-	if err != nil {
-		writePostProductionError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": result})
+	respondError(c, http.StatusGone, "DIRECT_TIMELINE_MUTATION_DISABLED",
+		"声音风格修改必须先创建 change plan，再确认并执行")
 }
 
 func (h *Handler) listTimelineVersions(c *gin.Context) {
@@ -118,22 +96,8 @@ func (h *Handler) listTimelineVersions(c *gin.Context) {
 }
 
 func (h *Handler) restoreTimelineVersion(c *gin.Context) {
-	var input restoreTimelineRequest
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "invalid restore request"}})
-			return
-		}
-	}
-	result, err := h.store.RestoreTimelineVersion(
-		c.Request.Context(), c.Param("projectID"), c.Param("episodeID"),
-		c.Param("timelineID"), input.Actor,
-	)
-	if err != nil {
-		writePostProductionError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": result})
+	respondError(c, http.StatusGone, "DIRECT_TIMELINE_MUTATION_DISABLED",
+		"时间线恢复也必须创建新 change plan，不允许直接切换 current")
 }
 
 func writePostProductionError(c *gin.Context, err error) {

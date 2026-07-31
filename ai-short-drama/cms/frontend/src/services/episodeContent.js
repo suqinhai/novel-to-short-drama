@@ -33,6 +33,7 @@ export function cloneEpisodeContent(content) {
 export function buildEpisodeContentPayload(content) {
   const outline = content.outline || {}
   const payload = {
+    expected_version: Number(content.revision || content.script?.version || outline.version || 1),
     outline: {
       title: outline.title || '',
       logline: outline.logline || '',

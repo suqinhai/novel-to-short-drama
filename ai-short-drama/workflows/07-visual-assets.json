@@ -171,7 +171,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto=require('crypto'),r=$('Restore Request').first().json,c=$json;if(!c.project_id)throw new Error('PROJECT_NOT_FOUND');if(!c.story_bible_id)throw new Error('STORY_BIBLE_NOT_APPROVED');if(!(c.characters||[]).length&&!(c.locations||[]).length)throw new Error('VISUAL_PROFILE_NOT_FOUND');if(!c.visual_style||!c.aspect_ratio)throw new Error('VISUAL_STYLE_NOT_FOUND');const h=s=>crypto.createHash('sha1').update(s).digest('hex').slice(0,20),v=r.generation_version,chars=r.payload.location_id?[]:(c.characters||[]).filter(x=>!r.payload.character_id||x.character_id===r.payload.character_id).slice(0,r.test_mode?Number($env.TEST_MAX_CHARACTERS||2):999),locs=r.payload.character_id?[]:(c.locations||[]).filter(x=>!r.payload.location_id||x.location_id===r.payload.location_id).slice(0,r.test_mode?Number($env.TEST_MAX_LOCATIONS||2):999),style={style_id:`style_${h(r.project_id+':'+v)}`,project_id:r.project_id,name:c.visual_style,style_type:'project',description:c.visual_style,positive_prompt:`${c.visual_style}，统一电影感，角色和场景连续`,negative_prompt:'文字，水印，Logo，多手多脚，面部变形，构图异常',aspect_ratio:c.aspect_ratio,width:Number($env.IMAGE_DEFAULT_WIDTH||1024),height:Number($env.IMAGE_DEFAULT_HEIGHT||1792),version:v};const profiles=[],costumes=[],locations=[],requests=[];if(r.action==='regenerate'&&r.payload.source_asset_id){const p=r.payload,sourcePrompt=String(p.source_prompt||'').trim(),adjustment=String(p.prompt_adjustment||p.revision_instruction||p.rejection_reason||'').trim(),refs=Array.isArray(p.reference_image_urls)?p.reference_image_urls.filter(Boolean):[];if(!p.profile_id||!p.asset_type||!p.source_entity_type||!p.source_entity_id||!sourcePrompt)throw new Error('VISUAL_ASSET_CONTEXT_INVALID');requests.push({entity_type:p.source_entity_type,entity_id:p.source_entity_id,profile_id:p.profile_id,asset_type:p.asset_type,prompt:adjustment?sourcePrompt+'\\nRevision request: '+adjustment:sourcePrompt,negative_prompt:String(p.source_negative_prompt||style.negative_prompt),reference_image_urls:refs,regenerated_from_asset_id:p.source_asset_id,generation_mode:p.generation_mode||'replace'});return [{json:{...r,context:c,style,profiles,costumes,locations,requests:requests.map((q,n)=>({...q,request_index:n}))}}];}for(const x of chars){const pid=`cvp_${h(x.character_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.gender||'unknown',x.identity||'',(x.appearance||[]).join('，'),(x.personality||[]).join('，'),'单人，干净中性背景，稳定五官与发型'].filter(Boolean).join('，');profiles.push({profile_id:pid,character_id:x.character_id,version:v,canonical_name:name,gender:x.gender||'unknown',apparent_age:x.age==null?'设计推断：成年':String(x.age),facial_features:{design_inference:true},distinctive_features:x.appearance||[],prohibited_changes:['身份特征','脸型','发型','显著特征'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});const cid=`costume_${h(x.character_id+':default:'+v)}`;costumes.push({costume_id:cid,character_id:x.character_id,profile_id:pid,costume_name:'default',usage_context:'default',costume_prompt:`${base}，符合${x.identity||'人物身份'}的日常服装`,negative_prompt:style.negative_prompt,version:v});for(const typ of ['character_front','character_full_body'].slice(0,r.test_mode?Number($env.TEST_MAX_ASSETS_PER_ENTITY||2):2))requests.push({entity_type:'character',entity_id:x.character_id,profile_id:pid,asset_type:typ,prompt:`${style.positive_prompt}，${base}，${typ==='character_front'?'正面半身肖像':'全身定妆照'}`,negative_prompt:style.negative_prompt});}for(const x of locs){const pid=`lvp_${h(x.location_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.description||'','固定空间布局，标志物位置稳定，无人物'].filter(Boolean).join('，');locations.push({profile_id:pid,location_id:x.location_id,version:v,canonical_name:name,layout_description:x.description||'',key_objects:[],fixed_features:[x.description||name],prohibited_changes:['建筑布局','标志物位置'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});requests.push({entity_type:'location',entity_id:x.location_id,profile_id:pid,asset_type:'location_reference',prompt:`${style.positive_prompt}，${base}`,negative_prompt:style.negative_prompt});}if(!requests.length)throw new Error('VISUAL_PROFILE_NOT_FOUND');return [{json:{...r,context:c,style,profiles,costumes,locations,requests:requests.map((q,n)=>({...q,request_index:n}))}}];"
+        "jsCode": "const crypto=require('crypto'),r=$('Restore Request').first().json,c=$json;if(!c.project_id)throw new Error('PROJECT_NOT_FOUND');if(!c.story_bible_id)throw new Error('STORY_BIBLE_NOT_APPROVED');if(!(c.characters||[]).length&&!(c.locations||[]).length)throw new Error('VISUAL_PROFILE_NOT_FOUND');if(!c.visual_style||!c.aspect_ratio)throw new Error('VISUAL_STYLE_NOT_FOUND');const h=s=>crypto.createHash('sha1').update(s).digest('hex').slice(0,20),v=r.generation_version,chars=r.payload.location_id?[]:(c.characters||[]).filter(x=>!r.payload.character_id||x.character_id===r.payload.character_id).slice(0,r.test_mode?Number($env.TEST_MAX_CHARACTERS||2):999),locs=r.payload.character_id?[]:(c.locations||[]).filter(x=>!r.payload.location_id||x.location_id===r.payload.location_id).slice(0,r.test_mode?Number($env.TEST_MAX_LOCATIONS||2):999),style={style_id:`style_${h(r.project_id+':'+v)}`,project_id:r.project_id,name:c.visual_style,style_type:'project',description:c.visual_style,positive_prompt:`${c.visual_style}，统一电影感，角色和场景连续`,negative_prompt:'文字，水印，Logo，多手多脚，面部变形，构图异常',aspect_ratio:c.aspect_ratio,width:Number($env.IMAGE_DEFAULT_WIDTH||1024),height:Number($env.IMAGE_DEFAULT_HEIGHT||1792),version:v};const profiles=[],costumes=[],locations=[],requests=[];if(r.action==='regenerate'&&r.payload.source_asset_id){const p=r.payload,sourcePrompt=String(p.source_prompt||'').trim(),adjustment=String(p.prompt_adjustment||p.revision_instruction||p.rejection_reason||'').trim(),refs=Array.isArray(p.reference_image_urls)?p.reference_image_urls.filter(Boolean):[];if(!p.profile_id||!p.asset_type||!p.source_entity_type||!p.source_entity_id||!sourcePrompt)throw new Error('VISUAL_ASSET_CONTEXT_INVALID');requests.push({entity_type:p.source_entity_type,entity_id:p.source_entity_id,profile_id:p.profile_id,asset_type:p.asset_type,prompt:adjustment?sourcePrompt+'\\nRevision request: '+adjustment:sourcePrompt,negative_prompt:String(p.source_negative_prompt||style.negative_prompt),reference_image_urls:refs,regenerated_from_asset_id:p.source_asset_id,generation_mode:p.generation_mode||'replace'});return [{json:{...r,context:c,style,profiles,costumes,locations,requests:requests.map((q,n)=>({...q,request_index:n,prompt:[q.prompt,'权威输入约束：'+JSON.stringify(r.effective_context||{})].join('。'),effective_input_context:r.effective_context||{}}))}}];}for(const x of chars){const pid=`cvp_${h(x.character_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.gender||'unknown',x.identity||'',(x.appearance||[]).join('，'),(x.personality||[]).join('，'),'单人，干净中性背景，稳定五官与发型'].filter(Boolean).join('，');profiles.push({profile_id:pid,character_id:x.character_id,version:v,canonical_name:name,gender:x.gender||'unknown',apparent_age:x.age==null?'设计推断：成年':String(x.age),facial_features:{design_inference:true},distinctive_features:x.appearance||[],prohibited_changes:['身份特征','脸型','发型','显著特征'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});const cid=`costume_${h(x.character_id+':default:'+v)}`;costumes.push({costume_id:cid,character_id:x.character_id,profile_id:pid,costume_name:'default',usage_context:'default',costume_prompt:`${base}，符合${x.identity||'人物身份'}的日常服装`,negative_prompt:style.negative_prompt,version:v});for(const typ of ['character_front','character_full_body'].slice(0,r.test_mode?Number($env.TEST_MAX_ASSETS_PER_ENTITY||2):2))requests.push({entity_type:'character',entity_id:x.character_id,profile_id:pid,asset_type:typ,prompt:`${style.positive_prompt}，${base}，${typ==='character_front'?'正面半身肖像':'全身定妆照'}`,negative_prompt:style.negative_prompt});}for(const x of locs){const pid=`lvp_${h(x.location_id+':'+v)}`,name=x.canonical_name||x.name,base=[name,x.description||'','固定空间布局，标志物位置稳定，无人物'].filter(Boolean).join('，');locations.push({profile_id:pid,location_id:x.location_id,version:v,canonical_name:name,layout_description:x.description||'',key_objects:[],fixed_features:[x.description||name],prohibited_changes:['建筑布局','标志物位置'],base_prompt:base,negative_prompt:style.negative_prompt,source_story_bible_version:c.story_bible_version});requests.push({entity_type:'location',entity_id:x.location_id,profile_id:pid,asset_type:'location_reference',prompt:`${style.positive_prompt}，${base}`,negative_prompt:style.negative_prompt});}if(!requests.length)throw new Error('VISUAL_PROFILE_NOT_FOUND');return [{json:{...r,context:c,style,profiles,costumes,locations,requests:requests.map((q,n)=>({...q,request_index:n,prompt:[q.prompt,'权威输入约束：'+JSON.stringify(r.effective_context||{})].join('。'),effective_input_context:r.effective_context||{}}))}}];"
       },
       "id": "07-prepare",
       "name": "Build Stable Visual Profiles",
@@ -404,12 +404,102 @@
       ]
     },
     {
-      "parameters": {"operation":"executeQuery","query":"UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,output_data=$3::jsonb,completed_at=now()WHERE idempotency_key=$4;SELECT $3::jsonb response;","options":{"queryReplacement":"={{[$json.error.code,$json.error.message,JSON.stringify($json),$('Validate and Normalize').first().json.idempotency_key]}}"}},
-      "id":"07-save-failure","name":"Save Workflow Failure","type":"n8n-nodes-base.postgres","typeVersion":2.6,"position":[680,420],
-      "credentials":{"postgres":{"id":"REPLACE_WITH_POSTGRES_CREDENTIAL_ID","name":"Short Drama PostgreSQL"}}
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE drama.workflow_tasks SET status='failed',error_code=$1,error_message=$2,output_data=$3::jsonb,completed_at=now()WHERE idempotency_key=$4;SELECT $3::jsonb response;",
+        "options": {
+          "queryReplacement": "={{[$json.error.code,$json.error.message,JSON.stringify($json),$('Validate and Normalize').first().json.idempotency_key]}}"
+        }
+      },
+      "id": "07-save-failure",
+      "name": "Save Workflow Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        680,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
     },
     {
-      "parameters":{"jsCode":"return [{json:$json.response}];"},"id":"07-failed-final","name":"Failed Final","type":"n8n-nodes-base.code","typeVersion":2,"position":[900,420]
+      "parameters": {
+        "jsCode": "return [{json:$json.response}];"
+      },
+      "id": "07-failed-final",
+      "name": "Failed Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT drama.claim_effective_inputs($1,NULLIF($2,''),$3,$4,$5) effective_inputs;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id||'','visual_assets',$json.trace_id,Number($json.generation_version||1)]}}"
+        }
+      },
+      "id": "07-effective-input-resolve",
+      "name": "Resolve Effective Inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1040,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const request=$('Validate and Normalize').first().json,resolution=$json.effective_inputs;if(!resolution?.allowed){const error=new Error('EFFECTIVE_INPUTS_BLOCKED: '+JSON.stringify({resolution_id:resolution?.resolution_id,status:resolution?.status,missing:resolution?.missing||[],blockers:resolution?.blockers||[]}));error.name='EFFECTIVE_INPUTS_BLOCKED';throw error;}const effective_context=resolution.context||{};return [{json:{...request,effective_inputs:resolution,effective_context,payload:{...(request.payload||{}),effective_inputs:{resolution_id:resolution.resolution_id,context_hash:resolution.context_hash,resolution_hash:resolution.resolution_hash,context:effective_context}}}}];"
+      },
+      "id": "07-effective-input-guard",
+      "name": "Enforce Effective Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT $1::jsonb response,drama.record_effective_input_outputs($2,$3,NULLIF($4,'')) effective_input_provenance;",
+        "options": {
+          "queryReplacement": "={{[JSON.stringify($json.response),$('Enforce Effective Inputs').first().json.trace_id,'visual_assets','']}}"
+        }
+      },
+      "id": "07-effective-input-provenance",
+      "name": "Record Effective Input Provenance",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1450,
+        -100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "name": "Short Drama PostgreSQL"
+        }
+      },
+      "onError": "continueErrorOutput"
     }
   ],
   "connections": {
@@ -428,7 +518,7 @@
       "main": [
         [
           {
-            "node": "Idempotency Task Gate",
+            "node": "Resolve Effective Inputs",
             "type": "main",
             "index": 0
           }
@@ -595,7 +685,22 @@
       ]
     },
     "Save Asset and Review": {
-      "main": [[{"node":"Loop Asset Requests","type":"main","index":0}],[{"node":"Failure Response","type":"main","index":0}]]
+      "main": [
+        [
+          {
+            "node": "Loop Asset Requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Collect Visual Asset Stats": {
       "main": [
@@ -623,7 +728,7 @@
       "main": [
         [
           {
-            "node": "Final Response",
+            "node": "Record Effective Input Provenance",
             "type": "main",
             "index": 0
           }
@@ -631,10 +736,80 @@
       ]
     },
     "Failure Response": {
-      "main": [[{"node":"Save Workflow Failure","type":"main","index":0}]]
+      "main": [
+        [
+          {
+            "node": "Save Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Save Workflow Failure": {
-      "main": [[{"node":"Failed Final","type":"main","index":0}]]
+      "main": [
+        [
+          {
+            "node": "Failed Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Enforce Effective Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Task Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Effective Input Provenance": {
+      "main": [
+        [
+          {
+            "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {},

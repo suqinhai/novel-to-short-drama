@@ -69,3 +69,60 @@ func TestRejectsFieldOutsideAllowList(t *testing.T) {
 		t.Fatalf("expected invalid plan, got %v", err)
 	}
 }
+
+func TestDialoguePlanIncludesOnlyPreciseDownstreamKinds(t *testing.T) {
+	plan, err := Build(Request{
+		Instruction: "replace one dialogue line",
+		Target:      Target{EntityType: "dialogue", EntityID: "dialogue-1", Version: 4},
+		Changes:     []Change{{Operation: "replace", Field: "text", Value: "new line"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"dialogue_audio", "subtitle_cue", "storyboard_shot_interval", "edit_timeline_interval",
+	} {
+		if !contains(plan.Impact.Downstream, expected) {
+			t.Fatalf("missing precise dialogue impact %s: %+v", expected, plan.Impact)
+		}
+	}
+	if !plan.Rebuild.Voice || !plan.Rebuild.Subtitle || !plan.Rebuild.Video || !plan.Rebuild.Edit {
+		t.Fatalf("dialogue rebuild decision is incomplete: %+v", plan.Rebuild)
+	}
+	if plan.Rebuild.Image || plan.Rebuild.Continuity {
+		t.Fatalf("dialogue edit expanded to unrelated rebuilds: %+v", plan.Rebuild)
+	}
+}
+
+func TestEpisodeNestedFieldAndExplicitRebuildSelection(t *testing.T) {
+	plan, err := Build(Request{
+		Instruction: "replace one nested dialogue line",
+		Target:      Target{EntityType: "episode_content", EntityID: "episode-1", Version: 2},
+		Changes: []Change{{
+			Operation: "replace", Field: "dialogue.dialogue-1.text", Value: "new line",
+		}},
+		RebuildTasks: []string{"update_subtitle", "recompose_timeline"},
+		Locks:        []string{"character"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Rebuild.Voice || !plan.Rebuild.Subtitle || plan.Rebuild.Video || !plan.Rebuild.Edit {
+		t.Fatalf("explicit rebuild selection was not preserved: %+v", plan.Rebuild)
+	}
+	if !contains(plan.Locks, "character") {
+		t.Fatalf("explicit lock missing: %+v", plan.Locks)
+	}
+}
+
+func TestRejectsRebuildOutsideCalculatedImpact(t *testing.T) {
+	_, err := Build(Request{
+		Instruction:  "replace one timeline item",
+		Target:       Target{EntityType: "timeline_item", EntityID: "item-1", Version: 1},
+		Changes:      []Change{{Operation: "replace", Field: "source_url", Value: "media://new"}},
+		RebuildTasks: []string{"regenerate_voice"},
+	})
+	if !errors.Is(err, ErrInvalidPlan) {
+		t.Fatalf("expected rebuild scope validation error, got %v", err)
+	}
+}

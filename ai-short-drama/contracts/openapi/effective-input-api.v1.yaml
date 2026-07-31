@@ -1,0 +1,78 @@
+openapi: 3.1.0
+info:
+  title: Effective Input Resolver API
+  version: 1.0.0
+  description: Read-only resolution of the authoritative inputs consumed by one project/episode/stage.
+servers:
+  - url: /api/v1
+paths:
+  /projects/{project_id}/episodes/{episode_id}/effective-inputs:
+    get:
+      operationId: resolveEpisodeEffectiveInputs
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {$ref: '#/components/parameters/Stage'}
+      responses:
+        '200':
+          description: Resolution is returned even when status is blocked or needs_review.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '../json-schema/effective-input-resolution.v1.json'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /projects/{project_id}/effective-inputs:
+    get:
+      operationId: resolveProjectEffectiveInputs
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/Stage'}
+      responses:
+        '200':
+          description: Project-scoped resolution for consumers that do not yet have an episode.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '../json-schema/effective-input-resolution.v1.json'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+components:
+  parameters:
+    ProjectID:
+      name: project_id
+      in: path
+      required: true
+      schema: {type: string}
+    EpisodeID:
+      name: episode_id
+      in: path
+      required: true
+      schema: {type: string}
+    Stage:
+      name: stage
+      in: query
+      required: true
+      schema:
+        enum: ['05', '06', '07', '08', '09', '10', '17']
+  responses:
+    Error:
+      description: Invalid scope or missing project/episode.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: {type: string}
+                  message: {type: string}

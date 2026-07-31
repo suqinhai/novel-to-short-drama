@@ -21,6 +21,8 @@ type createChangePlanRequest struct {
 	Changes        []localedit.Change `json:"changes,omitempty"`
 	ChangeKind     string             `json:"change_kind,omitempty"`
 	SemanticChange *bool              `json:"semantic_change,omitempty"`
+	RebuildTasks   []string           `json:"rebuild_tasks,omitempty"`
+	Locks          []string           `json:"locks,omitempty"`
 	RequestedBy    *string            `json:"requested_by,omitempty"`
 }
 
@@ -59,7 +61,7 @@ func (h *Handler) createChangePlan(c *gin.Context) {
 	plan, err := localedit.Build(localedit.Request{
 		Instruction: input.Instruction, Target: input.Target, MustPreserve: input.MustPreserve,
 		AllowedFields: input.AllowedFields, Changes: input.Changes, ChangeKind: input.ChangeKind,
-		SemanticChange: input.SemanticChange,
+		SemanticChange: input.SemanticChange, RebuildTasks: input.RebuildTasks, Locks: input.Locks,
 	})
 	if err != nil {
 		respondError(c, http.StatusUnprocessableEntity, "CHANGE_PLAN_VALIDATION_FAILED", err.Error())
@@ -111,6 +113,31 @@ func (h *Handler) confirmChangePlan(c *gin.Context) {
 func (h *Handler) executeChangePlan(c *gin.Context) {
 	result, err := h.store.ExecuteChangePlan(c.Request.Context(), c.Param("projectID"), c.Param("changePlanID"))
 	handleChangePlanMutation(c, result, err)
+}
+
+func (h *Handler) updateRebuildTaskStatus(c *gin.Context) {
+	var input store.RebuildTaskStatusInput
+	decoder := json.NewDecoder(io.LimitReader(c.Request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_REBUILD_TASK_STATUS", err.Error())
+		return
+	}
+	result, err := h.store.UpdateRebuildTaskStatus(
+		c.Request.Context(), c.Param("projectID"), c.Param("changePlanID"),
+		c.Param("rebuildTaskID"), input,
+	)
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		respondError(c, http.StatusConflict, "REBUILD_TASK_STATUS_CONFLICT",
+			"重建任务不存在或状态转换无效")
+	case errors.Is(err, localedit.ErrInvalidPlan):
+		respondError(c, http.StatusUnprocessableEntity, "INVALID_REBUILD_TASK_STATUS", err.Error())
+	case err != nil:
+		respondError(c, http.StatusInternalServerError, "REBUILD_TASK_STATUS_FAILED", err.Error())
+	default:
+		c.JSON(http.StatusOK, gin.H{"data": result})
+	}
 }
 
 func handleChangePlanMutation(c *gin.Context, result store.ChangePlan, err error) {

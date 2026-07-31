@@ -18,3 +18,5 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/15-local-editing-workbench.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/16-performance-continuity-visual-qc.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/17-post-production-creative-workbench.sql
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/18-effective-input-resolver.sql
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/19-unified-versioned-change-entry.sql

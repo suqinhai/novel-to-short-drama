@@ -38,6 +38,10 @@ services:
       - ./database/16-verify-performance-continuity-visual-qc.sql:/opt/drama/16-verify-performance-continuity-visual-qc.sql:ro
       - ./database/17-post-production-creative-workbench.sql:/opt/drama/17-post-production-creative-workbench.sql:ro
       - ./database/17-verify-post-production-creative-workbench.sql:/opt/drama/17-verify-post-production-creative-workbench.sql:ro
+      - ./database/18-effective-input-resolver.sql:/opt/drama/18-effective-input-resolver.sql:ro
+      - ./database/18-verify-effective-input-resolver.sql:/opt/drama/18-verify-effective-input-resolver.sql:ro
+      - ./database/19-unified-versioned-change-entry.sql:/opt/drama/19-unified-versioned-change-entry.sql:ro
+      - ./database/19-verify-unified-versioned-change-entry.sql:/opt/drama/19-verify-unified-versioned-change-entry.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

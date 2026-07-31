@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
-  AlertCircle, AlertTriangle, Clock3, Eye, FileText, LoaderCircle, MapPin,
-  MessageSquareText, Pencil, Save, ScrollText, X,
+  AlertCircle, AlertTriangle, CheckCircle2, Clock3, Eye, FileText, GitCompareArrows,
+  LoaderCircle, MapPin, MessageSquareText, Pencil, Play, Save, ScrollText,
+  ShieldCheck, X,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
 import { buildEpisodeContentPayload, cloneEpisodeContent, episodeContentChanged } from '../services/episodeContent'
@@ -22,10 +23,12 @@ const error = ref('')
 const editing = ref(false)
 const activeTab = ref('outline')
 const savedNotice = ref('')
+const pendingPlan = ref(null)
 
 const changed = computed(() => content.value && draft.value && episodeContentChanged(content.value, draft.value))
 const current = computed(() => editing.value ? draft.value : content.value)
 const script = computed(() => current.value?.script || null)
+const planDiff = computed(() => pendingPlan.value?.plan?.expected_changes || [])
 
 function formatDuration(seconds) {
   const value = Number(seconds || 0)
@@ -36,6 +39,12 @@ function formatDuration(seconds) {
 function actionDescription(action) {
   if (typeof action === 'string') return action
   return action?.description || action?.text || action?.visual || '未填写动作描述'
+}
+
+function formatDiffValue(value) {
+  if (value == null) return '—'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
 
 async function loadContent() {
@@ -62,6 +71,7 @@ function cancelEdit() {
   draft.value = cloneEpisodeContent(content.value)
   editing.value = false
   error.value = ''
+  pendingPlan.value = null
 }
 
 function requestClose() {
@@ -76,20 +86,58 @@ async function saveContent() {
   error.value = ''
   savedNotice.value = ''
   try {
-    const updated = await api.updateEpisodeContent(
+    pendingPlan.value = await api.createEpisodeContentChangePlan(
       props.projectId,
       props.episodeRun.episode_run_id,
-      buildEpisodeContentPayload(draft.value),
+      {
+        ...buildEpisodeContentPayload(draft.value),
+        must_preserve: ['未修改字段', '来源证据', '人物与场景标识'],
+        locks: ['character'],
+      },
     )
-    content.value = updated
-    draft.value = cloneEpisodeContent(updated)
-    editing.value = false
-    savedNotice.value = '内容已保存'
-    emit('saved', updated)
+    savedNotice.value = '修改计划已生成；正式内容尚未改变。'
   } catch (err) {
     error.value = err.message
   } finally {
     saving.value = false
+  }
+}
+
+async function confirmPlan(executeImmediately = false) {
+  if (pendingPlan.value?.status !== 'validated' || saving.value) return
+  saving.value = true
+  error.value = ''
+  try {
+    pendingPlan.value = await api.confirmChangePlan(
+      props.projectId, pendingPlan.value.change_plan_id, { actor: 'episode-content-modal' },
+    )
+    savedNotice.value = '计划已确认；正式内容仍未改变。'
+    if (executeImmediately) await executePlan(true)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    saving.value = false
+  }
+}
+
+async function executePlan(nested = false) {
+  if (pendingPlan.value?.status !== 'confirmed') return
+  if (!nested) saving.value = true
+  error.value = ''
+  try {
+    pendingPlan.value = await api.executeChangePlan(
+      props.projectId, pendingPlan.value.change_plan_id,
+    )
+    await loadContent()
+    draft.value = cloneEpisodeContent(content.value)
+    editing.value = false
+    savedNotice.value = '已创建新版本并切换 current；重建任务已进入 pending。'
+    emit('saved', content.value)
+    pendingPlan.value = null
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    if (!nested) saving.value = false
   }
 }
 
@@ -144,11 +192,33 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
           <AlertTriangle :size="17" /><div><strong>当前只读</strong><p>{{ content.read_only_reason }}</p></div>
         </div>
         <div v-if="content.has_downstream_assets" class="episode-content-warning downstream">
-          <AlertTriangle :size="17" /><div><strong>已有下游内容</strong><p>本集已经生成分镜或后续资产。修改剧本不会自动重做这些内容，请在保存后按需重新生成。</p></div>
+          <AlertTriangle :size="17" /><div><strong>已有下游内容</strong><p>确认前会列出精确受影响 artifact、时间区间与重建任务；未受影响内容不会失效。</p></div>
         </div>
         <div v-if="savedNotice" class="episode-save-notice">{{ savedNotice }}</div>
         <div v-if="error" class="error-banner episode-content-error"><AlertCircle :size="17" />{{ error }}</div>
 
+        <section v-if="pendingPlan" class="episode-change-plan">
+          <header><GitCompareArrows :size="18" /><div><strong>修改计划预览</strong><small>{{ pendingPlan.change_plan_id }} · {{ pendingPlan.status }}</small></div></header>
+          <div class="episode-plan-summary">
+            <article><b>must_preserve</b><span v-for="item in pendingPlan.plan.must_preserve" :key="item"><ShieldCheck :size="12" />{{ item }}</span></article>
+            <article><b>锁定项</b><span v-for="item in pendingPlan.plan.locks" :key="item">锁定 {{ item }}</span><span v-if="!pendingPlan.plan.locks.length">无</span></article>
+            <article><b>影响 artifact</b><span v-for="item in pendingPlan.impacts" :key="item.artifact_id">{{ item.artifact_type }} · {{ item.native_entity_id }}</span><span v-for="item in pendingPlan.plan.impact.downstream" :key="`planned:${item}`">{{ item }} · 计划范围</span><span v-if="!pendingPlan.impacts.length && !pendingPlan.plan.impact.downstream.length">无现存下游 artifact</span></article>
+            <article><b>重建范围 / 选择</b><span v-for="item in pendingPlan.plan.impact.rebuild_tasks" :key="item"><input type="checkbox" checked disabled />{{ item }} · 执行后 pending</span><span v-if="!pendingPlan.plan.impact.rebuild_tasks.length">无需重建，可保存并确认</span></article>
+          </div>
+          <div class="episode-plan-diff">
+            <div class="episode-plan-diff-head"><b>字段</b><b>修改前</b><b>修改后</b></div>
+            <div v-for="row in planDiff" :key="row.field"><code>{{ row.field }}</code><span>{{ formatDiffValue(row.before) }}</span><span>{{ formatDiffValue(row.after) }}</span></div>
+          </div>
+          <div class="episode-plan-risks"><b>风险</b><span v-for="risk in pendingPlan.plan.risks" :key="risk"><AlertTriangle :size="12" />{{ risk }}</span></div>
+          <footer>
+            <button class="button button-secondary" :disabled="saving" @click="pendingPlan = null">返回编辑</button>
+            <button v-if="pendingPlan.status === 'validated' && !content.has_downstream_assets" class="button button-primary" :disabled="saving" @click="confirmPlan(true)"><Save :size="15" />保存并确认</button>
+            <button v-else-if="pendingPlan.status === 'validated'" class="button button-primary" :disabled="saving" @click="confirmPlan(false)"><ShieldCheck :size="15" />确认影响与重建</button>
+            <button v-else-if="pendingPlan.status === 'confirmed'" class="button button-primary" :disabled="saving" @click="executePlan(false)"><Play :size="15" />执行并创建新版本</button>
+          </footer>
+        </section>
+
+        <template v-else>
         <nav class="episode-content-tabs" aria-label="单集内容类型">
           <button :class="{ active: activeTab === 'outline' }" @click="activeTab = 'outline'"><FileText :size="15" />分集大纲</button>
           <button :class="{ active: activeTab === 'script' }" @click="activeTab = 'script'"><ScrollText :size="15" />单集剧本<i>{{ content.script ? content.script.scenes.length : 0 }}</i></button>
@@ -268,6 +338,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
           <span><Eye :size="14" />当前为查看模式</span>
           <button class="button button-secondary" @click="requestClose">关闭</button>
         </footer>
+        </template>
       </template>
     </article>
   </div>

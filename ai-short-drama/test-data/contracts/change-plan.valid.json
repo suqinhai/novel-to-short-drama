@@ -13,7 +13,8 @@
     "rebuild_tasks": ["recompose_timeline"]
   },
   "rebuild": {
-    "voice": false, "image": false, "video": false, "edit": true, "subtitle": false
+    "voice": false, "image": false, "video": false, "edit": true,
+    "subtitle": false, "continuity": true
   },
   "risks": ["场景缩短可能破坏节奏"],
   "validation_rules": ["目标版本仍为 current"],

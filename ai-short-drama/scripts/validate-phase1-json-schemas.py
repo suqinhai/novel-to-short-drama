@@ -27,6 +27,7 @@ PAIRS = (
     ("sound-asset.v1.json", "sound-asset"),
     ("editing-template.v1.json", "editing-template"),
     ("creative-workspace.v1.json", "creative-workspace"),
+    ("effective-input-resolution.v1.json", "effective-input-resolution"),
 )
 
 

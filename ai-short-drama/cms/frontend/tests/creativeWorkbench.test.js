@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   dialogueConversionPlan, dialogueEditPlan, exactDialogueRebuildRange, normalizeWorkbench,
   sceneDragPlan, soundStyleReplacementPayload, templateApplyPayload, timelineLanes, timingValidationItems,
+  timelineRestoreChangePlan, timelineSoundStyleChangePlan, timelineTemplateChangePlan,
 } from '../src/services/creativeWorkbench.js'
 
 test('统一工作台按现有实体 ID 组织场景、对白和镜头，不复制数据模型', () => {
@@ -74,4 +75,23 @@ test('口型校验复用已记录的对白 timing，时间线展示所有声画�
     { track_type: 'bgm', timeline_start_ms: 0 },
     { track_type: 'dialogue', timeline_start_ms: 100 },
   ]).map(item => item.label), ['BGM', '对白'])
+})
+
+test('template, sound style and restore all produce timeline change plans', () => {
+  const current = { episode_id: 'episode-1', timeline_id: 'timeline-3', version: 3 }
+  const template = timelineTemplateChangePlan(current, 'template-v2', 'episode', { pace: 'fast' })
+  assert.equal(template.target.entity_type, 'timeline')
+  assert.equal(template.target.entity_id, 'episode-1')
+  assert.equal(template.target.version, 3)
+  assert.deepEqual(template.changes.map(change => change.field), [
+    'editing_template_version_id', 'template_scope', 'override_config',
+  ])
+
+  const sound = timelineSoundStyleChangePlan(current, ' cinematic_noir ')
+  assert.equal(sound.changes[0].field, 'sound_style_group')
+  assert.equal(sound.changes[0].value, 'cinematic_noir')
+
+  const restore = timelineRestoreChangePlan(current, { timeline_id: 'timeline-1', version: 1 })
+  assert.equal(restore.changes[0].field, 'restore_source_timeline_id')
+  assert.equal(restore.changes[0].value, 'timeline-1')
 })

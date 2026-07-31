@@ -8,6 +8,7 @@ import { getDisplayValueLabel } from '../services/displayLabels'
 import StatusBadge from '../components/StatusBadge.vue'
 import DetailDataTable from '../components/DetailDataTable.vue'
 import EpisodeContentModal from '../components/EpisodeContentModal.vue'
+import EffectiveInputPanel from '../components/EffectiveInputPanel.vue'
 
 const route = useRoute()
 const project = ref(null)
@@ -36,6 +37,7 @@ const episodeRuns = computed(() => project.value?.rolling_production?.episodes |
 const rollingArcs = computed(() => project.value?.rolling_production?.arcs || [])
 const isRollingProduction = computed(() => rollingArcs.value.length > 0)
 const currentEpisodeRun = computed(() => episodeRuns.value.find((item) => ['active', 'waiting_review', 'paused', 'failed'].includes(item.status)))
+const effectiveEpisodeId = computed(() => currentEpisodeRun.value?.episode_id || episodeRuns.value[0]?.episode_id || project.value?.episodes?.[0]?.episode_id || '')
 const resumeDisabledReason = computed(() => {
   if (flowLoading.value) return '流程请求正在提交，请勿重复操作'
   if (activeWorkflowTasks.value > 0) return `当前有 ${activeWorkflowTasks.value} 个任务正在生产中，请等待任务结束`
@@ -239,6 +241,12 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
         </div>
         <div class="rolling-next-hint">下一集只有在上一集完成质检与发布后才会解锁。你可以先检查本集剧本、分镜和样片，再决定是否继续。</div>
       </article>
+
+      <EffectiveInputPanel
+        :project-id="project.project_id"
+        :episode-id="effectiveEpisodeId"
+        :current-stage="project.current_stage"
+      />
 
       <div class="detail-grid">
         <div class="main-column">

@@ -57,6 +57,60 @@ func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
 	}
 }
 
+func TestEffectiveInputReadOnlyRouteValidatesStageAndAvailability(t *testing.T) {
+	router := New(nil, config.Config{}).Router()
+
+	missingStage := httptest.NewRecorder()
+	router.ServeHTTP(missingStage, httptest.NewRequest(
+		http.MethodGet, "/api/v1/projects/p1/episodes/ep1/effective-inputs", nil,
+	))
+	if missingStage.Code != http.StatusBadRequest ||
+		!strings.Contains(missingStage.Body.String(), "EFFECTIVE_INPUT_STAGE_REQUIRED") {
+		t.Fatalf("unexpected missing-stage response: %d %s",
+			missingStage.Code, missingStage.Body.String())
+	}
+
+	unavailable := httptest.NewRecorder()
+	router.ServeHTTP(unavailable, httptest.NewRequest(
+		http.MethodGet, "/api/v1/projects/p1/episodes/ep1/effective-inputs?stage=09", nil,
+	))
+	if unavailable.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(unavailable.Body.String(), "EFFECTIVE_INPUT_RESOLVER_UNAVAILABLE") {
+		t.Fatalf("unexpected unavailable response: %d %s",
+			unavailable.Code, unavailable.Body.String())
+	}
+}
+
+func TestDirectFormalContentMutationRoutesAreUnavailable(t *testing.T) {
+	router := New(nil, config.Config{}).Router()
+
+	directEpisodePatch := httptest.NewRecorder()
+	router.ServeHTTP(directEpisodePatch, httptest.NewRequest(
+		http.MethodPatch, "/api/v1/projects/p1/episode-runs/run1/content",
+		strings.NewReader(`{"outline":{"title":"overwrite"}}`),
+	))
+	if directEpisodePatch.Code != http.StatusNotFound {
+		t.Fatalf("legacy direct episode PATCH is still routed: %d %s",
+			directEpisodePatch.Code, directEpisodePatch.Body.String())
+	}
+
+	for _, endpoint := range []string{
+		"/api/v1/projects/p1/episodes/ep1/editing-template",
+		"/api/v1/projects/p1/episodes/ep1/sound-style",
+		"/api/v1/projects/p1/episodes/ep1/timeline-versions/timeline1/restore",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(
+			http.MethodPost, endpoint, strings.NewReader(`{}`),
+		))
+		if recorder.Code != http.StatusGone ||
+			!strings.Contains(recorder.Body.String(), "DIRECT_TIMELINE_MUTATION_DISABLED") {
+			t.Fatalf("direct timeline mutation is not explicitly disabled at %s: %d %s",
+				endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestCreateProjectForwardsToN8N(t *testing.T) {
 	receivedCh := make(chan createProjectWorkflowRequest, 1)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

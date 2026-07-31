@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"short-drama-cms/backend/internal/localedit"
 )
 
 var ErrInvalidEpisodeContent = errors.New("invalid episode content")
@@ -79,6 +82,7 @@ type EpisodeContent struct {
 	ProjectID           string                `json:"project_id"`
 	EpisodeRunID        string                `json:"episode_run_id"`
 	EpisodeID           string                `json:"episode_id"`
+	Revision            int                   `json:"revision"`
 	RunStatus           string                `json:"run_status"`
 	CurrentStage        string                `json:"current_stage"`
 	Editable            bool                  `json:"editable"`
@@ -131,8 +135,13 @@ type EpisodeScriptUpdate struct {
 }
 
 type UpdateEpisodeContentInput struct {
-	Outline EpisodeOutlineUpdate `json:"outline"`
-	Script  *EpisodeScriptUpdate `json:"script,omitempty"`
+	ExpectedVersion int                  `json:"expected_version"`
+	Outline         EpisodeOutlineUpdate `json:"outline"`
+	Script          *EpisodeScriptUpdate `json:"script,omitempty"`
+	MustPreserve    []string             `json:"must_preserve,omitempty"`
+	Locks           []string             `json:"locks,omitempty"`
+	RebuildTasks    []string             `json:"rebuild_tasks,omitempty"`
+	RequestedBy     *string              `json:"requested_by,omitempty"`
 }
 
 func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID string) (EpisodeContent, error) {
@@ -147,8 +156,14 @@ func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID s
 		(SELECT count(*) FROM drama.workflow_tasks task
 		 WHERE task.project_id=run.project_id AND task.status IN ('pending','running')
 		   AND (task.entity_id=run.episode_id OR task.input_data->>'episode_id'=run.episode_id)),
-		EXISTS(SELECT 1 FROM drama.storyboards board
-		 WHERE board.project_id=run.project_id AND board.episode_id=run.episode_id)
+		(EXISTS(SELECT 1 FROM drama.storyboards board
+		  WHERE board.project_id=run.project_id AND board.episode_id=run.episode_id)
+		 OR EXISTS(SELECT 1 FROM drama.shot_videos video
+		  WHERE video.project_id=run.project_id AND video.episode_id=run.episode_id)
+		 OR EXISTS(SELECT 1 FROM drama.dialogue_audio audio
+		  WHERE audio.project_id=run.project_id AND audio.episode_id=run.episode_id)
+		 OR EXISTS(SELECT 1 FROM drama.edit_timelines timeline
+		  WHERE timeline.project_id=run.project_id AND timeline.episode_id=run.episode_id))
 		FROM drama.episode_production_runs run
 		JOIN drama.episode_outlines outline
 		  ON outline.project_id=run.project_id AND outline.episode_id=run.episode_id
@@ -173,6 +188,7 @@ func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID s
 	if !result.Editable {
 		result.ReadOnlyReason = "本集有生产任务正在执行，请等待任务结束后再修改"
 	}
+	result.Revision = result.Outline.Version
 
 	var scriptJSON json.RawMessage
 	err = s.pool.QueryRow(ctx, `SELECT jsonb_build_object(
@@ -205,236 +221,209 @@ func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID s
 		WHERE script.project_id=$1 AND script.episode_id=$2
 		ORDER BY script.version DESC LIMIT 1`, result.ProjectID, result.EpisodeID).Scan(&scriptJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return result, nil
+		err = nil
+	} else if err != nil {
+		return EpisodeContent{}, err
+	} else {
+		var script EpisodeScriptContent
+		if err = json.Unmarshal(scriptJSON, &script); err != nil {
+			return EpisodeContent{}, fmt.Errorf("decode episode script content: %w", err)
+		}
+		if script.Scenes == nil {
+			script.Scenes = make([]EpisodeSceneContent, 0)
+		}
+		result.Script = &script
+		if script.Version > result.Revision {
+			result.Revision = script.Version
+		}
 	}
+
+	var versioned json.RawMessage
+	var version int
+	err = s.pool.QueryRow(ctx, `SELECT version,content FROM drama.entity_versions
+		WHERE project_id=$1 AND entity_type='episode_content' AND entity_id=$2 AND is_current`,
+		result.ProjectID, result.EpisodeID).Scan(&version, &versioned)
+	if err == nil {
+		var snapshot struct {
+			Outline EpisodeOutlineContent `json:"outline"`
+			Script  *EpisodeScriptContent `json:"script"`
+		}
+		if err = json.Unmarshal(versioned, &snapshot); err != nil {
+			return EpisodeContent{}, fmt.Errorf("decode versioned episode content: %w", err)
+		}
+		result.Outline, result.Script, result.Revision = snapshot.Outline, snapshot.Script, version
+		if result.Script != nil && result.Script.Scenes == nil {
+			result.Script.Scenes = make([]EpisodeSceneContent, 0)
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return EpisodeContent{}, err
+	}
+	baseSnapshot, err := json.Marshal(map[string]any{
+		"outline": result.Outline,
+		"script":  result.Script,
+	})
 	if err != nil {
 		return EpisodeContent{}, err
 	}
-	var script EpisodeScriptContent
-	if err = json.Unmarshal(scriptJSON, &script); err != nil {
-		return EpisodeContent{}, fmt.Errorf("decode episode script content: %w", err)
+	overlaid, err := overlayEpisodeSnapshot(
+		ctx, s.pool, result.ProjectID, result.EpisodeID, baseSnapshot,
+	)
+	if err != nil {
+		return EpisodeContent{}, err
 	}
-	if script.Scenes == nil {
-		script.Scenes = make([]EpisodeSceneContent, 0)
+	var finalSnapshot struct {
+		Outline EpisodeOutlineContent `json:"outline"`
+		Script  *EpisodeScriptContent `json:"script"`
 	}
-	result.Script = &script
+	if err = json.Unmarshal(overlaid, &finalSnapshot); err != nil {
+		return EpisodeContent{}, err
+	}
+	result.Outline, result.Script = finalSnapshot.Outline, finalSnapshot.Script
 	return result, nil
 }
 
-func (s *Store) UpdateEpisodeContent(
+// CreateEpisodeContentChangePlan is the only write entry for the episode
+// content modal. It turns the submitted draft into an immutable, reviewable
+// field diff; no formal content is changed here.
+func (s *Store) CreateEpisodeContentChangePlan(
 	ctx context.Context,
 	projectID, episodeRunID string,
 	input UpdateEpisodeContentInput,
-) (EpisodeContent, error) {
+	requestedBy *string,
+) (ChangePlan, error) {
 	if err := validateEpisodeContentUpdate(input); err != nil {
-		return EpisodeContent{}, err
+		return ChangePlan{}, err
 	}
-	projectID = strings.TrimSpace(projectID)
-	episodeRunID = strings.TrimSpace(episodeRunID)
-	tx, err := s.writer.Begin(ctx)
+	current, err := s.GetEpisodeContent(ctx, strings.TrimSpace(projectID), strings.TrimSpace(episodeRunID))
 	if err != nil {
-		return EpisodeContent{}, err
+		return ChangePlan{}, err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
-		return EpisodeContent{}, err
+	if input.ExpectedVersion < 1 {
+		return ChangePlan{}, fmt.Errorf("%w: expected_version is required", ErrInvalidEpisodeContent)
+	}
+	if input.ExpectedVersion != current.Revision {
+		return ChangePlan{}, fmt.Errorf("%w: target version is %d, current is %d",
+			ErrConflict, input.ExpectedVersion, current.Revision)
+	}
+	if !current.Editable {
+		return ChangePlan{}, fmt.Errorf("%w: episode has active workflow tasks", ErrConflict)
 	}
 
-	var episodeID string
-	err = tx.QueryRow(ctx, `SELECT run.episode_id
-		FROM drama.episode_production_runs run
-		JOIN drama.episode_outlines outline
-		  ON outline.project_id=run.project_id AND outline.episode_id=run.episode_id
-		WHERE run.project_id=$1 AND run.episode_run_id=$2
-		FOR UPDATE OF run,outline`, projectID, episodeRunID).Scan(&episodeID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return EpisodeContent{}, ErrNotFound
-	}
+	changes, err := episodeContentChanges(current, input)
 	if err != nil {
-		return EpisodeContent{}, err
+		return ChangePlan{}, err
 	}
-	var activeTasks int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM drama.workflow_tasks task
-		WHERE task.project_id=$1 AND task.status IN ('pending','running')
-		  AND (task.entity_id=$2 OR task.input_data->>'episode_id'=$2)`,
-		projectID, episodeID).Scan(&activeTasks); err != nil {
-		return EpisodeContent{}, err
+	request := localedit.Request{
+		Instruction: fmt.Sprintf("版本化修改第 %d 集大纲与剧本内容", current.Outline.EpisodeNumber),
+		Target: localedit.Target{
+			EntityType: "episode_content", EntityID: current.EpisodeID, Version: current.Revision,
+		},
+		Changes: changes,
+		MustPreserve: append([]string{
+			"未出现在 diff 中的字段", "source_event_ids", "character_id", "source evidence",
+		}, input.MustPreserve...),
+		Locks: input.Locks,
 	}
-	if activeTasks > 0 {
-		return EpisodeContent{}, fmt.Errorf("%w: episode has active workflow tasks", ErrConflict)
+	if !current.HasDownstreamAssets {
+		request.RebuildTasks = []string{}
+	} else if input.RebuildTasks != nil {
+		request.RebuildTasks = input.RebuildTasks
 	}
-
-	outline := input.Outline
-	if _, err = tx.Exec(ctx, `UPDATE drama.episode_outlines SET
-		title=$3,logline=$4,opening_hook=$5,story_goal=$6,main_conflict=$7,
-		climax=$8,ending_hook=$9,estimated_duration_seconds=$10,updated_at=now()
-		WHERE project_id=$1 AND episode_id=$2`,
-		projectID, episodeID, strings.TrimSpace(outline.Title), strings.TrimSpace(outline.Logline),
-		strings.TrimSpace(outline.OpeningHook), strings.TrimSpace(outline.StoryGoal),
-		strings.TrimSpace(outline.MainConflict), strings.TrimSpace(outline.Climax),
-		strings.TrimSpace(outline.EndingHook), outline.EstimatedDurationSeconds); err != nil {
-		return EpisodeContent{}, err
+	plan, err := localedit.Build(request)
+	if err != nil {
+		return ChangePlan{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.episode_production_runs
-		SET title=$3,updated_at=now() WHERE project_id=$1 AND episode_id=$2`,
-		projectID, episodeID, strings.TrimSpace(outline.Title)); err != nil {
-		return EpisodeContent{}, err
-	}
-
-	if input.Script != nil {
-		if err = updateEpisodeScriptContent(ctx, tx, projectID, episodeID, *input.Script); err != nil {
-			return EpisodeContent{}, err
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return EpisodeContent{}, err
-	}
-	return s.GetEpisodeContent(ctx, projectID, episodeRunID)
+	return s.CreateChangePlan(ctx, current.ProjectID, plan, requestedBy)
 }
 
-func updateEpisodeScriptContent(
-	ctx context.Context,
-	tx pgx.Tx,
-	projectID, episodeID string,
-	script EpisodeScriptUpdate,
-) error {
-	var currentScriptID string
-	err := tx.QueryRow(ctx, `SELECT script_id FROM drama.episode_scripts
-		WHERE project_id=$1 AND episode_id=$2
-		ORDER BY version DESC LIMIT 1 FOR UPDATE`,
-		projectID, episodeID).Scan(&currentScriptID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: script does not exist", ErrConflict)
+func episodeContentChanges(
+	current EpisodeContent, input UpdateEpisodeContentInput,
+) ([]localedit.Change, error) {
+	changes := make([]localedit.Change, 0)
+	add := func(path string, before, after any) {
+		if !reflect.DeepEqual(normalizeJSONValue(before), normalizeJSONValue(after)) {
+			changes = append(changes, localedit.Change{
+				Operation: "replace", Field: path, Value: after,
+			})
+		}
 	}
-	if err != nil {
-		return err
-	}
-	if currentScriptID != strings.TrimSpace(script.ScriptID) {
-		return fmt.Errorf("%w: script version changed, reload before saving", ErrConflict)
-	}
+	outline := input.Outline
+	add("outline.title", current.Outline.Title, strings.TrimSpace(outline.Title))
+	add("outline.logline", current.Outline.Logline, strings.TrimSpace(outline.Logline))
+	add("outline.opening_hook", current.Outline.OpeningHook, strings.TrimSpace(outline.OpeningHook))
+	add("outline.story_goal", current.Outline.StoryGoal, strings.TrimSpace(outline.StoryGoal))
+	add("outline.main_conflict", current.Outline.MainConflict, strings.TrimSpace(outline.MainConflict))
+	add("outline.climax", current.Outline.Climax, strings.TrimSpace(outline.Climax))
+	add("outline.ending_hook", current.Outline.EndingHook, strings.TrimSpace(outline.EndingHook))
+	add("outline.estimated_duration_seconds", current.Outline.EstimatedDurationSeconds, outline.EstimatedDurationSeconds)
 
-	sceneRows, err := tx.Query(ctx, `SELECT scene_id FROM drama.script_scenes
-		WHERE script_id=$1 ORDER BY scene_number FOR UPDATE`, currentScriptID)
-	if err != nil {
-		return err
-	}
-	sceneIDs := make(map[string]struct{})
-	for sceneRows.Next() {
-		var sceneID string
-		if err = sceneRows.Scan(&sceneID); err != nil {
-			sceneRows.Close()
-			return err
+	if input.Script == nil {
+		if current.Script != nil {
+			return nil, fmt.Errorf("%w: an existing script cannot be omitted", ErrConflict)
 		}
-		sceneIDs[sceneID] = struct{}{}
+		return changes, nil
 	}
-	sceneRows.Close()
-	if err = sceneRows.Err(); err != nil {
-		return err
+	if current.Script == nil || strings.TrimSpace(input.Script.ScriptID) != current.Script.ScriptID {
+		return nil, fmt.Errorf("%w: script version changed, reload before preview", ErrConflict)
 	}
-	if len(sceneIDs) != len(script.Scenes) {
-		return fmt.Errorf("%w: scene set changed, reload before saving", ErrConflict)
-	}
+	script := input.Script
+	add("script.title", current.Script.Title, strings.TrimSpace(script.Title))
+	add("script.opening_hook", current.Script.OpeningHook, strings.TrimSpace(script.OpeningHook))
+	add("script.climax", current.Script.Climax, strings.TrimSpace(script.Climax))
+	add("script.ending_hook", current.Script.EndingHook, strings.TrimSpace(script.EndingHook))
 
-	dialogueRows, err := tx.Query(ctx, `SELECT dialogue_id,scene_id FROM drama.dialogues
-		WHERE episode_id=$1 ORDER BY scene_id,sequence_number FOR UPDATE`, episodeID)
-	if err != nil {
-		return err
+	currentScenes := make(map[string]EpisodeSceneContent, len(current.Script.Scenes))
+	for _, scene := range current.Script.Scenes {
+		currentScenes[scene.SceneID] = scene
 	}
-	dialogueIDs := make(map[string]map[string]struct{})
-	for dialogueRows.Next() {
-		var dialogueID, sceneID string
-		if err = dialogueRows.Scan(&dialogueID, &sceneID); err != nil {
-			dialogueRows.Close()
-			return err
+	if len(currentScenes) != len(script.Scenes) {
+		return nil, fmt.Errorf("%w: scene set changed, reload before preview", ErrConflict)
+	}
+	for _, nextScene := range script.Scenes {
+		beforeScene, ok := currentScenes[nextScene.SceneID]
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown scene %s", ErrConflict, nextScene.SceneID)
 		}
-		if dialogueIDs[sceneID] == nil {
-			dialogueIDs[sceneID] = make(map[string]struct{})
+		prefix := "scene." + nextScene.SceneID + "."
+		add(prefix+"location_name", beforeScene.LocationName, strings.TrimSpace(nextScene.LocationName))
+		add(prefix+"time_of_day", beforeScene.TimeOfDay, strings.TrimSpace(nextScene.TimeOfDay))
+		add(prefix+"interior_exterior", beforeScene.InteriorExterior, strings.TrimSpace(nextScene.InteriorExterior))
+		add(prefix+"scene_purpose", beforeScene.ScenePurpose, strings.TrimSpace(nextScene.ScenePurpose))
+		add(prefix+"emotional_change", beforeScene.EmotionalChange, strings.TrimSpace(nextScene.EmotionalChange))
+		add(prefix+"estimated_duration_seconds", beforeScene.EstimatedDurationSeconds, nextScene.EstimatedDurationSeconds)
+		var beforeActions, afterActions any
+		if err := json.Unmarshal(beforeScene.Actions, &beforeActions); err != nil {
+			return nil, fmt.Errorf("decode current scene actions: %w", err)
 		}
-		dialogueIDs[sceneID][dialogueID] = struct{}{}
-	}
-	dialogueRows.Close()
-	if err = dialogueRows.Err(); err != nil {
-		return err
-	}
+		if err := json.Unmarshal(nextScene.Actions, &afterActions); err != nil {
+			return nil, fmt.Errorf("%w: scene actions must be valid JSON", ErrInvalidEpisodeContent)
+		}
+		add(prefix+"actions", beforeActions, afterActions)
 
-	for _, scene := range script.Scenes {
-		if _, ok := sceneIDs[scene.SceneID]; !ok {
-			return fmt.Errorf("%w: unknown scene %s", ErrConflict, scene.SceneID)
+		currentDialogues := make(map[string]EpisodeDialogueContent, len(beforeScene.Dialogues))
+		for _, dialogue := range beforeScene.Dialogues {
+			currentDialogues[dialogue.DialogueID] = dialogue
 		}
-		if len(dialogueIDs[scene.SceneID]) != len(scene.Dialogues) {
-			return fmt.Errorf("%w: dialogue set changed for scene %s", ErrConflict, scene.SceneID)
+		if len(currentDialogues) != len(nextScene.Dialogues) {
+			return nil, fmt.Errorf("%w: dialogue set changed for scene %s", ErrConflict, nextScene.SceneID)
 		}
-		if _, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET
-			location_name=$2,time_of_day=$3,interior_exterior=$4,scene_purpose=$5,
-			actions=$6::jsonb,emotional_change=$7,estimated_duration_seconds=$8,
-			updated_at=now() WHERE scene_id=$1`,
-			scene.SceneID, strings.TrimSpace(scene.LocationName), strings.TrimSpace(scene.TimeOfDay),
-			strings.TrimSpace(scene.InteriorExterior), strings.TrimSpace(scene.ScenePurpose),
-			string(scene.Actions), strings.TrimSpace(scene.EmotionalChange),
-			scene.EstimatedDurationSeconds); err != nil {
-			return err
-		}
-		for _, dialogue := range scene.Dialogues {
-			if _, ok := dialogueIDs[scene.SceneID][dialogue.DialogueID]; !ok {
-				return fmt.Errorf("%w: unknown dialogue %s", ErrConflict, dialogue.DialogueID)
+		for _, nextDialogue := range nextScene.Dialogues {
+			beforeDialogue, exists := currentDialogues[nextDialogue.DialogueID]
+			if !exists {
+				return nil, fmt.Errorf("%w: unknown dialogue %s", ErrConflict, nextDialogue.DialogueID)
 			}
-			if _, err = tx.Exec(ctx, `UPDATE drama.dialogues SET dialogue_type=$2,
-				speaker_name=$3,text=$4,emotion=$5,performance_instruction=$6,
-				estimated_duration_ms=$7,updated_at=now()
-				WHERE dialogue_id=$1 AND scene_id=$8`,
-				dialogue.DialogueID, dialogue.DialogueType, strings.TrimSpace(dialogue.SpeakerName),
-				strings.TrimSpace(dialogue.Text), strings.TrimSpace(dialogue.Emotion),
-				strings.TrimSpace(dialogue.PerformanceInstruction),
-				dialogue.EstimatedDurationMS, scene.SceneID); err != nil {
-				return err
-			}
+			dialoguePrefix := "dialogue." + nextDialogue.DialogueID + "."
+			add(dialoguePrefix+"dialogue_type", beforeDialogue.DialogueType, nextDialogue.DialogueType)
+			add(dialoguePrefix+"speaker_name", beforeDialogue.SpeakerName, strings.TrimSpace(nextDialogue.SpeakerName))
+			add(dialoguePrefix+"text", beforeDialogue.Text, strings.TrimSpace(nextDialogue.Text))
+			add(dialoguePrefix+"emotion", beforeDialogue.Emotion, strings.TrimSpace(nextDialogue.Emotion))
+			add(dialoguePrefix+"performance_instruction", beforeDialogue.PerformanceInstruction,
+				strings.TrimSpace(nextDialogue.PerformanceInstruction))
+			add(dialoguePrefix+"estimated_duration_ms", beforeDialogue.EstimatedDurationMS,
+				nextDialogue.EstimatedDurationMS)
 		}
 	}
-
-	if _, err = tx.Exec(ctx, `UPDATE drama.script_scenes scene SET
-		dialogues=COALESCE((SELECT jsonb_agg(to_jsonb(dialogue)
-			-'id'-'project_id'-'episode_id'-'scene_id'-'created_at'-'updated_at'
-			ORDER BY dialogue.sequence_number)
-			FROM drama.dialogues dialogue
-			WHERE dialogue.scene_id=scene.scene_id AND dialogue.dialogue_type<>'narration'),'[]'::jsonb),
-		narration=COALESCE((SELECT jsonb_agg(to_jsonb(dialogue)
-			-'id'-'project_id'-'episode_id'-'scene_id'-'created_at'-'updated_at'
-			ORDER BY dialogue.sequence_number)
-			FROM drama.dialogues dialogue
-			WHERE dialogue.scene_id=scene.scene_id AND dialogue.dialogue_type='narration'),'[]'::jsonb)
-		WHERE scene.script_id=$1`, currentScriptID); err != nil {
-		return err
-	}
-
-	var dialogueCharacters, durationSeconds int
-	if err = tx.QueryRow(ctx, `SELECT
-		COALESCE((SELECT sum(length(dialogue.text))
-			FROM drama.dialogues dialogue
-			JOIN drama.script_scenes scene ON scene.scene_id=dialogue.scene_id
-			WHERE dialogue.episode_id=$1 AND scene.script_id=$2),0)::int,
-		COALESCE((SELECT sum(estimated_duration_seconds) FROM drama.script_scenes WHERE script_id=$2),0)::int`,
-		episodeID, currentScriptID).Scan(&dialogueCharacters, &durationSeconds); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.episode_scripts script SET
-		title=$2,opening_hook=$3,climax=$4,ending_hook=$5,
-		estimated_duration_seconds=$6,dialogue_char_count=$7,
-		scenes=COALESCE((SELECT jsonb_agg(to_jsonb(scene)
-			-'id'-'script_id'-'project_id'-'episode_id'-'created_at'-'updated_at'
-			ORDER BY scene.scene_number)
-			FROM drama.script_scenes scene WHERE scene.script_id=script.script_id),'[]'::jsonb),
-		updated_at=now()
-		WHERE script.script_id=$1`,
-		currentScriptID, strings.TrimSpace(script.Title), strings.TrimSpace(script.OpeningHook),
-		strings.TrimSpace(script.Climax), strings.TrimSpace(script.EndingHook),
-		durationSeconds, dialogueCharacters); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `UPDATE drama.review_tasks SET
-		metadata=COALESCE(metadata,'{}'::jsonb) || jsonb_build_object(
-			'manually_edited',true,'manually_edited_at',now())
-		WHERE project_id=$1 AND entity_id=$2`, projectID, currentScriptID)
-	return err
+	return changes, nil
 }
 
 func validateEpisodeContentUpdate(input UpdateEpisodeContentInput) error {

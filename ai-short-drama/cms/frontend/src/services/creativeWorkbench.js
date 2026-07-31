@@ -147,6 +147,57 @@ export function soundStyleReplacementPayload(toStyleGroup) {
   }
 }
 
+export function timelineTemplateChangePlan(timeline, templateVersionId, scope, overrideConfig = {}) {
+  return {
+    instruction: `切换剪辑模板并创建 successor 时间线；旧时间线保持可查看`,
+    target: {
+      entity_type: 'timeline',
+      entity_id: timeline.episode_id,
+      version: Number(timeline.version || 1),
+    },
+    allowed_fields: ['editing_template_version_id', 'template_scope', 'override_config'],
+    changes: [
+      { operation: 'replace', field: 'editing_template_version_id', value: templateVersionId },
+      { operation: 'replace', field: 'template_scope', value: scope === 'project' ? 'project' : 'episode' },
+      { operation: 'replace', field: 'override_config', value: overrideConfig },
+    ],
+    must_preserve: ['原时间线', '原媒体资产', '已批准版本'],
+    locks: ['character', 'location', 'composition'],
+  }
+}
+
+export function timelineRestoreChangePlan(current, source) {
+  return {
+    instruction: `从历史时间线 v${source.version} 创建新的恢复版本，不覆盖历史`,
+    target: {
+      entity_type: 'timeline',
+      entity_id: current.episode_id,
+      version: Number(current.version || 1),
+    },
+    allowed_fields: ['restore_source_timeline_id'],
+    changes: [{
+      operation: 'replace', field: 'restore_source_timeline_id', value: source.timeline_id,
+    }],
+    must_preserve: ['所有历史时间线', '原媒体资产'],
+  }
+}
+
+export function timelineSoundStyleChangePlan(timeline, styleGroup) {
+  return {
+    instruction: `将整集声音风格改为 ${String(styleGroup || '').trim()}，只创建待重建的 successor 时间线`,
+    target: {
+      entity_type: 'timeline',
+      entity_id: timeline.episode_id,
+      version: Number(timeline.version || 1),
+    },
+    allowed_fields: ['sound_style_group'],
+    changes: [{
+      operation: 'replace', field: 'sound_style_group', value: String(styleGroup || '').trim(),
+    }],
+    must_preserve: ['原声音资产', '原 cue 版本', '原时间线'],
+  }
+}
+
 export function exactDialogueRebuildRange(timing) {
   if (!timing) return null
   return {

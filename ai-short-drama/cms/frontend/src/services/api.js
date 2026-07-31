@@ -21,6 +21,12 @@ export const api = {
   getProject(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}`)
   },
+  getEffectiveInputs(projectId, episodeId, stage) {
+    const scope = episodeId
+      ? `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}`
+      : `/projects/${encodeURIComponent(projectId)}`
+    return request(`${scope}/effective-inputs?${new URLSearchParams({ stage })}`)
+  },
   archiveProject(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirm_project_id: projectId }),
@@ -48,9 +54,9 @@ export const api = {
   getEpisodeContent(projectId, episodeRunId) {
     return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content`)
   },
-  updateEpisodeContent(projectId, episodeRunId, payload) {
-    return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content`, {
-      method: 'PATCH', body: JSON.stringify(payload),
+  createEpisodeContentChangePlan(projectId, episodeRunId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content/change-plan`, {
+      method: 'POST', body: JSON.stringify(payload),
     })
   },
   getReviews(params = {}) {
@@ -121,23 +127,8 @@ export const api = {
       method: 'POST', body: JSON.stringify(payload),
     })
   },
-  applyEditingTemplate(projectId, episodeId, payload) {
-    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/editing-template`, {
-      method: 'POST', body: JSON.stringify(payload),
-    })
-  },
-  replaceEpisodeSoundStyle(projectId, episodeId, payload) {
-    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/sound-style`, {
-      method: 'POST', body: JSON.stringify(payload),
-    })
-  },
   getTimelineVersions(projectId, episodeId) {
     return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions`)
-  },
-  restoreTimelineVersion(projectId, episodeId, timelineId, payload = {}) {
-    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/restore`, {
-      method: 'POST', body: JSON.stringify(payload),
-    })
   },
   getPerformanceBibles(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`)

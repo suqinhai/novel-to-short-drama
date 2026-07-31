@@ -92,7 +92,7 @@ async function executePlan() {
   error.value = ''
   try {
     plan.value = await api.executeChangePlan(projectId.value, plan.value.change_plan_id)
-    notice.value = '局部修改已原子应用，旧版本保留，精确重建任务已完成。'
+    notice.value = '局部修改已原子应用，旧版本保留；精确重建任务已进入 pending，等待真实 worker 执行。'
     form.version = plan.value.plan.target.version + 1
     await Promise.all([loadHistory(), loadBindings()])
   } catch (err) {
@@ -196,17 +196,21 @@ async function restoreVersion(item) {
       </section>
 
       <div class="change-plan-grid">
-        <section><h4>精确影响范围</h4><p v-if="!plan.impacts.length">没有命中的下游 artifact；不会扩大失效范围。</p><ol v-else><li v-for="impact in plan.impacts" :key="impact.artifact_id"><code>{{ impact.artifact_type }}</code> {{ impact.native_entity_id }} <small>深度 {{ impact.propagation_depth }}</small></li></ol></section>
+        <section><h4>精确影响范围</h4><p v-if="!plan.impacts.length">artifact graph 暂无实体命中；以下计划范围仍会生成 pending 重建任务。</p><ol><li v-for="impact in plan.impacts" :key="impact.artifact_id"><code>{{ impact.artifact_type }}</code> {{ impact.native_entity_id }} <small>深度 {{ impact.propagation_depth }}</small></li><li v-for="item in plan.plan.impact.downstream" :key="`planned:${item}`"><code>{{ item }}</code> <small>计划范围</small></li></ol></section>
         <section><h4>将执行的重建</h4><div class="plan-chips"><span v-for="item in rebuilds" :key="item">{{ item }}</span><span v-if="!rebuilds.length">不触发重建</span></div><p v-for="risk in plan.plan.risks" :key="risk" class="plan-risk"><AlertTriangle :size="13" />{{ risk }}</p></section>
       </div>
       <div class="plan-validation"><ShieldCheck :size="18" /><div><strong>验证规则</strong><span v-for="rule in plan.plan.validation_rules" :key="rule">{{ rule }}</span></div></div>
       <footer class="plan-actions">
         <span v-if="canConfirm">此时正式业务数据仍未改变。</span>
         <span v-else-if="canExecute">已确认，等待执行。</span>
-        <span v-else-if="plan.status === 'applied'">修改已应用；{{ plan.rebuild_tasks.length }} 个增量任务有执行记录。</span>
+        <span v-else-if="plan.status === 'applied'">修改已应用；{{ plan.rebuild_tasks.length }} 个增量任务已排队，未执行前不会显示 succeeded。</span>
         <button v-if="canConfirm" class="button button-primary" :disabled="loading" @click="confirmPlan"><ShieldCheck :size="16" />确认计划</button>
         <button v-if="canExecute" class="button button-primary" :disabled="loading" @click="executePlan"><Play :size="16" />执行修改</button>
       </footer>
+      <section v-if="plan.rebuild_tasks.length" class="plan-section">
+        <h4>重建任务状态</h4>
+        <ol><li v-for="task in plan.rebuild_tasks" :key="task.rebuild_task_id"><code>{{ task.action }}</code> · {{ task.target_entity_type }} / {{ task.target_entity_id }} · <strong>{{ task.status }}</strong><small v-if="task.range_start_ms != null"> · {{ task.range_start_ms }}–{{ task.range_end_ms }}ms</small></li></ol>
+      </section>
     </article>
 
     <div class="local-edit-layout">

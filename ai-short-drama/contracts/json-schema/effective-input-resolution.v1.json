@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-short-drama/contracts/effective-input-resolution.v1.json",
+  "title": "Authoritative effective input resolution",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "resolver_version", "resolution_id", "project_id", "episode_id",
+    "stage", "mode", "status", "ready", "context_hash", "resolution_hash",
+    "items", "context", "missing", "blockers"
+  ],
+  "properties": {
+    "schema_version": {"const": "effective-input-resolution.v1"},
+    "resolver_version": {"type": "string", "minLength": 1},
+    "resolution_id": {"type": "string", "pattern": "^eir_[a-f0-9]{32}$"},
+    "project_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": ["string", "null"]},
+    "stage": {
+      "enum": [
+        "episode_script", "storyboard_design", "visual_assets", "storyboard_images",
+        "image_to_video", "voice_audio", "post_production"
+      ]
+    },
+    "mode": {"enum": ["effective", "legacy"]},
+    "status": {"enum": ["ready", "needs_review", "blocked"]},
+    "ready": {"type": "boolean"},
+    "context_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "resolution_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "items": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {"$ref": "#/$defs/input"}
+    },
+    "context": {"type": "object"},
+    "missing": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "blockers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/diagnostic"}
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "requirement", "state", "input_ids", "versions", "source_status",
+        "content", "artifact_ids", "blocks"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "narrative_ir", "adaptation_spec", "adaptation_plan", "episode_plan",
+            "pacing_plan", "candidate_selection", "performance_bible",
+            "continuity_ledger", "visual_profiles", "editing_template", "timeline"
+          ]
+        },
+        "requirement": {"enum": ["required", "optional"]},
+        "state": {"enum": ["resolved", "missing", "stale", "needs_review", "blocked"]},
+        "input_id": {"type": ["string", "null"]},
+        "input_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "versions": {"type": "array"},
+        "content_hash": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "source_status": {"type": "string"},
+        "content": {"type": "object"},
+        "artifact_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "reason": {"type": ["string", "null"]},
+        "blocks": {"type": "boolean"}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "state", "reason"],
+      "properties": {
+        "kind": {"type": "string"},
+        "state": {"enum": ["missing", "stale", "needs_review", "blocked"]},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

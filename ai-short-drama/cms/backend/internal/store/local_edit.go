@@ -55,8 +55,17 @@ type IncrementalRebuild struct {
 	Provider         string          `json:"provider"`
 	Input            json.RawMessage `json:"input"`
 	Output           json.RawMessage `json:"output"`
+	ErrorCode        *string         `json:"error_code,omitempty"`
+	ErrorMessage     *string         `json:"error_message,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	CompletedAt      *time.Time      `json:"completed_at,omitempty"`
+}
+
+type RebuildTaskStatusInput struct {
+	Status       string          `json:"status"`
+	Output       json.RawMessage `json:"output,omitempty"`
+	ErrorCode    *string         `json:"error_code,omitempty"`
+	ErrorMessage *string         `json:"error_message,omitempty"`
 }
 
 type EntityVersion struct {
@@ -108,18 +117,6 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 	if err != nil {
 		return ChangePlan{}, err
 	}
-	fingerprint := localedit.Fingerprint(plan)
-	mustPreserve, _ := json.Marshal(plan.MustPreserve)
-	allowedFieldsJSON, _ := json.Marshal(plan.AllowedFields)
-	changesJSON, _ := json.Marshal(plan.ExpectedChanges)
-	upstreamJSON, _ := json.Marshal(plan.Impact.Upstream)
-	downstreamJSON, _ := json.Marshal(plan.Impact.Downstream)
-	rebuildJSON, _ := json.Marshal(plan.Rebuild)
-	rebuildTasksJSON, _ := json.Marshal(plan.Impact.RebuildTasks)
-	risksJSON, _ := json.Marshal(plan.Risks)
-	rulesJSON, _ := json.Marshal(plan.ValidationRules)
-	locksJSON, _ := json.Marshal(plan.Locks)
-
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
 		return ChangePlan{}, err
@@ -133,10 +130,11 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 		return ChangePlan{}, ErrNotFound
 	}
 	targetHash := ""
+	var targetContent json.RawMessage
 	if plan.Target.EntityType != "media" {
-		targetContent, readErr := readEntitySnapshot(ctx, tx, plan.Target.EntityType, plan.Target.EntityID)
-		if readErr != nil {
-			return ChangePlan{}, readErr
+		targetContent, err = readEntitySnapshot(ctx, tx, plan.Target.EntityType, plan.Target.EntityID)
+		if err != nil {
+			return ChangePlan{}, err
 		}
 		currentVersion, versionErr := readCurrentEntityVersion(
 			ctx, tx, plan.Target.EntityType, plan.Target.EntityID,
@@ -153,7 +151,22 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 		if hashErr != nil {
 			return ChangePlan{}, hashErr
 		}
+		plan.ExpectedChanges, err = enrichChangesWithDiff(targetContent, plan.Target.EntityType, plan.ExpectedChanges)
+		if err != nil {
+			return ChangePlan{}, err
+		}
 	}
+	fingerprint := localedit.Fingerprint(plan)
+	mustPreserve, _ := json.Marshal(plan.MustPreserve)
+	allowedFieldsJSON, _ := json.Marshal(plan.AllowedFields)
+	changesJSON, _ := json.Marshal(plan.ExpectedChanges)
+	upstreamJSON, _ := json.Marshal(plan.Impact.Upstream)
+	downstreamJSON, _ := json.Marshal(plan.Impact.Downstream)
+	rebuildJSON, _ := json.Marshal(plan.Rebuild)
+	rebuildTasksJSON, _ := json.Marshal(plan.Impact.RebuildTasks)
+	risksJSON, _ := json.Marshal(plan.Risks)
+	rulesJSON, _ := json.Marshal(plan.ValidationRules)
+	locksJSON, _ := json.Marshal(plan.Locks)
 	_, err = tx.Exec(ctx, `INSERT INTO drama.change_plans(
 		change_plan_id,project_id,status,user_intent,natural_language_instruction,
 		target_entity_type,target_entity_id,target_version,must_preserve,allowed_fields,
@@ -177,8 +190,17 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 		}
 	}
 	if plan.SemanticChange {
-		if err = insertExactChangePlanImpacts(ctx, tx, changePlanID, projectID, plan.Target.EntityID, plan.ChangeKind); err != nil {
-			return ChangePlan{}, err
+		impactIDs := impactedNativeEntityIDs(plan)
+		if plan.Target.EntityType == "timeline" {
+			var timeline map[string]any
+			if json.Unmarshal(targetContent, &timeline) == nil {
+				impactIDs = append(impactIDs, strings.TrimSpace(fmt.Sprint(timeline["timeline_id"])))
+			}
+		}
+		for _, nativeEntityID := range uniqueVersionedEntityIDs(impactIDs) {
+			if err = insertExactChangePlanImpacts(ctx, tx, changePlanID, projectID, nativeEntityID, plan.ChangeKind); err != nil {
+				return ChangePlan{}, err
+			}
 		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(change_plan_event_id,change_plan_id,event_type,actor)
@@ -268,15 +290,18 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 	}
 	defer tx.Rollback(ctx)
 
-	var status, entityType, entityID, changeKind, fingerprint string
+	var status, entityType, entityID, changeKind, fingerprint, userIntent string
+	var targetContentHash *string
 	var targetVersion int
 	var semantic bool
 	var changesJSON, rebuildTasksJSON json.RawMessage
 	err = tx.QueryRow(ctx, `SELECT status,target_entity_type,target_entity_id,target_version,
-		expected_changes,rebuild_tasks,change_kind,semantic_change,plan_fingerprint
+		expected_changes,rebuild_tasks,change_kind,semantic_change,plan_fingerprint,target_content_hash
+		,user_intent
 		FROM drama.change_plans WHERE project_id=$1 AND change_plan_id=$2 FOR UPDATE`,
 		projectID, planID).Scan(&status, &entityType, &entityID, &targetVersion,
-		&changesJSON, &rebuildTasksJSON, &changeKind, &semantic, &fingerprint)
+		&changesJSON, &rebuildTasksJSON, &changeKind, &semantic, &fingerprint,
+		&targetContentHash, &userIntent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChangePlan{}, ErrNotFound
 	}
@@ -310,19 +335,24 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 	if currentVersion != targetVersion {
 		return ChangePlan{}, fmt.Errorf("%w: target version is %d, current is %d", ErrConflict, targetVersion, currentVersion)
 	}
+	beforeHash, hashErr := hashJSON(json.RawMessage(before))
+	if hashErr != nil {
+		return ChangePlan{}, hashErr
+	}
+	if targetContentHash != nil && *targetContentHash != beforeHash {
+		return ChangePlan{}, fmt.Errorf("%w: target content changed after preview", ErrConflict)
+	}
 
 	var changes []localedit.Change
 	if err = json.Unmarshal(changesJSON, &changes); err != nil {
 		return ChangePlan{}, err
 	}
-	if err = applyEntityChanges(ctx, tx, entityType, entityID, changes, fingerprint); err != nil {
-		return ChangePlan{}, err
-	}
-	after, err := readEntitySnapshot(ctx, tx, entityType, entityID)
+	after, err := materializeVersionedChange(
+		ctx, tx, projectID, entityType, entityID, before, changes, fingerprint,
+	)
 	if err != nil {
 		return ChangePlan{}, err
 	}
-	beforeHash, _ := hashJSON(json.RawMessage(before))
 	afterHash, _ := hashJSON(json.RawMessage(after))
 	if currentVersionID == nil {
 		originalVersionID, idErr := newPublicID("ev_")
@@ -351,18 +381,28 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 		semanticHash = beforeHash
 	}
 	sourceType := "local_edit"
-	if entityType == "shot_video" {
-		sourceType = "deterministic_mock"
+	eventType := "applied"
+	if strings.HasPrefix(userIntent, "撤销到") {
+		sourceType, eventType = "rollback", "rolled_back"
+	} else if strings.HasPrefix(userIntent, "重新应用") {
+		eventType = "reapplied"
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.entity_versions(
 		entity_version_id,project_id,entity_type,entity_id,version,parent_entity_version_id,
 		change_plan_id,content,content_hash,semantic_hash,source_type,
 		source_metadata,is_current)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,
-		jsonb_build_object('change_kind',$12::text,'mock',($11::text='deterministic_mock')),true)`,
+		jsonb_build_object('change_kind',$12::text),true)`,
 		newVersionID, projectID, entityType, entityID, currentVersion+1, currentVersionID,
 		planID, after, afterHash, semanticHash, sourceType, changeKind); err != nil {
 		return ChangePlan{}, err
+	}
+	if entityType == "scene" {
+		if err = versionAdjacentScenes(
+			ctx, tx, projectID, planID, entityID, changes,
+		); err != nil {
+			return ChangePlan{}, err
+		}
 	}
 
 	if semantic {
@@ -373,7 +413,7 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 			return ChangePlan{}, err
 		}
 	}
-	if err = createDeterministicRebuildTasks(ctx, tx, planID, projectID, entityType, entityID, changes, rebuildTasksJSON, fingerprint); err != nil {
+	if err = createPendingRebuildTasks(ctx, tx, planID, projectID, entityType, entityID, changes, rebuildTasksJSON, fingerprint); err != nil {
 		return ChangePlan{}, err
 	}
 	eventID, err := newPublicID("cpe_")
@@ -384,8 +424,8 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 		return ChangePlan{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(change_plan_event_id,change_plan_id,event_type,details)
-		VALUES($1,$2,'applied',jsonb_build_object('entity_version_id',$3::text,'version',$4::int))`,
-		eventID, planID, newVersionID, currentVersion+1); err != nil {
+		VALUES($1,$2,$3,jsonb_build_object('entity_version_id',$4::text,'version',$5::int))`,
+		eventID, planID, eventType, newVersionID, currentVersion+1); err != nil {
 		return ChangePlan{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -395,10 +435,53 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 }
 
 func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID string) (json.RawMessage, error) {
+	var versioned json.RawMessage
+	err := tx.QueryRow(ctx, `SELECT content FROM drama.entity_versions
+		WHERE entity_type=$1 AND entity_id=$2 AND is_current FOR UPDATE`,
+		entityType, entityID).Scan(&versioned)
+	if err == nil {
+		if entityType == "episode_content" {
+			var projectID string
+			if readErr := tx.QueryRow(ctx, `SELECT project_id FROM drama.episode_outlines
+				WHERE episode_id=$1`, entityID).Scan(&projectID); readErr != nil {
+				return nil, readErr
+			}
+			return overlayEpisodeSnapshot(ctx, tx, projectID, entityID, versioned)
+		}
+		return versioned, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if inherited, ok, inheritedErr := readInheritedEpisodeSnapshot(
+		ctx, tx, entityType, entityID,
+	); inheritedErr != nil {
+		return nil, inheritedErr
+	} else if ok {
+		return inherited, nil
+	}
+	if entityType == "episode_content" {
+		native, readErr := readNativeEpisodeContentSnapshot(ctx, tx, entityID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		var projectID string
+		if readErr = tx.QueryRow(ctx, `SELECT project_id FROM drama.episode_outlines
+			WHERE episode_id=$1`, entityID).Scan(&projectID); readErr != nil {
+			return nil, readErr
+		}
+		return overlayEpisodeSnapshot(ctx, tx, projectID, entityID, native)
+	}
 	queries := map[string]string{
 		"dialogue": `SELECT to_jsonb(d)-'id'-'created_at'-'updated_at' FROM drama.dialogues d WHERE dialogue_id=$1 FOR UPDATE`,
 		"scene":    `SELECT to_jsonb(s)-'id'-'created_at'-'updated_at' FROM drama.script_scenes s WHERE scene_id=$1 FOR UPDATE`,
 		"shot":     `SELECT to_jsonb(s)-'id'-'created_at'-'updated_at' FROM drama.storyboard_shots s WHERE shot_id=$1 FOR UPDATE`,
+		"outline":  `SELECT to_jsonb(o)-'id'-'created_at'-'updated_at' FROM drama.episode_outlines o WHERE episode_id=$1 FOR UPDATE`,
+		"script":   `SELECT to_jsonb(s)-'id'-'created_at'-'updated_at' FROM drama.episode_scripts s WHERE script_id=$1 FOR UPDATE`,
+		"timeline": `SELECT to_jsonb(t)-'id'-'created_at'-'updated_at' FROM drama.edit_timelines t
+			WHERE t.episode_id=$1 AND t.is_current ORDER BY t.version DESC LIMIT 1 FOR UPDATE`,
+		"timeline_item": `SELECT to_jsonb(i)-'id'-'created_at'-'updated_at'
+			FROM drama.edit_timeline_items i WHERE timeline_item_id=$1 FOR UPDATE`,
 		"shot_video": `SELECT to_jsonb(v)-'id'-'created_at'-'updated_at'
 			FROM drama.shot_videos v
 			WHERE v.shot_id=(SELECT source.shot_id FROM drama.shot_videos source WHERE source.shot_video_id=$1)
@@ -410,7 +493,7 @@ func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID str
 		return nil, fmt.Errorf("%w: unsupported entity type %s", localedit.ErrInvalidPlan, entityType)
 	}
 	var result json.RawMessage
-	err := tx.QueryRow(ctx, query, entityID).Scan(&result)
+	err = tx.QueryRow(ctx, query, entityID).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -429,6 +512,13 @@ func readCurrentEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entity
 }
 
 func readNativeEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entityID string) (int, error) {
+	if inheritedVersion, ok, err := readInheritedEpisodeVersion(
+		ctx, tx, entityType, entityID,
+	); err != nil {
+		return 0, err
+	} else if ok {
+		return inheritedVersion, nil
+	}
 	var query string
 	switch entityType {
 	case "dialogue":
@@ -438,7 +528,24 @@ func readNativeEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entityI
 	case "shot":
 		query = `SELECT generation_version FROM drama.storyboard_shots WHERE shot_id=$1`
 	case "shot_video":
-		query = `SELECT generation_version FROM drama.shot_videos WHERE shot_video_id=$1`
+		query = `SELECT current.generation_version FROM drama.shot_videos source
+			JOIN drama.shot_videos current ON current.shot_id=source.shot_id AND current.is_current
+			WHERE source.shot_video_id=$1 ORDER BY current.generation_version DESC LIMIT 1`
+	case "outline":
+		query = `SELECT version FROM drama.episode_outlines WHERE episode_id=$1`
+	case "script":
+		query = `SELECT version FROM drama.episode_scripts WHERE script_id=$1`
+	case "episode_content":
+		query = `SELECT GREATEST(outline.version,COALESCE((
+			SELECT max(script.version) FROM drama.episode_scripts script
+			WHERE script.episode_id=outline.episode_id),outline.version))
+			FROM drama.episode_outlines outline WHERE outline.episode_id=$1`
+	case "timeline":
+		query = `SELECT version FROM drama.edit_timelines
+			WHERE episode_id=$1 AND is_current ORDER BY version DESC LIMIT 1`
+	case "timeline_item":
+		query = `SELECT timeline.version FROM drama.edit_timeline_items item
+			JOIN drama.edit_timelines timeline USING(timeline_id) WHERE item.timeline_item_id=$1`
 	default:
 		return 0, fmt.Errorf("%w: unsupported entity type %s", localedit.ErrInvalidPlan, entityType)
 	}
@@ -450,355 +557,7 @@ func readNativeEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entityI
 	return version, err
 }
 
-func applyEntityChanges(ctx context.Context, tx pgx.Tx, entityType, entityID string, changes []localedit.Change, fingerprint string) error {
-	if entityType == "shot_video" {
-		return cloneDeterministicShotVideo(ctx, tx, entityID, changes, fingerprint)
-	}
-	for _, change := range changes {
-		var err error
-		switch entityType + "." + change.Field {
-		case "dialogue.text", "dialogue.emotion", "dialogue.performance_instruction", "dialogue.speaker_name":
-			column := map[string]string{"text": "text", "emotion": "emotion", "performance_instruction": "performance_instruction", "speaker_name": "speaker_name"}[change.Field]
-			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET `+column+`=$2 WHERE dialogue_id=$1`, entityID, fmt.Sprint(change.Value))
-		case "dialogue.estimated_duration_ms":
-			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET estimated_duration_ms=$2 WHERE dialogue_id=$1`, entityID, intValue(change.Value, change.Delta))
-		case "dialogue.requested_speed":
-			// Speed belongs to generated audio; the dialogue snapshot remains factually unchanged.
-			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET performance_instruction=
-				concat_ws('; ',NULLIF(performance_instruction,''),'speed='||$2) WHERE dialogue_id=$1`,
-				entityID, fmt.Sprint(change.Value))
-		case "dialogue.production_mode":
-			mode := fmt.Sprint(change.Value)
-			if mode != "spoken" && mode != "narration" && mode != "action" {
-				return fmt.Errorf("%w: unsupported production mode %s", localedit.ErrInvalidPlan, mode)
-			}
-			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET production_mode=$2,
-				dialogue_type=CASE WHEN $2='narration' THEN 'narration'
-					WHEN $2='spoken' AND dialogue_type='narration' THEN 'dialogue'
-					ELSE dialogue_type END WHERE dialogue_id=$1`, entityID, mode)
-			if err == nil && mode == "action" {
-				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes scene SET actions=actions||
-					jsonb_build_array(jsonb_build_object(
-						'type','dialogue_converted_action','source_dialogue_id',dialogue.dialogue_id,
-						'description',dialogue.text))
-					FROM drama.dialogues dialogue WHERE dialogue.dialogue_id=$1
-					  AND scene.scene_id=dialogue.scene_id`, entityID)
-			}
-		case "scene.estimated_duration_seconds":
-			if change.Operation == "adjust" {
-				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET estimated_duration_seconds=
-					GREATEST(1,estimated_duration_seconds+$2) WHERE scene_id=$1`, entityID, intValue(change.Value, change.Delta))
-			} else {
-				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET estimated_duration_seconds=$2 WHERE scene_id=$1`, entityID, intValue(change.Value, change.Delta))
-			}
-		case "scene.actions":
-			if change.Operation == "replace" {
-				payload, _ := json.Marshal(change.Value)
-				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET actions=$2::jsonb WHERE scene_id=$1`, entityID, payload)
-			} else {
-				payload, _ := json.Marshal([]any{change.Value})
-				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET actions=actions||$2::jsonb WHERE scene_id=$1`, entityID, payload)
-			}
-		case "scene.scene_number":
-			var currentNumber int
-			if err = tx.QueryRow(ctx, `SELECT scene_number FROM drama.script_scenes WHERE scene_id=$1`, entityID).Scan(&currentNumber); err == nil {
-				targetNumber := intValue(change.Value, change.Delta)
-				if change.Operation == "reorder" {
-					targetNumber = currentNumber + targetNumber
-				}
-				err = reorderScene(ctx, tx, entityID, targetNumber)
-			}
-		case "scene.scene_purpose", "scene.emotional_change", "scene.location_name", "scene.time_of_day", "scene.interior_exterior":
-			column := change.Field
-			_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET `+column+`=$2 WHERE scene_id=$1`, entityID, fmt.Sprint(change.Value))
-		case "shot.action_description", "shot.facial_expression", "shot.composition", "shot.shot_size", "shot.camera_angle", "shot.camera_motion":
-			column := change.Field
-			_, err = tx.Exec(ctx, `UPDATE drama.storyboard_shots SET `+column+`=$2 WHERE shot_id=$1`, entityID, fmt.Sprint(change.Value))
-		case "shot.duration_seconds":
-			_, err = tx.Exec(ctx, `UPDATE drama.storyboard_shots SET duration_seconds=$2 WHERE shot_id=$1`, entityID, floatValue(change.Value, change.Delta))
-		default:
-			return fmt.Errorf("%w: executor does not support %s.%s", localedit.ErrInvalidPlan, entityType, change.Field)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	if entityType == "dialogue" {
-		if err := refreshDialogueDerived(ctx, tx, entityID, fingerprint); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func reorderScene(ctx context.Context, tx pgx.Tx, sceneID string, targetNumber int) error {
-	if targetNumber < 1 {
-		return fmt.Errorf("%w: scene number must remain positive", localedit.ErrInvalidPlan)
-	}
-	var scriptID string
-	var currentNumber, temporaryNumber int
-	if err := tx.QueryRow(ctx, `SELECT script_id,scene_number,
-		(SELECT max(scene_number)+1000 FROM drama.script_scenes sibling WHERE sibling.script_id=scene.script_id)
-		FROM drama.script_scenes scene WHERE scene_id=$1 FOR UPDATE`,
-		sceneID).Scan(&scriptID, &currentNumber, &temporaryNumber); err != nil {
-		return err
-	}
-	if currentNumber == targetNumber {
-		return nil
-	}
-	var displacedID string
-	err := tx.QueryRow(ctx, `SELECT scene_id FROM drama.script_scenes
-		WHERE script_id=$1 AND scene_number=$2 FOR UPDATE`, scriptID, targetNumber).Scan(&displacedID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-	if displacedID != "" {
-		if _, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET scene_number=$2 WHERE scene_id=$1`,
-			displacedID, temporaryNumber); err != nil {
-			return err
-		}
-	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET scene_number=$2 WHERE scene_id=$1`,
-		sceneID, targetNumber); err != nil {
-		return err
-	}
-	if displacedID != "" {
-		_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET scene_number=$2 WHERE scene_id=$1`,
-			displacedID, currentNumber)
-	}
-	return err
-}
-
-func refreshDialogueDerived(ctx context.Context, tx pgx.Tx, dialogueID, fingerprint string) error {
-	var productionMode string
-	if err := tx.QueryRow(ctx, `SELECT production_mode FROM drama.dialogues WHERE dialogue_id=$1`,
-		dialogueID).Scan(&productionMode); err != nil {
-		return err
-	}
-	if productionMode == "action" {
-		if _, err := tx.Exec(ctx, `UPDATE drama.dialogue_audio SET is_current=false
-			WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE drama.subtitle_cues SET is_current=false,
-			approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
-			WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
-			return err
-		}
-		return cloneDialogueEditTimelines(ctx, tx, dialogueID, "", fingerprint, true)
-	}
-	newAudioID := "da_mock_" + fingerprint[:20]
-	if _, err := tx.Exec(ctx, `UPDATE drama.dialogue_audio SET is_current=false
-		WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `INSERT INTO drama.dialogue_audio(
-		dialogue_audio_id,project_id,episode_id,scene_id,dialogue_id,character_id,voice_profile_id,
-		generation_version,dialogue_type,source_text,normalized_text,emotion,
-		performance_instruction,requested_speed,provider,model,storage_url,actual_duration_ms,content_hash,
-		status,auto_qc_status,auto_qc_report,review_status,is_current)
-		SELECT $2,source.project_id,source.episode_id,source.scene_id,source.dialogue_id,
-		source.character_id,source.voice_profile_id,
-		(SELECT COALESCE(max(v.generation_version),0)+1 FROM drama.dialogue_audio v WHERE v.dialogue_id=source.dialogue_id),
-		dialogue.dialogue_type,dialogue.text,dialogue.text,dialogue.emotion,
-		dialogue.performance_instruction,source.requested_speed,'deterministic_mock','local-tts-v1',
-		'/data/storage/dialogue-audio/'||$2::text||'.wav',dialogue.estimated_duration_ms,$3,'succeeded','passed',
-		jsonb_build_object('deterministic_mock',true,'source_audio_id',source.dialogue_audio_id),
-		'pending',true
-		FROM drama.dialogue_audio source
-		JOIN drama.dialogues dialogue ON dialogue.dialogue_id=source.dialogue_id
-		WHERE source.dialogue_id=$1
-		ORDER BY source.generation_version DESC LIMIT 1`,
-		dialogueID, newAudioID, fingerprint)
-	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.subtitle_cues SET
-		is_current=false,
-		approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
-		WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO drama.subtitle_cues(
-		subtitle_cue_id,project_id,episode_id,scene_id,shot_id,dialogue_id,dialogue_audio_id,
-		sequence_number,speaker_name,text,start_ms,end_ms,duration_ms,style_config,status,
-		cue_version,parent_subtitle_cue_id,is_current,approval_state)
-		SELECT 'sc_mock_'||substr(encode(digest(source.subtitle_cue_id||':'||$2,'sha256'),'hex'),1,20),
-		source.project_id,source.episode_id,source.scene_id,source.shot_id,source.dialogue_id,
-		$2,source.sequence_number,dialogue.speaker_name,dialogue.text,source.start_ms,
-		source.start_ms+dialogue.estimated_duration_ms,dialogue.estimated_duration_ms,
-		source.style_config,'draft',source.cue_version+1,source.subtitle_cue_id,true,'draft'
-		FROM (
-		  SELECT DISTINCT ON(sequence_number) * FROM drama.subtitle_cues
-		  WHERE dialogue_id=$1 ORDER BY sequence_number,cue_version DESC,created_at DESC
-		) source
-		JOIN drama.dialogues dialogue USING(dialogue_id)`,
-		dialogueID, newAudioID); err != nil {
-		return err
-	}
-	return cloneDialogueEditTimelines(ctx, tx, dialogueID, newAudioID, fingerprint, false)
-}
-
-// cloneDialogueEditTimelines materializes a new current timeline per affected
-// episode. Approved/history timelines and their items are never rewritten.
-func cloneDialogueEditTimelines(
-	ctx context.Context, tx pgx.Tx, dialogueID, dialogueAudioID, fingerprint string, removeSpokenItems bool,
-) error {
-	rows, err := tx.Query(ctx, `SELECT timeline.timeline_id
-		FROM drama.edit_timelines timeline
-		WHERE timeline.is_current AND EXISTS(
-			SELECT 1 FROM drama.edit_timeline_items item
-			WHERE item.timeline_id=timeline.timeline_id
-			  AND item.entity_type='dialogue' AND item.entity_id=$1
-		)
-		ORDER BY timeline.timeline_id FOR UPDATE OF timeline`, dialogueID)
-	if err != nil {
-		return err
-	}
-	var sourceTimelineIDs []string
-	for rows.Next() {
-		var sourceID string
-		if err = rows.Scan(&sourceID); err != nil {
-			rows.Close()
-			return err
-		}
-		sourceTimelineIDs = append(sourceTimelineIDs, sourceID)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for index, sourceID := range sourceTimelineIDs {
-		newTimelineID := fmt.Sprintf("etl_mock_%s_%d", fingerprint[:16], index+1)
-		if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines SET
-			is_current=false,
-			approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
-			WHERE timeline_id=$1`, sourceID); err != nil {
-			return err
-		}
-		tag, insertErr := tx.Exec(ctx, `INSERT INTO drama.edit_timelines(
-			timeline_id,project_id,episode_id,script_id,storyboard_id,audio_plan_id,version,
-			resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
-			tracks,transitions,subtitle_config,render_config,source_versions,status,
-			parent_timeline_id,editing_template_binding_id,editing_template_version_id,
-			version_reason,approval_state,is_current)
-			SELECT $2,project_id,episode_id,script_id,storyboard_id,audio_plan_id,
-			(SELECT max(version)+1 FROM drama.edit_timelines sibling WHERE sibling.episode_id=source.episode_id),
-			resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
-			tracks,transitions,subtitle_config,
-			render_config||jsonb_build_object('incremental_dialogue_id',$3::text),
-			source_versions||jsonb_build_object('dialogue_audio_id',$4::text),
-			'draft',timeline_id,editing_template_binding_id,editing_template_version_id,
-			'dialogue_edit:'||$3::text,'draft',true
-			FROM drama.edit_timelines source WHERE timeline_id=$1`,
-			sourceID, newTimelineID, dialogueID, dialogueAudioID)
-		if insertErr != nil {
-			return insertErr
-		}
-		if tag.RowsAffected() != 1 {
-			return ErrNotFound
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO drama.edit_timeline_items(
-			timeline_item_id,timeline_id,project_id,episode_id,track_type,track_number,
-			sequence_number,entity_type,entity_id,source_url,source_path,timeline_start_ms,
-			timeline_end_ms,source_in_ms,source_out_ms,duration_ms,volume,fade_in_ms,fade_out_ms,
-			transform_config,effect_config,status)
-			SELECT 'eti_'||substr(encode(digest(item.timeline_item_id||':'||$2,'sha256'),'hex'),1,24),
-			$2,item.project_id,item.episode_id,item.track_type,item.track_number,item.sequence_number,
-			item.entity_type,item.entity_id,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				  AND item.track_type IN('dialogue','narration')
-				THEN (SELECT storage_url FROM drama.dialogue_audio WHERE dialogue_audio_id=$4)
-				ELSE item.source_url END,
-			item.source_path,item.timeline_start_ms,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				THEN item.timeline_start_ms+dialogue.estimated_duration_ms ELSE item.timeline_end_ms END,
-			item.source_in_ms,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				  AND item.track_type IN('dialogue','narration')
-				THEN item.source_in_ms+dialogue.estimated_duration_ms ELSE item.source_out_ms END,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				THEN dialogue.estimated_duration_ms ELSE item.duration_ms END,
-			item.volume,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				THEN LEAST(item.fade_in_ms,dialogue.estimated_duration_ms) ELSE item.fade_in_ms END,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				THEN LEAST(item.fade_out_ms,GREATEST(0,dialogue.estimated_duration_ms-
-					LEAST(item.fade_in_ms,dialogue.estimated_duration_ms)))
-				ELSE item.fade_out_ms END,
-			item.transform_config,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
-				THEN item.effect_config||jsonb_build_object('incremental_rebuild',true,'dialogue_audio_id',$4::text)
-				ELSE item.effect_config END,
-			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3 THEN 'pending' ELSE item.status END
-			FROM drama.edit_timeline_items item
-			LEFT JOIN drama.dialogues dialogue ON dialogue.dialogue_id=$3
-			WHERE item.timeline_id=$1
-			  AND NOT ($5::boolean AND item.entity_type='dialogue' AND item.entity_id=$3
-			    AND item.track_type IN('dialogue','narration','subtitle'))`,
-			sourceID, newTimelineID, dialogueID, dialogueAudioID, removeSpokenItems); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines timeline SET target_duration_ms=(
-			SELECT max(item.timeline_end_ms) FROM drama.edit_timeline_items item WHERE item.timeline_id=timeline.timeline_id
-			) WHERE timeline_id=$1`, newTimelineID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func cloneDeterministicShotVideo(ctx context.Context, tx pgx.Tx, sourceID string, changes []localedit.Change, fingerprint string) error {
-	newID := "sv_mock_" + fingerprint[:20]
-	var startMS, endMS int64
-	for _, change := range changes {
-		if change.Operation == "regenerate_segment" && change.StartMS != nil && change.EndMS != nil {
-			startMS, endMS = *change.StartMS, *change.EndMS
-		}
-	}
-	var durationMS int64
-	if err := tx.QueryRow(ctx, `SELECT (COALESCE(actual_duration_seconds,requested_duration_seconds)*1000)::bigint
-		FROM drama.shot_videos WHERE shot_video_id=$1`, sourceID).Scan(&durationMS); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		return err
-	}
-	if endMS > durationMS {
-		return fmt.Errorf("%w: video segment exceeds source duration", localedit.ErrInvalidPlan)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE drama.shot_videos SET is_current=false WHERE shot_video_id=$1`, sourceID); err != nil {
-		return err
-	}
-	tag, err := tx.Exec(ctx, `INSERT INTO drama.shot_videos(
-		shot_video_id,project_id,episode_id,storyboard_id,shot_id,storyboard_image_id,
-		source_image_generation_version,generation_version,provider,model,video_prompt,
-		negative_prompt,reference_image_url,reference_asset_ids,request_parameters,seed,
-		requested_duration_seconds,actual_duration_seconds,aspect_ratio,width,height,fps,codec,
-		has_audio,storage_url,content_hash,status,auto_qc_status,auto_qc_report,review_status,
-		prompt_adjustment,is_current)
-		SELECT $2::text,project_id,episode_id,storyboard_id,shot_id,storyboard_image_id,
-		source_image_generation_version,
-		(SELECT COALESCE(max(v.generation_version),0)+1 FROM drama.shot_videos v WHERE v.shot_id=source.shot_id),
-		'deterministic_mock','local-segment-v1',video_prompt,negative_prompt,reference_image_url,
-		reference_asset_ids,request_parameters||jsonb_build_object('segment_start_ms',$3::bigint,'segment_end_ms',$4::bigint),
-		seed,requested_duration_seconds,actual_duration_seconds,aspect_ratio,width,height,fps,codec,
-		has_audio,'/data/storage/shot-videos/'||$2::text||'.mp4',$5,'succeeded','passed',
-		jsonb_build_object('deterministic_mock',true,'source_video_id',$1::text),'pending',
-		'local segment rebuild',true
-		FROM drama.shot_videos source WHERE shot_video_id=$1::text`,
-		sourceID, newID, startMS, endMS, fingerprint)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func createDeterministicRebuildTasks(
+func createPendingRebuildTasks(
 	ctx context.Context, tx pgx.Tx, planID, projectID, entityType, entityID string,
 	changes []localedit.Change, rebuildTasksJSON json.RawMessage, fingerprint string,
 ) error {
@@ -826,17 +585,37 @@ func createDeterministicRebuildTasks(
 			return rangeErr
 		}
 	}
-	for index, action := range actions {
-		taskID := "irt_" + fingerprint[:16] + "_" + strconv.Itoa(index+1)
-		_, err := tx.Exec(ctx, `INSERT INTO drama.incremental_rebuild_tasks(
-			rebuild_task_id,change_plan_id,project_id,action,target_entity_type,target_entity_id,
-			range_start_ms,range_end_ms,status,provider,input,output,completed_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,'completed','deterministic_mock',
-			jsonb_build_object('plan_fingerprint',$9::text),
-			jsonb_build_object('mock',true,'result_key',$1||':result'),now())`,
-			taskID, planID, projectID, action, entityType, entityID, startMS, endMS, fingerprint)
+	taskNumber := 0
+	for _, action := range actions {
+		targets, err := resolvePendingRebuildTargets(
+			ctx, tx, action, entityType, entityID, changes, startMS, endMS,
+		)
 		if err != nil {
 			return err
+		}
+		for _, target := range targets {
+			taskNumber++
+			taskID := "irt_" + fingerprint[:16] + "_" + strconv.Itoa(taskNumber)
+			_, err = tx.Exec(ctx, `INSERT INTO drama.incremental_rebuild_tasks(
+				rebuild_task_id,change_plan_id,project_id,action,target_entity_type,target_entity_id,
+				range_start_ms,range_end_ms,status,provider,input,output)
+				VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending','workflow',
+				jsonb_build_object(
+				  'plan_fingerprint',$9::text,'requires_real_execution',true,
+				  'source_entity_type',$10::text,'source_entity_id',$11::text,
+				  'source_entity_version_id',(SELECT entity_version_id
+				    FROM drama.entity_versions
+				    WHERE entity_type=$10::text AND entity_id=$11::text AND is_current),
+				  'source_version',(SELECT version
+				    FROM drama.entity_versions
+				    WHERE entity_type=$10::text AND entity_id=$11::text AND is_current)
+				),
+				'{}'::jsonb)`,
+				taskID, planID, projectID, action, target.EntityType, target.EntityID,
+				target.StartMS, target.EndMS, fingerprint, entityType, entityID)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -998,15 +777,35 @@ func restoreChanges(entityType string, sourceJSON, currentJSON json.RawMessage) 
 	if err := json.Unmarshal(currentJSON, &current); err != nil {
 		return nil, err
 	}
+	if entityType == "episode_content" {
+		return restoreEpisodeContentChanges(source, current)
+	}
+	if entityType == "timeline" {
+		sourceTimelineID := strings.TrimSpace(fmt.Sprint(source["timeline_id"]))
+		if sourceTimelineID == "" {
+			return nil, fmt.Errorf("%w: historical timeline has no timeline_id", localedit.ErrInvalidPlan)
+		}
+		return []localedit.Change{{
+			Operation: "replace", Field: "restore_source_timeline_id", Value: sourceTimelineID,
+		}}, nil
+	}
 	fields := map[string][]string{
-		"dialogue": {"text", "emotion", "performance_instruction", "estimated_duration_ms"},
+		"outline": {
+			"title", "logline", "opening_hook", "story_goal", "main_conflict",
+			"climax", "ending_hook", "estimated_duration_seconds",
+		},
+		"script": {"title", "opening_hook", "climax", "ending_hook"},
+		"dialogue": {
+			"dialogue_type", "speaker_name", "text", "emotion", "performance_instruction",
+			"estimated_duration_ms", "production_mode",
+		},
 		"scene": {
 			"scene_purpose", "actions", "emotional_change", "estimated_duration_seconds",
-			"location_name", "time_of_day", "interior_exterior",
+			"location_name", "time_of_day", "interior_exterior", "scene_number",
 		},
 		"shot": {
 			"action_description", "facial_expression", "composition", "shot_size",
-			"camera_angle", "camera_motion", "duration_seconds",
+			"camera_angle", "camera_motion", "duration_seconds", "shot_order",
 		},
 	}
 	if fields[entityType] == nil {
@@ -1098,7 +897,8 @@ func (s *Store) listChangePlanImpacts(ctx context.Context, planID string) ([]Cha
 
 func (s *Store) listRebuildTasks(ctx context.Context, planID string) ([]IncrementalRebuild, error) {
 	rows, err := s.pool.Query(ctx, `SELECT rebuild_task_id,action,target_entity_type,target_entity_id,
-		artifact_id,range_start_ms,range_end_ms,status,provider,input,output,created_at,completed_at
+		artifact_id,range_start_ms,range_end_ms,status,provider,input,output,error_code,error_message,
+		created_at,completed_at
 		FROM drama.incremental_rebuild_tasks WHERE change_plan_id=$1 ORDER BY created_at,rebuild_task_id`, planID)
 	if err != nil {
 		return nil, err
@@ -1109,13 +909,49 @@ func (s *Store) listRebuildTasks(ctx context.Context, planID string) ([]Incremen
 		var item IncrementalRebuild
 		if err = rows.Scan(&item.RebuildTaskID, &item.Action, &item.TargetEntityType,
 			&item.TargetEntityID, &item.ArtifactID, &item.RangeStartMS, &item.RangeEndMS,
-			&item.Status, &item.Provider, &item.Input, &item.Output, &item.CreatedAt,
+			&item.Status, &item.Provider, &item.Input, &item.Output, &item.ErrorCode,
+			&item.ErrorMessage, &item.CreatedAt,
 			&item.CompletedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) UpdateRebuildTaskStatus(
+	ctx context.Context, projectID, planID, taskID string, input RebuildTaskStatusInput,
+) (IncrementalRebuild, error) {
+	status := strings.ToLower(strings.TrimSpace(input.Status))
+	if status != "running" && status != "succeeded" && status != "failed" && status != "cancelled" {
+		return IncrementalRebuild{}, fmt.Errorf("%w: invalid rebuild task status", localedit.ErrInvalidPlan)
+	}
+	output := input.Output
+	if len(output) == 0 {
+		output = json.RawMessage(`{}`)
+	}
+	var task IncrementalRebuild
+	err := s.writer.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
+		status=$4,output=$5::jsonb,error_code=$6,error_message=$7,
+		completed_at=CASE WHEN $4 IN('succeeded','failed','cancelled') THEN now() ELSE NULL END
+		FROM drama.change_plans plan
+		WHERE task.change_plan_id=plan.change_plan_id AND plan.project_id=$1
+		  AND task.change_plan_id=$2 AND task.rebuild_task_id=$3
+		  AND ((task.status='pending' AND $4 IN('running','failed','cancelled'))
+		    OR (task.status='running' AND $4 IN('succeeded','failed','cancelled')))
+		RETURNING task.rebuild_task_id,task.action,task.target_entity_type,task.target_entity_id,
+		  task.artifact_id,task.range_start_ms,task.range_end_ms,task.status,task.provider,
+		  task.input,task.output,task.error_code,task.error_message,task.created_at,task.completed_at`,
+		projectID, planID, taskID, status, output, input.ErrorCode, input.ErrorMessage).Scan(
+		&task.RebuildTaskID, &task.Action, &task.TargetEntityType, &task.TargetEntityID,
+		&task.ArtifactID, &task.RangeStartMS, &task.RangeEndMS, &task.Status, &task.Provider,
+		&task.Input, &task.Output, &task.ErrorCode, &task.ErrorMessage, &task.CreatedAt,
+		&task.CompletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IncrementalRebuild{}, ErrConflict
+	}
+	return task, err
 }
 
 func intValue(value, delta any) int {

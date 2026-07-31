@@ -1,0 +1,17 @@
+{
+  "schema_version": "effective-input-resolution.v1",
+  "resolver_version": "effective-input-resolver.v1",
+  "resolution_id": "not-a-resolution-id",
+  "project_id": "project_1",
+  "episode_id": "episode_1",
+  "stage": "unknown",
+  "mode": "effective",
+  "status": "ready",
+  "ready": true,
+  "context_hash": "short",
+  "resolution_hash": "short",
+  "items": [],
+  "context": {},
+  "missing": [],
+  "blockers": []
+}

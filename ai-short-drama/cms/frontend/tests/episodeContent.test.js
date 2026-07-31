@@ -50,6 +50,7 @@ test('clone and payload preserve text-based action schemas', () => {
 
 test('buildEpisodeContentPayload strips read-only fields', () => {
   const payload = buildEpisodeContentPayload(cloneEpisodeContent(fixture))
+  assert.equal(payload.expected_version, 1)
   assert.equal(payload.outline.status, undefined)
   assert.equal(payload.script.status, undefined)
   assert.equal(payload.script.scenes[0].scene_number, undefined)
@@ -62,4 +63,9 @@ test('episodeContentChanged detects editable changes', () => {
   assert.equal(episodeContentChanged(fixture, draft), false)
   draft.script.scenes[0].dialogues[0].text = '你是谁？'
   assert.equal(episodeContentChanged(fixture, draft), true)
+})
+
+test('buildEpisodeContentPayload sends the exact current revision for conflict detection', () => {
+  const content = cloneEpisodeContent({ ...fixture, revision: 7 })
+  assert.equal(buildEpisodeContentPayload(content).expected_version, 7)
 })

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,6 +36,7 @@ type CreativeWorkbench struct {
 	Comments             json.RawMessage `json:"comments"`
 	WorkspaceVersions    json.RawMessage `json:"workspace_versions"`
 	TemplateBindings     json.RawMessage `json:"template_bindings"`
+	EffectiveInputs      json.RawMessage `json:"effective_inputs"`
 }
 
 type EditingTemplateRecord struct {
@@ -180,11 +180,15 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 			JOIN drama.editing_template_versions template_version USING(editing_template_version_id)
 			JOIN drama.editing_templates template USING(editing_template_id)
 			WHERE binding.project_id=$1 AND (binding.episode_id IS NULL OR binding.episode_id=$2)`},
+		{&result.EffectiveInputs, `SELECT drama.resolve_effective_inputs($1,$2,'17')`},
 	}
 	for _, query := range queries {
 		if err = s.pool.QueryRow(ctx, query.sql, projectID, episodeID).Scan(query.target); err != nil {
 			return CreativeWorkbench{}, err
 		}
+	}
+	if err = s.overlayCreativeWorkbenchVersions(ctx, &result); err != nil {
+		return CreativeWorkbench{}, err
 	}
 	return result, nil
 }
@@ -216,71 +220,9 @@ func (s *Store) ListEditingTemplates(ctx context.Context, projectID string) ([]E
 func (s *Store) ApplyEditingTemplate(
 	ctx context.Context, projectID, episodeID string, input ApplyEditingTemplateInput,
 ) (TimelineVersionRecord, error) {
-	if input.Scope == "" {
-		input.Scope = "episode"
-	}
-	if input.Scope != "project" && input.Scope != "episode" {
-		return TimelineVersionRecord{}, fmt.Errorf("%w: scope must be project or episode", ErrConflict)
-	}
-	if input.Reason == "" {
-		input.Reason = "editing_template_switch"
-	}
-	overrideJSON, err := json.Marshal(input.OverrideConfig)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	tx, err := s.writer.Begin(ctx)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	defer tx.Rollback(ctx)
-	var templateConfig json.RawMessage
-	err = tx.QueryRow(ctx, `SELECT config FROM drama.editing_template_versions
-		WHERE editing_template_version_id=$1 AND status='published'`,
-		input.EditingTemplateVersionID).Scan(&templateConfig)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return TimelineVersionRecord{}, ErrNotFound
-	}
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	var oldBindingID *string
-	bindingEpisodeID := any(episodeID)
-	if input.Scope == "project" {
-		bindingEpisodeID = nil
-	}
-	_ = tx.QueryRow(ctx, `SELECT editing_template_binding_id FROM drama.editing_template_bindings
-		WHERE project_id=$1 AND episode_id IS NOT DISTINCT FROM $2::text AND is_current FOR UPDATE`,
-		projectID, bindingEpisodeID).Scan(&oldBindingID)
-	if oldBindingID != nil {
-		if _, err = tx.Exec(ctx, `UPDATE drama.editing_template_bindings SET is_current=false
-			WHERE editing_template_binding_id=$1`, *oldBindingID); err != nil {
-			return TimelineVersionRecord{}, err
-		}
-	}
-	bindingID, err := newPublicID("etb_")
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	_, err = tx.Exec(ctx, `INSERT INTO drama.editing_template_bindings(
-		editing_template_binding_id,project_id,episode_id,editing_template_version_id,
-		version,parent_binding_id,override_config,is_current,change_reason,created_by)
-		VALUES($1,$2,$3,$4,COALESCE((SELECT max(version)+1 FROM drama.editing_template_bindings
-			WHERE project_id=$2 AND episode_id IS NOT DISTINCT FROM $3::text),1),$5,$6::jsonb,true,$7,$8)`,
-		bindingID, projectID, bindingEpisodeID, input.EditingTemplateVersionID,
-		oldBindingID, overrideJSON, input.Reason, input.Actor)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	result, err := cloneTimelineVersion(ctx, tx, projectID, episodeID, "", bindingID,
-		input.EditingTemplateVersionID, input.Reason, "draft", templateConfig, overrideJSON)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	return result, nil
+	return TimelineVersionRecord{}, fmt.Errorf(
+		"%w: direct template mutation is disabled; create a timeline change plan", ErrConflict,
+	)
 }
 
 func (s *Store) ListTimelineVersions(ctx context.Context, projectID, episodeID string) ([]TimelineVersionRecord, error) {
@@ -310,191 +252,17 @@ func (s *Store) ListTimelineVersions(ctx context.Context, projectID, episodeID s
 func (s *Store) RestoreTimelineVersion(
 	ctx context.Context, projectID, episodeID, sourceTimelineID string, actor *string,
 ) (TimelineVersionRecord, error) {
-	tx, err := s.writer.Begin(ctx)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	defer tx.Rollback(ctx)
-	var exists bool
-	err = tx.QueryRow(ctx, `SELECT true FROM drama.edit_timelines
-		WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3`,
-		projectID, episodeID, sourceTimelineID).Scan(&exists)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return TimelineVersionRecord{}, ErrNotFound
-	}
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	result, err := cloneTimelineVersion(ctx, tx, projectID, episodeID, sourceTimelineID,
-		"", "", "restore:"+sourceTimelineID, "restored", nil, nil)
-	if err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	if actor != nil {
-		_, _ = tx.Exec(ctx, `UPDATE drama.edit_timelines SET render_config=render_config||
-			jsonb_build_object('restored_by',$2::text) WHERE timeline_id=$1`, result.TimelineID, actor)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return TimelineVersionRecord{}, err
-	}
-	return result, nil
+	return TimelineVersionRecord{}, fmt.Errorf(
+		"%w: direct timeline restore is disabled; create a timeline change plan", ErrConflict,
+	)
 }
 
-// ReplaceEpisodeSoundStyle creates successor sound cues and a successor edit
-// timeline. Approved source cues, assets and timelines remain immutable history.
 func (s *Store) ReplaceEpisodeSoundStyle(
 	ctx context.Context, projectID, episodeID string, input ReplaceSoundStyleInput,
 ) (SoundStyleReplacementResult, error) {
-	input.ToStyleGroup = strings.TrimSpace(input.ToStyleGroup)
-	if input.ToStyleGroup == "" {
-		return SoundStyleReplacementResult{}, fmt.Errorf("%w: to_style_group is required", ErrConflict)
-	}
-	if input.Reason == "" {
-		input.Reason = "whole_episode_sound_style_replace"
-	}
-	tx, err := s.writer.Begin(ctx)
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	defer tx.Rollback(ctx)
-
-	var sourceTimelineID, fromStyleGroup string
-	var cueCount, mappedCount int
-	err = tx.QueryRow(ctx, `SELECT timeline_id FROM drama.edit_timelines
-		WHERE project_id=$1 AND episode_id=$2 AND is_current FOR UPDATE`,
-		projectID, episodeID).Scan(&sourceTimelineID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return SoundStyleReplacementResult{}, ErrNotFound
-	}
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	err = tx.QueryRow(ctx, `SELECT count(*),count(target.sound_asset_version_id),
-		COALESCE(string_agg(DISTINCT source_asset.style_group,',' ORDER BY source_asset.style_group),'')
-		FROM drama.sound_cue_versions cue
-		JOIN drama.sound_asset_versions source_version USING(sound_asset_version_id)
-		JOIN drama.sound_assets source_asset USING(sound_asset_id)
-		LEFT JOIN LATERAL(
-			SELECT target_version.sound_asset_version_id
-			FROM drama.sound_asset_versions target_version
-			JOIN drama.sound_assets target_asset USING(sound_asset_id)
-			WHERE target_version.is_current AND target_version.status IN('ready','approved')
-			  AND target_asset.project_id=$1 AND target_asset.style_group=$3
-			  AND target_asset.asset_type=cue.cue_type
-			ORDER BY (target_version.status='approved') DESC,target_version.version DESC
-			LIMIT 1
-		) target ON true
-		WHERE cue.project_id=$1 AND cue.episode_id=$2 AND cue.is_current`,
-		projectID, episodeID, input.ToStyleGroup).Scan(&cueCount, &mappedCount, &fromStyleGroup)
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	if cueCount == 0 {
-		return SoundStyleReplacementResult{}, ErrNotFound
-	}
-	if mappedCount != cueCount {
-		return SoundStyleReplacementResult{}, fmt.Errorf(
-			"%w: target style %q does not provide every current cue type (%d/%d)",
-			ErrConflict, input.ToStyleGroup, mappedCount, cueCount,
-		)
-	}
-	if fromStyleGroup == input.ToStyleGroup {
-		return SoundStyleReplacementResult{}, fmt.Errorf("%w: target sound style is already current", ErrConflict)
-	}
-
-	timeline, err := cloneTimelineVersion(
-		ctx, tx, projectID, episodeID, sourceTimelineID, "", "",
-		input.Reason+":"+input.ToStyleGroup, "draft", nil, nil,
+	return SoundStyleReplacementResult{}, fmt.Errorf(
+		"%w: direct sound style mutation is disabled; create a timeline change plan", ErrConflict,
 	)
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	rows, err := tx.Query(ctx, `WITH retired AS(
-			UPDATE drama.sound_cue_versions cue SET is_current=false,status='superseded'
-			WHERE cue.project_id=$1 AND cue.episode_id=$2 AND cue.is_current
-			RETURNING cue.*
-		)
-		INSERT INTO drama.sound_cue_versions(
-			sound_cue_version_id,sound_cue_id,project_id,episode_id,shot_id,dialogue_id,
-			sound_asset_version_id,cue_type,source_hint,event_key,sequence_number,start_ms,end_ms,
-			source_in_ms,source_out_ms,gain_db,fade_in_ms,fade_out_ms,beat_sync,
-			transition_config,ducking_config,version,parent_sound_cue_version_id,status,is_current,created_by)
-		SELECT 'scv_'||substr(encode(digest(retired.sound_cue_version_id||':'||$3||':'||$4,'sha256'),'hex'),1,24),
-			retired.sound_cue_id,retired.project_id,retired.episode_id,retired.shot_id,retired.dialogue_id,
-			target.sound_asset_version_id,retired.cue_type,retired.source_hint,retired.event_key,
-			retired.sequence_number,retired.start_ms,retired.end_ms,retired.source_in_ms,
-			retired.source_out_ms,retired.gain_db,retired.fade_in_ms,retired.fade_out_ms,
-			retired.beat_sync,retired.transition_config,retired.ducking_config,retired.version+1,
-			retired.sound_cue_version_id,'aligned',true,$5
-		FROM retired
-		JOIN LATERAL(
-			SELECT target_version.sound_asset_version_id
-			FROM drama.sound_asset_versions target_version
-			JOIN drama.sound_assets target_asset USING(sound_asset_id)
-			WHERE target_version.is_current AND target_version.status IN('ready','approved')
-			  AND target_asset.project_id=$1 AND target_asset.style_group=$3
-			  AND target_asset.asset_type=retired.cue_type
-			ORDER BY (target_version.status='approved') DESC,target_version.version DESC
-			LIMIT 1
-		) target ON true
-		RETURNING sound_cue_version_id`,
-		projectID, episodeID, input.ToStyleGroup, timeline.TimelineID, input.Actor)
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	replacedCueIDs := make([]string, 0, cueCount)
-	for rows.Next() {
-		var cueID string
-		if err = rows.Scan(&cueID); err != nil {
-			rows.Close()
-			return SoundStyleReplacementResult{}, err
-		}
-		replacedCueIDs = append(replacedCueIDs, cueID)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	if len(replacedCueIDs) != cueCount {
-		return SoundStyleReplacementResult{}, fmt.Errorf("%w: incomplete sound cue replacement", ErrConflict)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.edit_timeline_items item
-		SET source_url=asset_version.storage_uri,status='pending',
-			effect_config=item.effect_config||jsonb_build_object(
-				'sound_style_group',$2::text,'sound_cue_version_id',cue.sound_cue_version_id)
-		FROM drama.sound_cue_versions cue
-		JOIN drama.sound_asset_versions asset_version USING(sound_asset_version_id)
-		WHERE item.timeline_id=$1 AND item.entity_type='sound_cue'
-		  AND item.entity_id=cue.sound_cue_id AND cue.is_current`,
-		timeline.TimelineID, input.ToStyleGroup); err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	replacementID, err := newPublicID("ssr_")
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	cueJSON, err := json.Marshal(replacedCueIDs)
-	if err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO drama.sound_style_replacements(
-		sound_style_replacement_id,project_id,episode_id,from_style_group,to_style_group,
-		source_timeline_id,result_timeline_id,replaced_cue_versions,created_by)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,
-		replacementID, projectID, episodeID, fromStyleGroup, input.ToStyleGroup,
-		sourceTimelineID, timeline.TimelineID, cueJSON, input.Actor); err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return SoundStyleReplacementResult{}, err
-	}
-	return SoundStyleReplacementResult{
-		SoundStyleReplacementID: replacementID,
-		FromStyleGroup:          fromStyleGroup,
-		ToStyleGroup:            input.ToStyleGroup,
-		ReplacedCueVersionIDs:   replacedCueIDs,
-		Timeline:                timeline,
-	}, nil
 }
 
 func cloneTimelineVersion(

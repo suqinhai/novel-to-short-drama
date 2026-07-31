@@ -24,6 +24,7 @@ import (
 	"short-drama-cms/backend/internal/config"
 	"short-drama-cms/backend/internal/datacleanup"
 	systemdiagnostics "short-drama-cms/backend/internal/diagnostics"
+	"short-drama-cms/backend/internal/effectiveinput"
 	"short-drama-cms/backend/internal/store"
 )
 
@@ -33,13 +34,14 @@ type dataCleaner interface {
 }
 
 type Handler struct {
-	store             *store.Store
-	config            config.Config
-	client            *http.Client
-	webhookClient     *http.Client
-	aiConfigManager   *aiconfig.Manager
-	diagnosticsRunner *systemdiagnostics.Runner
-	dataCleaner       dataCleaner
+	store                  *store.Store
+	config                 config.Config
+	client                 *http.Client
+	webhookClient          *http.Client
+	aiConfigManager        *aiconfig.Manager
+	diagnosticsRunner      *systemdiagnostics.Runner
+	dataCleaner            dataCleaner
+	effectiveInputResolver *effectiveinput.Resolver
 }
 
 func New(store *store.Store, cfg config.Config) *Handler {
@@ -54,6 +56,7 @@ func New(store *store.Store, cfg config.Config) *Handler {
 		),
 	}
 	if store != nil {
+		handler.effectiveInputResolver = effectiveinput.New(store)
 		handler.dataCleaner = datacleanup.New(store, datacleanup.Config{
 			StorageDirectory: cfg.StorageDirectory, ManagedEnvFile: cfg.ManagedEnvFile,
 			N8NContainer: cfg.N8NContainer, MediaWorkerContainer: cfg.MediaWorkerContainer,
@@ -79,7 +82,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/projects/:projectID/rolling-plans/:planID/adopt", h.adoptRollingPlan)
 	api.POST("/projects/:projectID/episode-runs/:episodeRunID/activate", h.activateEpisodeRun)
 	api.GET("/projects/:projectID/episode-runs/:episodeRunID/content", h.getEpisodeRunContent)
-	api.PATCH("/projects/:projectID/episode-runs/:episodeRunID/content", h.updateEpisodeRunContent)
+	api.POST("/projects/:projectID/episode-runs/:episodeRunID/content/change-plan", h.createEpisodeContentChangePlan)
 	api.GET("/reviews", h.listReviews)
 	api.GET("/reviews/:reviewID/content", h.getReviewContent)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
@@ -92,6 +95,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/projects/:projectID/change-plans/:changePlanID", h.getChangePlan)
 	api.POST("/projects/:projectID/change-plans/:changePlanID/confirm", h.confirmChangePlan)
 	api.POST("/projects/:projectID/change-plans/:changePlanID/execute", h.executeChangePlan)
+	api.POST("/projects/:projectID/change-plans/:changePlanID/rebuild-tasks/:rebuildTaskID/status", h.updateRebuildTaskStatus)
 	api.GET("/projects/:projectID/entity-versions", h.listEntityVersions)
 	api.POST("/projects/:projectID/entity-versions/:entityVersionID/change-plan", h.createVersionRestorePlan)
 	api.GET("/projects/:projectID/change-comments", h.listChangeComments)
@@ -103,6 +107,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/data-reset", h.resetAllData)
 	registerPerformanceContinuityRoutes(api, h)
 	registerPostProductionRoutes(api, h)
+	registerEffectiveInputRoutes(api, h)
 	registerSourceV2(router, h.store)
 	return router
 }
