@@ -570,13 +570,37 @@ async function normalizeMedia(manifest) {
       `audio[${index}].duration_ms`,
       true,
     );
+    const speedRatio = numberField(
+      item.speed_ratio ?? item.speedRatio,
+      1,
+      0.8,
+      1.12,
+      `audio[${index}].speed_ratio`,
+    );
+    if (!['dialogue', 'narration'].includes(kind) && Math.abs(speedRatio - 1) > 0.0005) {
+      throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'speed_ratio is only allowed for dialogue or narration', false);
+    }
+    const sourceDurationMs = durationMs * speedRatio;
+    const pitchSemitones = numberField(
+      item.pitch_semitones ?? item.pitchSemitones,
+      0,
+      -12,
+      12,
+      `audio[${index}].pitch_semitones`,
+    );
+    if (Math.abs(pitchSemitones) > 0.0005 && kind !== 'bgm') {
+      throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'pitch_semitones is only allowed for BGM', false);
+    }
     audio.push({
       path: source.path,
       kind,
       timelineStartMs,
       durationMs,
       sourceInMs,
-      sourceOutMs: sourceInMs + durationMs,
+      sourceOutMs: sourceInMs + sourceDurationMs,
+      sourceDurationMs,
+      speedRatio,
+      pitchSemitones,
       volume: numberField(item.volume, 1, 0, 4, `audio[${index}].volume`),
       fadeInMs: numberField(item.fade_in_ms ?? item.fadeInMs, 0, 0, durationMs, `audio[${index}].fade_in_ms`, true),
       fadeOutMs: numberField(item.fade_out_ms ?? item.fadeOutMs, 0, 0, durationMs, `audio[${index}].fade_out_ms`, true),
@@ -598,6 +622,12 @@ async function normalizeMedia(manifest) {
     subtitlePath,
     transitions,
     duckingEnabled: boolValue(manifest.audio?.ducking_enabled ?? manifest.render_config?.bgm_ducking_enabled, true),
+    ducking: {
+      threshold: numberField(manifest.audio?.ducking_threshold, 0.02, 0.001, 1, 'audio.ducking_threshold'),
+      ratio: numberField(manifest.audio?.ducking_ratio, 8, 1, 20, 'audio.ducking_ratio'),
+      attackMs: numberField(manifest.audio?.ducking_attack_ms, 20, 1, 2000, 'audio.ducking_attack_ms'),
+      releaseMs: numberField(manifest.audio?.ducking_release_ms, 250, 1, 5000, 'audio.ducking_release_ms'),
+    },
   };
 }
 

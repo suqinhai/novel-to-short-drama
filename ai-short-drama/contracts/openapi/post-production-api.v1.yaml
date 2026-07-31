@@ -1,0 +1,260 @@
+openapi: 3.1.0
+info:
+  title: AI Short Drama Post-production and Creative Workbench API
+  version: 1.0.0-phase5
+  description: Unified Phase 5 API over the existing Narrative IR, local-edit, performance, continuity and artifact lineage stores.
+servers:
+  - url: /api/v1
+tags:
+  - {name: CreativeWorkbench}
+  - {name: DialogueTiming}
+  - {name: EditingTemplates}
+  - {name: Sound}
+paths:
+  /projects/{project_id}/episodes/{episode_id}/creative-workbench:
+    get:
+      tags: [CreativeWorkbench]
+      operationId: getCreativeWorkbench
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      responses:
+        '200':
+          description: Unified read model referencing existing scene, dialogue, shot, candidate, continuity, QC and timeline IDs.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreativeWorkbenchResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{project_id}/episodes/{episode_id}/dialogue-timings/validate:
+    post:
+      tags: [DialogueTiming]
+      operationId: validateDialogueTimings
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DialogueTimingValidationRequest'}
+      responses:
+        '200':
+          description: Persisted timing versions and exact editor-located issues.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DialogueTimingValidationResponse'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /projects/{project_id}/editing-templates:
+    get:
+      tags: [EditingTemplates]
+      operationId: listEditingTemplates
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+      responses:
+        '200':
+          description: System and project-owned template versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/EditingTemplateVersion'}}
+  /projects/{project_id}/episodes/{episode_id}/editing-template:
+    post:
+      tags: [EditingTemplates]
+      operationId: applyEditingTemplate
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApplyEditingTemplateRequest'}
+      responses:
+        '201':
+          description: Newly cloned current timeline version; source timeline is retained.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TimelineVersionResponse'}
+  /projects/{project_id}/episodes/{episode_id}/timeline-versions:
+    get:
+      tags: [CreativeWorkbench]
+      operationId: listTimelineVersions
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      responses:
+        '200':
+          description: Timeline version history.
+  /projects/{project_id}/episodes/{episode_id}/sound-style:
+    post:
+      tags: [Sound]
+      operationId: replaceEpisodeSoundStyle
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReplaceSoundStyleRequest'}
+      responses:
+        '201':
+          description: Successor sound cue versions and a successor timeline; approved source versions are retained.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SoundStyleReplacementResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /projects/{project_id}/episodes/{episode_id}/timeline-versions/{timeline_id}/restore:
+    post:
+      tags: [CreativeWorkbench]
+      operationId: restoreTimelineVersion
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - name: timeline_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      responses:
+        '201':
+          description: A new restored timeline version; the selected version is not overwritten.
+components:
+  parameters:
+    ProjectID:
+      name: project_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+    EpisodeID:
+      name: episode_id
+      in: path
+      required: true
+      schema: {$ref: '#/components/schemas/ID'}
+  schemas:
+    ID: {type: string, minLength: 1, maxLength: 160}
+    CreativeWorkbenchResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [project_id, episode_id, scenes, dialogues, shots, timeline_versions]
+          properties:
+            project_id: {$ref: '#/components/schemas/ID'}
+            episode_id: {$ref: '#/components/schemas/ID'}
+            episode: {type: object}
+            diagnostic: {type: object}
+            pacing_beats: {type: array, items: {type: object}}
+            candidates: {type: array, items: {type: object}}
+            scenes: {type: array, items: {type: object}}
+            dialogues: {type: array, items: {type: object}}
+            shots: {type: array, items: {type: object}}
+            dialogue_timings: {type: array, items: {type: object}}
+            sound_cues: {type: array, items: {type: object}}
+            timeline_versions: {type: array, items: {type: object}}
+            timeline_items: {type: array, items: {type: object}}
+            performance_bibles: {type: array, items: {type: object}}
+            continuity: {type: array, items: {type: object}}
+            quality_issues: {type: array, items: {type: object}}
+            visual_qc_issues: {type: array, items: {type: object}}
+            dialogue_timing_issues: {type: array, items: {type: object}}
+            comments: {type: array, items: {type: object}}
+            workspace_versions: {type: array, items: {type: object}}
+            template_bindings: {type: array, items: {type: object}}
+    DialogueTimingValidationRequest:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, minItems: 1, items: {type: object}}
+        tolerance_ms: {type: integer, minimum: 20, maximum: 1000, default: 120}
+        persist: {type: boolean, default: true}
+        actor: {type: string}
+    DialogueTimingValidationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [report, persisted]
+          properties:
+            persisted: {type: boolean}
+            report:
+              type: object
+              required: [schema_version, passed, issues, suggestions]
+              properties:
+                schema_version: {const: dialogue-timing.v1}
+                passed: {type: boolean}
+                issues: {type: array, items: {type: object}}
+                suggestions: {type: object}
+    EditingTemplateVersion:
+      type: object
+      required: [editing_template_version_id, template_key, name, version, config]
+      properties:
+        editing_template_version_id: {$ref: '#/components/schemas/ID'}
+        template_key: {type: string}
+        name: {type: string}
+        version: {type: integer, minimum: 1}
+        config: {type: object}
+    ApplyEditingTemplateRequest:
+      type: object
+      required: [editing_template_version_id, scope, reason]
+      properties:
+        editing_template_version_id: {$ref: '#/components/schemas/ID'}
+        scope: {enum: [project, episode]}
+        override_config: {type: object}
+        actor: {type: string}
+        reason: {type: string, minLength: 1}
+    ReplaceSoundStyleRequest:
+      type: object
+      required: [to_style_group]
+      properties:
+        to_style_group: {type: string, minLength: 1, maxLength: 120}
+        reason: {type: string, minLength: 1}
+        actor: {type: string}
+    SoundStyleReplacementResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            [sound_style_replacement_id, from_style_group, to_style_group,
+             replaced_cue_version_ids, timeline]
+          properties:
+            sound_style_replacement_id: {$ref: '#/components/schemas/ID'}
+            from_style_group: {type: string}
+            to_style_group: {type: string}
+            replaced_cue_version_ids:
+              type: array
+              minItems: 1
+              items: {$ref: '#/components/schemas/ID'}
+            timeline:
+              type: object
+              required: [timeline_id, version, is_current]
+              properties:
+                timeline_id: {$ref: '#/components/schemas/ID'}
+                version: {type: integer, minimum: 1}
+                is_current: {const: true}
+    TimelineVersionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [timeline_id, version, parent_timeline_id, is_current]
+          properties:
+            timeline_id: {$ref: '#/components/schemas/ID'}
+            version: {type: integer, minimum: 1}
+            parent_timeline_id: {$ref: '#/components/schemas/ID'}
+            editing_template_version_id: {$ref: '#/components/schemas/ID'}
+            approval_state: {enum: [draft, approved, superseded, restored]}
+            is_current: {const: true}
+  responses:
+    NotFound:
+      description: Resource not found.
+    Unprocessable:
+      description: Validation or version conflict.

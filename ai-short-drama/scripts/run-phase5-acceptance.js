@@ -5,10 +5,9 @@ const path = require('path');
 const {spawnSync} = require('child_process');
 
 const root = path.resolve(__dirname, '..');
-const bundledPython = process.env.USERPROFILE
-  ? path.join(process.env.USERPROFILE, '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'python', 'python.exe')
-  : '';
-const pythonCommand = process.env.PHASE5_PYTHON || (bundledPython && fs.existsSync(bundledPython) ? bundledPython : 'python');
+// Schema validation needs the jsonschema package. The system interpreter is
+// the project-supported default; PHASE5_PYTHON can pin another prepared runtime.
+const pythonCommand = process.env.PHASE5_PYTHON || 'python';
 const container = process.env.PHASE5_POSTGRES_CONTAINER || 'ai-short-drama-postgres-1';
 const freshDatabase = process.env.PHASE5_FRESH_DATABASE || 'short_drama_phase5_acceptance';
 const legacyDatabase = process.env.PHASE5_LEGACY_DATABASE || 'short_drama_phase5_legacy_upgrade';
@@ -22,12 +21,22 @@ const migrationFiles = [
   'database/04-video-audio.sql', 'database/05-edit-qc-publish.sql', 'database/06-narrative-ir-foundation.sql',
   'database/07-adaptation-compiler-audit.sql', 'database/08-chapter-impact-analysis.sql',
   'database/09-phase5-contract-corrections.sql',
+  'database/11-pgcrypto-runtime-prerequisite.sql',
+  'database/12-rolling-episode-production.sql',
+  'database/13-adaptation-diagnostics-pacing-quality.sql',
+  'database/14-multi-candidate-selection.sql',
+  'database/15-local-editing-workbench.sql',
+  'database/16-performance-continuity-visual-qc.sql',
+  'database/17-post-production-creative-workbench.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
 const verifyFiles = [
   'database/06-verify-narrative-foundation.sql', 'database/07-verify-adaptation-compiler.sql',
   'database/08-verify-chapter-impact-analysis.sql', 'database/09-verify-phase5-contract-corrections.sql',
+  'database/14-verify-multi-candidate-selection.sql',
+  'database/16-verify-performance-continuity-visual-qc.sql',
+  'database/17-verify-post-production-creative-workbench.sql',
 ];
 
 function loadEnv() {
@@ -96,23 +105,30 @@ try {
   for (const file of verifyFiles) sqlFile(legacyDatabase, file, `legacy verify ${file}`);
   sqlFile(legacyDatabase, 'test-data/phase1-contract-seed.sql', 'seed traced Narrative IR fixture');
   sqlFile(legacyDatabase, 'test-data/phase3-compiler-db-seed.sql', 'seed adaptation compiler fixture');
+  sqlFile(legacyDatabase, 'test-data/phase5-postproduction-fixture.sql', 'seed complete Phase 5 post-production mock episode');
 
   const backendCwd = path.join(root, 'cms/backend');
   run('Go backend unit tests', 'go', ['test', '-p', '1', './...'], {cwd: backendCwd, env: commandEnv});
-  run('Go Phase 2 source/spec integration including 1000 chapters', 'go', ['test', '-p', '1', '-v', './internal/store',
+  run('Go Phase 2 source/spec integration including 1000 chapters', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store',
     '-run', 'TestAdaptationProjectAndSpecIntegration|TestSourceV2LifecycleIntegration|TestSourceV2ThousandChapterBatchIntegration'],
   {cwd: backendCwd, env: {...commandEnv, PHASE2_DATABASE_URL: databaseURL(freshDatabase)}});
-  run('Go Phase 3 compiler integration', 'go', ['test', '-p', '1', '-v', './internal/store', '-run', 'TestCompilerRunLifecycleIntegration'],
+  run('Go Phase 3 compiler integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestCompilerRunLifecycleIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE3_DATABASE_URL: databaseURL(legacyDatabase)}});
-  run('Go Phase 4 incremental extraction integration', 'go', ['test', '-p', '1', '-v', './internal/store', '-run', 'TestPublishedChapterRevisionQueuesOnlyChangedChapterIR'],
+  run('Go Phase 4 incremental extraction integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPublishedChapterRevisionQueuesOnlyChangedChapterIR'],
     {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(freshDatabase)}});
 
   run('Phase 3 compiler PostgreSQL E2E (valid + adversarial zero-write)', 'node', ['scripts/run-phase3-db-integration.js'], {
     env: {...commandEnv, PHASE3_TEST_DATABASE: legacyDatabase, PHASE3_POSTGRES_CONTAINER: container},
   });
   sqlFile(legacyDatabase, 'test-data/phase4-chapter-impact-e2e.sql', 'Phase 4 exact stale propagation E2E');
-  run('Go Phase 4 impact review/regeneration integration', 'go', ['test', '-p', '1', '-v', './internal/store', '-run', 'TestChapterImpactReadAndDecisionIntegration'],
+  run('Go Phase 4 impact review/regeneration integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestChapterImpactReadAndDecisionIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go Phase 15 exact local edit integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestLocalEditingFourScenariosIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go Phase 4 performance/continuity integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPerformanceContinuityPhase4Integration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPhase5PostProductionMockChainIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE5_POST_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go backend vet', 'go', ['vet', './...'], {cwd: backendCwd, env: commandEnv});
 
   const frontendCwd = path.join(root, 'cms/frontend');
@@ -123,10 +139,20 @@ try {
     run('CMS frontend unit tests', 'npm', ['test'], {cwd: frontendCwd});
     run('CMS frontend production build', 'npm', ['run', 'build'], {cwd: frontendCwd});
   }
+  const mediaWorkerCwd = path.join(root, 'scripts/media-worker');
+  if (process.platform === 'win32') {
+    run('Media worker post-production tests', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm test'], {cwd: mediaWorkerCwd});
+    run('Media worker syntax checks', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm run check'], {cwd: mediaWorkerCwd});
+  } else {
+    run('Media worker post-production tests', 'npm', ['test'], {cwd: mediaWorkerCwd});
+    run('Media worker syntax checks', 'npm', ['run', 'check'], {cwd: mediaWorkerCwd});
+  }
 
   for (const script of ['validate-phase1.js', 'validate-phase2.js', 'validate-phase2-ir.js',
     'validate-phase3-compiler.js', 'validate-phase4-impact.js', 'validate-phase4.js',
-    'validate-phase5.js', 'adaptation-compiler.test.js']) {
+    'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
+    'validate-phase4-performance-continuity.js', 'validate-phase17.js',
+    'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
   }
   run('python scripts/validate-phase1-json-schemas.py', pythonCommand, ['scripts/validate-phase1-json-schemas.py']);

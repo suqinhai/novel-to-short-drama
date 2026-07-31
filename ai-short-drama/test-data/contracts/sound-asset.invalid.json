@@ -1,0 +1,24 @@
+{
+  "schema_version": "sound-asset.v1",
+  "asset": {
+    "sound_asset_id": "sound_1",
+    "asset_type": "unknown",
+    "name": "",
+    "style_group": "default"
+  },
+  "version": {
+    "version": 0,
+    "source_kind": "downloaded",
+    "mood": [],
+    "duration_ms": 0,
+    "license": {},
+    "content_hash": "bad"
+  },
+  "cue": {
+    "cue_type": "bgm",
+    "sequence_number": 0,
+    "start_ms": -1,
+    "end_ms": 0,
+    "ducking_config": {}
+  }
+}

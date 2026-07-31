@@ -1,0 +1,15 @@
+{
+  "schema_version": "editing-template.v1",
+  "template_key": "action",
+  "version": 1,
+  "average_shot_length_ms": 1200,
+  "fast_cut_ratio": 0.78,
+  "reaction_shot_ratio": 0.18,
+  "transitions": ["cut", "whip", "impact_flash"],
+  "subtitle": {"style": "compact_safe_area", "density": "low"},
+  "audio": {"bgm_density": 0.88, "sfx_density": 0.94},
+  "close_up_strategy": "impact_and_prop",
+  "pause_strategy": "direction_only",
+  "repeat_emphasis": "single_speed_ramp",
+  "beat_strategy": "phase_and_hit_on_beat"
+}

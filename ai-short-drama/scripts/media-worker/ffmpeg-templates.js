@@ -187,14 +187,32 @@ function addAudioInputFilters({ media, args, filters, firstInputIndex, settings,
   const groups = { speech: [], bgm: [], other: [] };
   media.audio.forEach((track, offset) => {
     const inputIndex = firstInputIndex + offset;
-    args.push('-ss', seconds(track.sourceInMs), '-t', seconds(track.durationMs), '-i', track.path);
+    const speedRatio = finiteNumber(track.speedRatio, 1, 0.8, 1.12, `audio[${offset}].speed_ratio`);
+    const sourceDurationMs = finiteNumber(
+      track.sourceDurationMs,
+      track.durationMs * speedRatio,
+      1,
+      86400000,
+      `audio[${offset}].source_duration_ms`,
+    );
+    const pitchSemitones = finiteNumber(track.pitchSemitones, 0, -12, 12, `audio[${offset}].pitch_semitones`);
+    args.push('-ss', seconds(track.sourceInMs), '-t', seconds(sourceDurationMs), '-i', track.path);
     const label = `a${offset}`;
     const chain = [
       `[${inputIndex}:a]aresample=${settings.sampleRate}`,
       'aformat=sample_fmts=fltp:channel_layouts=stereo',
       'asetpts=PTS-STARTPTS',
-      `volume=${filterNumber(track.volume)}`,
     ];
+    if (Math.abs(pitchSemitones) > 0.0005) {
+      const pitchFactor = 2 ** (pitchSemitones / 12);
+      chain.push(
+        `asetrate=${Math.round(settings.sampleRate * pitchFactor)}`,
+        `aresample=${settings.sampleRate}`,
+        `atempo=${filterNumber(1 / pitchFactor)}`,
+      );
+    }
+    if (Math.abs(speedRatio - 1) > 0.0005) chain.push(`atempo=${filterNumber(speedRatio)}`);
+    chain.push(`volume=${filterNumber(track.volume)}`);
     if (track.fadeInMs > 0) {
       chain.push(`afade=t=in:st=0:d=${seconds(track.fadeInMs)}`);
     }
@@ -225,8 +243,13 @@ function addAudioInputFilters({ media, args, filters, firstInputIndex, settings,
   const ducking = manifestBoolean(media.duckingEnabled, true);
   const finalLabels = [];
   if (speech && bgm && ducking) {
+    const duck = media.ducking || {};
+    const threshold = finiteNumber(duck.threshold, 0.02, 0.001, 1, 'ducking.threshold');
+    const ratio = finiteNumber(duck.ratio, 8, 1, 20, 'ducking.ratio');
+    const attack = finiteNumber(duck.attackMs, 20, 1, 2000, 'ducking.attack_ms');
+    const release = finiteNumber(duck.releaseMs, 250, 1, 5000, 'ducking.release_ms');
     filters.push(`[${speech}]asplit=2[speechmix][sidechain]`);
-    filters.push(`[${bgm}][sidechain]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=250[bgmducked]`);
+    filters.push(`[${bgm}][sidechain]sidechaincompress=threshold=${filterNumber(threshold)}:ratio=${filterNumber(ratio)}:attack=${filterNumber(attack)}:release=${filterNumber(release)}[bgmducked]`);
     speech = 'speechmix';
     bgm = 'bgmducked';
   }

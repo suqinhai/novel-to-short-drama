@@ -36,6 +36,8 @@ services:
       - ./database/15-local-editing-workbench.sql:/opt/drama/15-local-editing-workbench.sql:ro
       - ./database/16-performance-continuity-visual-qc.sql:/opt/drama/16-performance-continuity-visual-qc.sql:ro
       - ./database/16-verify-performance-continuity-visual-qc.sql:/opt/drama/16-verify-performance-continuity-visual-qc.sql:ro
+      - ./database/17-post-production-creative-workbench.sql:/opt/drama/17-post-production-creative-workbench.sql:ro
+      - ./database/17-verify-post-production-creative-workbench.sql:/opt/drama/17-verify-post-production-creative-workbench.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

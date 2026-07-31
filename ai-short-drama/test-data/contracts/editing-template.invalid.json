@@ -1,0 +1,15 @@
+{
+  "schema_version": "editing-template.v1",
+  "template_key": "documentary",
+  "version": 0,
+  "average_shot_length_ms": 10,
+  "fast_cut_ratio": 2,
+  "reaction_shot_ratio": -1,
+  "transitions": [],
+  "subtitle": {"style": "x", "density": "always"},
+  "audio": {"bgm_density": 2, "sfx_density": -1},
+  "close_up_strategy": "",
+  "pause_strategy": "",
+  "repeat_emphasis": "",
+  "beat_strategy": ""
+}

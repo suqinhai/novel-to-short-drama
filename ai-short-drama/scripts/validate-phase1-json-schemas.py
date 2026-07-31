@@ -23,6 +23,10 @@ PAIRS = (
     ("pacing-plan.v1.json", "pacing-plan"),
     ("quality-score.v1.json", "quality-score"),
     ("change-plan.v1.json", "change-plan"),
+    ("dialogue-timing.v1.json", "dialogue-timing"),
+    ("sound-asset.v1.json", "sound-asset"),
+    ("editing-template.v1.json", "editing-template"),
+    ("creative-workspace.v1.json", "creative-workspace"),
 )
 
 

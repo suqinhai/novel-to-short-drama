@@ -1,0 +1,28 @@
+{
+  "schema_version": "dialogue-timing.v1",
+  "project_id": "project_contract",
+  "episode_id": "episode_1",
+  "tolerance_ms": 120,
+  "items": [
+    {
+      "dialogue_id": "dialogue_1",
+      "dialogue_audio_id": "audio_1",
+      "shot_id": "shot_1",
+      "speaker_character_id": "character_1",
+      "speaker_name": "林夏",
+      "turn_group": "exchange_1",
+      "turn_index": 1,
+      "start_ms": 1000,
+      "end_ms": 2400,
+      "audio_duration_ms": 1400,
+      "target_lip_start_ms": 1000,
+      "target_lip_end_ms": 2400,
+      "visible_character_ids": ["character_1"],
+      "detected_speaker_id": "character_1",
+      "detected_lip_start_ms": 1020,
+      "detected_lip_end_ms": 2380,
+      "confidence": 0.97,
+      "analyzer_version": "mock-lipsync-v1"
+    }
+  ]
+}

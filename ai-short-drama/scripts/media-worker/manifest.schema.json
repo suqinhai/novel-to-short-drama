@@ -66,7 +66,13 @@
     },
     "audio": {
       "type": "object",
-      "properties": { "ducking_enabled": { "type": "boolean" } },
+      "properties": {
+        "ducking_enabled": { "type": "boolean" },
+        "ducking_threshold": { "type": "number", "minimum": 0.001, "maximum": 1 },
+        "ducking_ratio": { "type": "number", "minimum": 1, "maximum": 20 },
+        "ducking_attack_ms": { "type": "number", "minimum": 1, "maximum": 2000 },
+        "ducking_release_ms": { "type": "number", "minimum": 1, "maximum": 5000 }
+      },
       "additionalProperties": false
     },
     "output": {
@@ -119,6 +125,10 @@
         "fade_out_ms": { "type": "integer", "minimum": 0 },
         "authorized": { "type": "boolean" },
         "licensed": { "type": "boolean" }
+        ,"speed_ratio": { "type": "number", "minimum": 0.8, "maximum": 1.12 }
+        ,"pitch_semitones": { "type": "number", "minimum": -12, "maximum": 12 }
+        ,"beat_sync": { "type": "object" }
+        ,"event_key": { "$ref": "#/$defs/id" }
       },
       "additionalProperties": true
     }

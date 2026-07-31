@@ -1,5 +1,7 @@
 # Phase 5 集成验收报告
 
+> 本文保留迁移 05/09 对应的历史剪辑发布基线。当前口型、正式声音、类型化剪辑模板与统一创作工作台的验收结果见 [第五阶段后期工作台验收报告](phase5-post-production-acceptance-report.md)；同名验收脚本现已扩展为 102 个命令。
+
 日期：2026-07-21
 仓库：`ai-short-drama`
 结论：**通过**。最终完整验收运行 64 个命令，全部退出码为 0；场景 A～G 均由隔离 PostgreSQL、Mock 数据、Go 集成测试、编译器测试或契约测试覆盖。未调用真实收费 AI、图片、视频、语音或发布接口，未修改当前业务数据库和 n8n 数据库。
@@ -194,7 +196,7 @@ python -m pip install -r scripts/requirements-validation.txt
 1. 备份 PostgreSQL 与 n8n 数据卷；不要导出后再覆盖凭据密钥。
 2. 在与生产同版本 PostgreSQL 的隔离库运行 06→09，并逐一运行 verify SQL。
 3. 安装前端依赖和 validation Python 依赖。
-4. 执行 `node scripts/run-phase5-acceptance.js`，必须看到 `64 commands exited 0`。
+4. 执行 `node scripts/run-phase5-acceptance.js`，当前版本必须看到 `102 commands exited 0`。
 5. 执行 `docker compose --env-file .env.example config --quiet`，检查实际部署 env 后再构建。
 
 ### 隔离环境人工冒烟

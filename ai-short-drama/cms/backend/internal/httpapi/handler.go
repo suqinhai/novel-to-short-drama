@@ -102,6 +102,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.GET("/data-reset", h.dataResetPreview)
 	api.POST("/data-reset", h.resetAllData)
 	registerPerformanceContinuityRoutes(api, h)
+	registerPostProductionRoutes(api, h)
 	registerSourceV2(router, h.store)
 	return router
 }

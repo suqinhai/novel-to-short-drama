@@ -1,0 +1,43 @@
+{
+  "schema_version": "sound-asset.v1",
+  "asset": {
+    "sound_asset_id": "sound_1",
+    "asset_type": "bgm",
+    "name": "低频悬疑脉冲",
+    "style_group": "suspense-v1"
+  },
+  "version": {
+    "version": 1,
+    "parent_sound_asset_version_id": null,
+    "source_kind": "deterministic_mock",
+    "source_uri": null,
+    "storage_uri": "/sounds/sound_1.wav",
+    "provider": "mock",
+    "model_version": "mock-audio-v1",
+    "mood": ["紧张", "悬疑"],
+    "bpm": 84,
+    "musical_key": "Dm",
+    "duration_ms": 60000,
+    "license": {
+      "status": "cleared",
+      "usage_scope": "mock acceptance",
+      "expires_at": null,
+      "attribution": null
+    },
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "cue": {
+    "cue_type": "bgm",
+    "source_hint": "低频悬疑",
+    "event_key": "beat_reveal",
+    "sequence_number": 1,
+    "start_ms": 0,
+    "end_ms": 8000,
+    "gain_db": -8,
+    "fade_in_ms": 300,
+    "fade_out_ms": 500,
+    "beat_sync": {"mode": "downbeat"},
+    "transition_config": {"pitch_semitones": 2},
+    "ducking_config": {"enabled": true, "ratio": 8}
+  }
+}

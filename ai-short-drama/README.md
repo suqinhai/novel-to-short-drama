@@ -1,5 +1,26 @@
 # 小说改编 AI 短剧自动化系统（第一至五阶段）
 
+## 第五阶段扩展：口型、声音、类型化剪辑与统一创作工作台
+
+本轮第五阶段以迁移 `17-post-production-creative-workbench.sql` 为边界，在既有 Narrative IR、Adaptation Spec、诊断/节奏、候选、局部修改、表演圣经、连续性、视觉 QC、媒体资产和剪辑时间线上增量扩展，不复制前四阶段数据。统一工作台入口为 `/projects/{projectId}/episodes/{episodeId}/workbench`，可在同一页面完成剧本与节拍、分镜、口型与声音、剪辑时间线、连续性/QC、候选与版本处理。
+
+已实现逐句对白时间和口型偏差检测、多人轮次校验、禁止过度变速的修复建议；将 `bgm_hint` 和 `sound_effect_hint` 落为带来源、版本、授权、情绪、节拍和时长元数据的正式声音资产；提供都市爽剧、情感剧、悬疑剧、喜剧和动作剧五套可版本化模板；模板切换、整集声音风格替换和历史恢复均创建新的时间线版本。对白修改沿已有局部修改事务只重建命中的配音、字幕、镜头区间和剪辑区间，已批准历史不被覆盖。
+
+快速验收：
+
+```powershell
+node scripts/run-phase5-acceptance.js
+```
+
+该入口会在隔离数据库中验证全新安装、重复迁移、旧库升级、完整 Mock 链路、精确对白重建、模板/声音风格时间线版本、历史恢复、后端、前端、媒体 worker、工作流、JSON Schema/OpenAPI 相关约束及全部历史回归。最近一次完整运行结果为 `PASS Phase 5 automated acceptance: 102 commands exited 0`。
+
+详细资料：
+
+- [第五阶段架构](docs/architecture/phase-5-post-production-creative-workbench.md)
+- [迁移手册](docs/architecture/phase-5-migration-runbook.md)
+- [创作工作台使用说明](docs/phase5-post-production-user-guide.md)
+- [第五阶段验收报告](docs/phase5-post-production-acceptance-report.md)
+
 ## 第四阶段：表演、连续性与跨镜头视觉 QC
 
 角色表演圣经、场/镜连续性状态账本、帧级跨镜头视觉 QC、首尾帧动作接力和 CMS 工作台已经实现。生成门禁要求剧本、分镜、图像、视频与 TTS 引用明确的表演圣经版本，并在生成前读取有效账本；视频还必须读取相邻镜头衔接。发现矛盾时返回可解释诊断并阻断生成。验收使用固定 Mock fixture，不调用收费接口。迁移、API、测试和运行方式见 [第四阶段实现文档](docs/architecture/phase-4-performance-continuity-visual-qc.md)。
@@ -77,7 +98,7 @@ docker compose exec n8n n8n import:workflow --input=/data/workflows/08-storyboar
 docker compose exec n8n n8n import:workflow --input=/data/workflows/00-project-orchestrator.json
 ```
 
-导入后 Publish 07a、08a、07、08 和 00。当前 bootstrap 会自动执行 `init.sql`、02、03、04、05；从第二阶段升级到第三阶段的已有卷只需执行 03，升级到第四阶段还必须执行 `04-video-audio.sql`，升级到第五阶段再执行 05。各增量脚本可安全重复执行。
+导入后 Publish 07a、08a、07、08 和 00。第三阶段当时的基础链执行到 03；当前 `bootstrap.sh` 已按固定顺序自动执行 `init.sql` 及 02–17。已有卷不会自动重放初始化脚本，仍须按迁移手册显式执行尚未应用的增量 SQL。
 
 第三阶段统一入口：`POST /webhook/ai-short-drama/stage3`。项目处于 `storyboard_approved` 或 `stage_2_completed` 时发送 resume 调用 07。候选资产审核请求参考 `test-data/07-review-asset.json`；只有 `review_status=approved`、`selected_as_primary=true`、`lock_after_approval=true` 才会锁定 profile。锁定后触发器禁止原地修改，必须用递增 `generation_version` 创建新档案版本，旧 locked 版本会继续可用。
 
@@ -154,7 +175,7 @@ docker compose exec n8n n8n import:workflow --input=/data/workflows/06-storyboar
 docker compose exec n8n n8n import:workflow --input=/data/workflows/00-project-orchestrator.json
 ```
 
-首次创建全新 PostgreSQL 卷时，`bootstrap.sh` 会自动依次执行 `init.sql`、02、03、04、05。现有卷必须手动执行尚未应用的增量 SQL；脚本可以安全重复执行。
+首次创建全新 PostgreSQL 卷时，`bootstrap.sh` 会自动依次执行 `init.sql` 及 02–17。现有卷必须手动执行尚未应用的增量 SQL；脚本可以安全重复执行。
 
 4. 在 UI 中确认子工作流已保存，然后打开总控的 Execute Sub-workflow 节点重新选择对应工作流（某些 n8n 导入模式会重写 workflow ID），发布子工作流和 `00 项目总控`。
 
@@ -341,7 +362,7 @@ URL 小说导入留作后续安全下载器；本阶段保证直接文本和容�
 
 ### 升级与导入顺序
 
-先备份数据库、`storage/`、n8n 数据卷和 `N8N_ENCRYPTION_KEY`。已有 PostgreSQL 卷不会再次运行初始化目录，第四阶段升级必须手动执行 04，第五阶段再执行 05；全新卷由 `bootstrap.sh` 按 `init → 02 → 03 → 04 → 05` 自动执行。
+先备份数据库、`storage/`、n8n 数据卷和 `N8N_ENCRYPTION_KEY`。已有 PostgreSQL 卷不会再次运行初始化目录，第四阶段视频/配音基础升级必须手动执行 04；当前全新卷由 `bootstrap.sh` 按 `init.sql` 及 02–17 自动执行。
 
 ```powershell
 docker compose exec -T postgres psql -U <业务库用户> -d short_drama -v ON_ERROR_STOP=1 -f /opt/drama/04-video-audio.sql
@@ -498,7 +519,7 @@ docker compose --env-file .env.example exec -T postgres psql -U n8n -d short_dra
 docker compose --env-file .env.example exec -T postgres psql -U n8n -d short_drama -v ON_ERROR_STOP=1 -f /opt/drama/05-edit-qc-publish.sql
 ```
 
-两次 SQL 命令都应退出 0 并显示 `COMMIT`。全新卷由 `bootstrap.sh` 按 `init -> 02 -> 03 -> 04 -> 05` 执行。生产回滚使用升级前备份；不要用删除媒体文件或无条件 `DROP TABLE` 作为回滚。
+两次 SQL 命令都应退出 0 并显示 `COMMIT`。05 是该历史阶段的迁移边界；当前全新卷由 `bootstrap.sh` 继续执行至 17。生产回滚使用升级前备份；不要用删除媒体文件或无条件 `DROP TABLE` 作为回滚。
 
 按依赖顺序导入，最后重新导入总控：
 

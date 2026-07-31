@@ -1,0 +1,26 @@
+{
+  "schema_version": "creative-workspace.v1",
+  "project_id": "project_contract",
+  "episode_id": "episode_1",
+  "version": 1,
+  "parent_workspace_version_id": null,
+  "script_id": "script_1",
+  "storyboard_id": "storyboard_1",
+  "pacing_plan_id": "pacing_1",
+  "candidate_selection_id": "selection_1",
+  "timeline_id": "timeline_1",
+  "editing_template_binding_id": "binding_1",
+  "source_versions": {
+    "source_version_id": "source_1",
+    "ir_revision_id": "ir_1",
+    "adaptation_spec_version_id": "spec_1",
+    "prompt_version": "prompt-v1",
+    "model_version": "model-v1"
+  },
+  "performance_bible_refs": {"character_1": "bible_1"},
+  "continuity_entry_ids": ["continuity_1"],
+  "quality_report_ids": ["quality_1"],
+  "layout": {"active_tab": "script"},
+  "status": "approved",
+  "change_reason": "initial approval"
+}

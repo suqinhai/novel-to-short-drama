@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-short-drama/contracts/sound-asset.v1.json",
+  "title": "Versioned sound asset and event cue",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "asset", "version", "cue"],
+  "properties": {
+    "schema_version": {"const": "sound-asset.v1"},
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sound_asset_id", "asset_type", "name", "style_group"],
+      "properties": {
+        "sound_asset_id": {"type": "string", "minLength": 1},
+        "asset_type": {"enum": ["bgm", "ambience", "sound_effect", "footstep", "door", "fight"]},
+        "name": {"type": "string", "minLength": 1},
+        "style_group": {"type": "string", "minLength": 1}
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "source_kind", "mood", "duration_ms", "license", "content_hash"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "parent_sound_asset_version_id": {"type": ["string", "null"]},
+        "source_kind": {"enum": ["generated", "library", "recorded", "uploaded", "deterministic_mock"]},
+        "source_uri": {"type": ["string", "null"]},
+        "storage_uri": {"type": ["string", "null"]},
+        "provider": {"type": ["string", "null"]},
+        "model_version": {"type": ["string", "null"]},
+        "mood": {"type": "array", "items": {"type": "string"}},
+        "bpm": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "musical_key": {"type": ["string", "null"]},
+        "duration_ms": {"type": "integer", "minimum": 1},
+        "license": {
+          "type": "object",
+          "required": ["status", "usage_scope"],
+          "properties": {
+            "status": {"enum": ["cleared", "restricted", "pending", "public_domain"]},
+            "usage_scope": {"type": "string"},
+            "expires_at": {"type": ["string", "null"], "format": "date-time"},
+            "attribution": {"type": ["string", "null"]}
+          },
+          "additionalProperties": true
+        },
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cue_type", "sequence_number", "start_ms", "end_ms", "ducking_config"],
+      "properties": {
+        "cue_type": {"enum": ["bgm", "ambience", "sound_effect", "footstep", "door", "fight"]},
+        "source_hint": {"type": "string"},
+        "event_key": {"type": ["string", "null"]},
+        "sequence_number": {"type": "integer", "minimum": 1},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1},
+        "gain_db": {"type": "number", "minimum": -96, "maximum": 24},
+        "fade_in_ms": {"type": "integer", "minimum": 0},
+        "fade_out_ms": {"type": "integer", "minimum": 0},
+        "beat_sync": {"type": "object"},
+        "transition_config": {"type": "object"},
+        "ducking_config": {"type": "object"}
+      }
+    }
+  }
+}

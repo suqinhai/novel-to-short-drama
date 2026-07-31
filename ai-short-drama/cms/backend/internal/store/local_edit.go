@@ -467,6 +467,23 @@ func applyEntityChanges(ctx context.Context, tx pgx.Tx, entityType, entityID str
 			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET performance_instruction=
 				concat_ws('; ',NULLIF(performance_instruction,''),'speed='||$2) WHERE dialogue_id=$1`,
 				entityID, fmt.Sprint(change.Value))
+		case "dialogue.production_mode":
+			mode := fmt.Sprint(change.Value)
+			if mode != "spoken" && mode != "narration" && mode != "action" {
+				return fmt.Errorf("%w: unsupported production mode %s", localedit.ErrInvalidPlan, mode)
+			}
+			_, err = tx.Exec(ctx, `UPDATE drama.dialogues SET production_mode=$2,
+				dialogue_type=CASE WHEN $2='narration' THEN 'narration'
+					WHEN $2='spoken' AND dialogue_type='narration' THEN 'dialogue'
+					ELSE dialogue_type END WHERE dialogue_id=$1`, entityID, mode)
+			if err == nil && mode == "action" {
+				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes scene SET actions=actions||
+					jsonb_build_array(jsonb_build_object(
+						'type','dialogue_converted_action','source_dialogue_id',dialogue.dialogue_id,
+						'description',dialogue.text))
+					FROM drama.dialogues dialogue WHERE dialogue.dialogue_id=$1
+					  AND scene.scene_id=dialogue.scene_id`, entityID)
+			}
 		case "scene.estimated_duration_seconds":
 			if change.Operation == "adjust" {
 				_, err = tx.Exec(ctx, `UPDATE drama.script_scenes SET estimated_duration_seconds=
@@ -553,6 +570,23 @@ func reorderScene(ctx context.Context, tx pgx.Tx, sceneID string, targetNumber i
 }
 
 func refreshDialogueDerived(ctx context.Context, tx pgx.Tx, dialogueID, fingerprint string) error {
+	var productionMode string
+	if err := tx.QueryRow(ctx, `SELECT production_mode FROM drama.dialogues WHERE dialogue_id=$1`,
+		dialogueID).Scan(&productionMode); err != nil {
+		return err
+	}
+	if productionMode == "action" {
+		if _, err := tx.Exec(ctx, `UPDATE drama.dialogue_audio SET is_current=false
+			WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE drama.subtitle_cues SET is_current=false,
+			approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
+			WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
+			return err
+		}
+		return cloneDialogueEditTimelines(ctx, tx, dialogueID, "", fingerprint, true)
+	}
 	newAudioID := "da_mock_" + fingerprint[:20]
 	if _, err := tx.Exec(ctx, `UPDATE drama.dialogue_audio SET is_current=false
 		WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
@@ -561,14 +595,14 @@ func refreshDialogueDerived(ctx context.Context, tx pgx.Tx, dialogueID, fingerpr
 	_, err := tx.Exec(ctx, `INSERT INTO drama.dialogue_audio(
 		dialogue_audio_id,project_id,episode_id,scene_id,dialogue_id,character_id,voice_profile_id,
 		generation_version,dialogue_type,source_text,normalized_text,emotion,
-		performance_instruction,requested_speed,provider,model,storage_url,content_hash,
+		performance_instruction,requested_speed,provider,model,storage_url,actual_duration_ms,content_hash,
 		status,auto_qc_status,auto_qc_report,review_status,is_current)
 		SELECT $2,source.project_id,source.episode_id,source.scene_id,source.dialogue_id,
 		source.character_id,source.voice_profile_id,
 		(SELECT COALESCE(max(v.generation_version),0)+1 FROM drama.dialogue_audio v WHERE v.dialogue_id=source.dialogue_id),
 		dialogue.dialogue_type,dialogue.text,dialogue.text,dialogue.emotion,
 		dialogue.performance_instruction,source.requested_speed,'deterministic_mock','local-tts-v1',
-		'/data/storage/dialogue-audio/'||$2::text||'.wav',$3,'succeeded','passed',
+		'/data/storage/dialogue-audio/'||$2::text||'.wav',dialogue.estimated_duration_ms,$3,'succeeded','passed',
 		jsonb_build_object('deterministic_mock',true,'source_audio_id',source.dialogue_audio_id),
 		'pending',true
 		FROM drama.dialogue_audio source
@@ -579,27 +613,140 @@ func refreshDialogueDerived(ctx context.Context, tx pgx.Tx, dialogueID, fingerpr
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.subtitle_cues cue SET
-		text=dialogue.text,speaker_name=dialogue.speaker_name,
-		duration_ms=dialogue.estimated_duration_ms,
-		end_ms=cue.start_ms+dialogue.estimated_duration_ms,status='draft',
-		dialogue_audio_id=COALESCE((
-			SELECT audio.dialogue_audio_id FROM drama.dialogue_audio audio
-			WHERE audio.dialogue_id=dialogue.dialogue_id AND audio.is_current
-			ORDER BY audio.generation_version DESC LIMIT 1
-		),cue.dialogue_audio_id)
-		FROM drama.dialogues dialogue WHERE dialogue.dialogue_id=$1
-		  AND cue.dialogue_id=dialogue.dialogue_id`, dialogueID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE drama.subtitle_cues SET
+		is_current=false,
+		approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
+		WHERE dialogue_id=$1 AND is_current`, dialogueID); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE drama.edit_timeline_items item SET
-		duration_ms=dialogue.estimated_duration_ms,
-		timeline_end_ms=item.timeline_start_ms+dialogue.estimated_duration_ms,
-		status='pending'
-		FROM drama.dialogues dialogue WHERE dialogue.dialogue_id=$1
-		  AND item.entity_type='dialogue' AND item.entity_id=dialogue.dialogue_id`,
-		dialogueID)
-	return err
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.subtitle_cues(
+		subtitle_cue_id,project_id,episode_id,scene_id,shot_id,dialogue_id,dialogue_audio_id,
+		sequence_number,speaker_name,text,start_ms,end_ms,duration_ms,style_config,status,
+		cue_version,parent_subtitle_cue_id,is_current,approval_state)
+		SELECT 'sc_mock_'||substr(encode(digest(source.subtitle_cue_id||':'||$2,'sha256'),'hex'),1,20),
+		source.project_id,source.episode_id,source.scene_id,source.shot_id,source.dialogue_id,
+		$2,source.sequence_number,dialogue.speaker_name,dialogue.text,source.start_ms,
+		source.start_ms+dialogue.estimated_duration_ms,dialogue.estimated_duration_ms,
+		source.style_config,'draft',source.cue_version+1,source.subtitle_cue_id,true,'draft'
+		FROM (
+		  SELECT DISTINCT ON(sequence_number) * FROM drama.subtitle_cues
+		  WHERE dialogue_id=$1 ORDER BY sequence_number,cue_version DESC,created_at DESC
+		) source
+		JOIN drama.dialogues dialogue USING(dialogue_id)`,
+		dialogueID, newAudioID); err != nil {
+		return err
+	}
+	return cloneDialogueEditTimelines(ctx, tx, dialogueID, newAudioID, fingerprint, false)
+}
+
+// cloneDialogueEditTimelines materializes a new current timeline per affected
+// episode. Approved/history timelines and their items are never rewritten.
+func cloneDialogueEditTimelines(
+	ctx context.Context, tx pgx.Tx, dialogueID, dialogueAudioID, fingerprint string, removeSpokenItems bool,
+) error {
+	rows, err := tx.Query(ctx, `SELECT timeline.timeline_id
+		FROM drama.edit_timelines timeline
+		WHERE timeline.is_current AND EXISTS(
+			SELECT 1 FROM drama.edit_timeline_items item
+			WHERE item.timeline_id=timeline.timeline_id
+			  AND item.entity_type='dialogue' AND item.entity_id=$1
+		)
+		ORDER BY timeline.timeline_id FOR UPDATE OF timeline`, dialogueID)
+	if err != nil {
+		return err
+	}
+	var sourceTimelineIDs []string
+	for rows.Next() {
+		var sourceID string
+		if err = rows.Scan(&sourceID); err != nil {
+			rows.Close()
+			return err
+		}
+		sourceTimelineIDs = append(sourceTimelineIDs, sourceID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for index, sourceID := range sourceTimelineIDs {
+		newTimelineID := fmt.Sprintf("etl_mock_%s_%d", fingerprint[:16], index+1)
+		if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines SET
+			is_current=false,
+			approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
+			WHERE timeline_id=$1`, sourceID); err != nil {
+			return err
+		}
+		tag, insertErr := tx.Exec(ctx, `INSERT INTO drama.edit_timelines(
+			timeline_id,project_id,episode_id,script_id,storyboard_id,audio_plan_id,version,
+			resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
+			tracks,transitions,subtitle_config,render_config,source_versions,status,
+			parent_timeline_id,editing_template_binding_id,editing_template_version_id,
+			version_reason,approval_state,is_current)
+			SELECT $2,project_id,episode_id,script_id,storyboard_id,audio_plan_id,
+			(SELECT max(version)+1 FROM drama.edit_timelines sibling WHERE sibling.episode_id=source.episode_id),
+			resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
+			tracks,transitions,subtitle_config,
+			render_config||jsonb_build_object('incremental_dialogue_id',$3::text),
+			source_versions||jsonb_build_object('dialogue_audio_id',$4::text),
+			'draft',timeline_id,editing_template_binding_id,editing_template_version_id,
+			'dialogue_edit:'||$3::text,'draft',true
+			FROM drama.edit_timelines source WHERE timeline_id=$1`,
+			sourceID, newTimelineID, dialogueID, dialogueAudioID)
+		if insertErr != nil {
+			return insertErr
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrNotFound
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO drama.edit_timeline_items(
+			timeline_item_id,timeline_id,project_id,episode_id,track_type,track_number,
+			sequence_number,entity_type,entity_id,source_url,source_path,timeline_start_ms,
+			timeline_end_ms,source_in_ms,source_out_ms,duration_ms,volume,fade_in_ms,fade_out_ms,
+			transform_config,effect_config,status)
+			SELECT 'eti_'||substr(encode(digest(item.timeline_item_id||':'||$2,'sha256'),'hex'),1,24),
+			$2,item.project_id,item.episode_id,item.track_type,item.track_number,item.sequence_number,
+			item.entity_type,item.entity_id,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				  AND item.track_type IN('dialogue','narration')
+				THEN (SELECT storage_url FROM drama.dialogue_audio WHERE dialogue_audio_id=$4)
+				ELSE item.source_url END,
+			item.source_path,item.timeline_start_ms,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				THEN item.timeline_start_ms+dialogue.estimated_duration_ms ELSE item.timeline_end_ms END,
+			item.source_in_ms,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				  AND item.track_type IN('dialogue','narration')
+				THEN item.source_in_ms+dialogue.estimated_duration_ms ELSE item.source_out_ms END,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				THEN dialogue.estimated_duration_ms ELSE item.duration_ms END,
+			item.volume,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				THEN LEAST(item.fade_in_ms,dialogue.estimated_duration_ms) ELSE item.fade_in_ms END,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				THEN LEAST(item.fade_out_ms,GREATEST(0,dialogue.estimated_duration_ms-
+					LEAST(item.fade_in_ms,dialogue.estimated_duration_ms)))
+				ELSE item.fade_out_ms END,
+			item.transform_config,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3
+				THEN item.effect_config||jsonb_build_object('incremental_rebuild',true,'dialogue_audio_id',$4::text)
+				ELSE item.effect_config END,
+			CASE WHEN item.entity_type='dialogue' AND item.entity_id=$3 THEN 'pending' ELSE item.status END
+			FROM drama.edit_timeline_items item
+			LEFT JOIN drama.dialogues dialogue ON dialogue.dialogue_id=$3
+			WHERE item.timeline_id=$1
+			  AND NOT ($5::boolean AND item.entity_type='dialogue' AND item.entity_id=$3
+			    AND item.track_type IN('dialogue','narration','subtitle'))`,
+			sourceID, newTimelineID, dialogueID, dialogueAudioID, removeSpokenItems); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines timeline SET target_duration_ms=(
+			SELECT max(item.timeline_end_ms) FROM drama.edit_timeline_items item WHERE item.timeline_id=timeline.timeline_id
+			) WHERE timeline_id=$1`, newTimelineID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cloneDeterministicShotVideo(ctx context.Context, tx pgx.Tx, sourceID string, changes []localedit.Change, fingerprint string) error {
@@ -666,6 +813,17 @@ func createDeterministicRebuildTasks(
 		}
 		if change.EndMS != nil {
 			endMS = change.EndMS
+		}
+	}
+	if entityType == "dialogue" && (startMS == nil || endMS == nil) {
+		var derivedStart, derivedEnd int64
+		rangeErr := tx.QueryRow(ctx, `SELECT start_ms,end_ms FROM drama.subtitle_cues
+			WHERE dialogue_id=$1 AND is_current ORDER BY sequence_number LIMIT 1`,
+			entityID).Scan(&derivedStart, &derivedEnd)
+		if rangeErr == nil {
+			startMS, endMS = &derivedStart, &derivedEnd
+		} else if !errors.Is(rangeErr, pgx.ErrNoRows) {
+			return rangeErr
 		}
 	}
 	for index, action := range actions {

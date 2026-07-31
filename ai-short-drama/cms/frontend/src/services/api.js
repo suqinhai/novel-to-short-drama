@@ -110,6 +110,35 @@ export const api = {
       method: 'POST', body: JSON.stringify(payload),
     })
   },
+  getCreativeWorkbench(projectId, episodeId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/creative-workbench`)
+  },
+  getEditingTemplates(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/editing-templates`)
+  },
+  validateDialogueTimings(projectId, episodeId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/dialogue-timings/validate`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  applyEditingTemplate(projectId, episodeId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/editing-template`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  replaceEpisodeSoundStyle(projectId, episodeId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/sound-style`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  getTimelineVersions(projectId, episodeId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions`)
+  },
+  restoreTimelineVersion(projectId, episodeId, timelineId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/restore`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
   getPerformanceBibles(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`)
   },

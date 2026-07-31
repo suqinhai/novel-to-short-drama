@@ -74,7 +74,7 @@ type Request struct {
 var allowedFields = map[string]map[string]bool{
 	"dialogue": {
 		"text": true, "emotion": true, "performance_instruction": true,
-		"estimated_duration_ms": true, "requested_speed": true,
+		"estimated_duration_ms": true, "requested_speed": true, "production_mode": true,
 	},
 	"scene": {
 		"scene_purpose": true, "actions": true, "emotional_change": true,
@@ -227,6 +227,12 @@ func interpret(req Request) ([]Change, []string, []string, string) {
 				speed = 1.15
 			}
 			changes = append(changes, Change{Operation: "replace", Field: "requested_speed", Value: speed})
+		}
+		if strings.Contains(text, "转为旁白") || strings.Contains(text, "转换为旁白") {
+			changes = append(changes, Change{Operation: "replace", Field: "production_mode", Value: "narration"})
+		}
+		if strings.Contains(text, "转为动作") || strings.Contains(text, "转换为动作") {
+			changes = append(changes, Change{Operation: "replace", Field: "production_mode", Value: "action"})
 		}
 	case "scene":
 		if match := regexp.MustCompile(`缩短\s*(\d+)\s*秒`).FindStringSubmatch(text); len(match) == 2 {

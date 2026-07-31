@@ -1,0 +1,7 @@
+{
+  "schema_version": "dialogue-timing.v1",
+  "project_id": "project_contract",
+  "episode_id": "episode_1",
+  "tolerance_ms": 5000,
+  "items": []
+}

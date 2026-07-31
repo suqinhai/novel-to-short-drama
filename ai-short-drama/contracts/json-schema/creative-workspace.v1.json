@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ai-short-drama/contracts/creative-workspace.v1.json",
+  "title": "Unified creative workspace snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "project_id", "episode_id", "version", "script_id",
+    "source_versions", "performance_bible_refs", "continuity_entry_ids",
+    "quality_report_ids", "status", "change_reason"
+  ],
+  "properties": {
+    "schema_version": {"const": "creative-workspace.v1"},
+    "project_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "parent_workspace_version_id": {"type": ["string", "null"]},
+    "script_id": {"type": "string", "minLength": 1},
+    "storyboard_id": {"type": ["string", "null"]},
+    "pacing_plan_id": {"type": ["string", "null"]},
+    "candidate_selection_id": {"type": ["string", "null"]},
+    "timeline_id": {"type": ["string", "null"]},
+    "editing_template_binding_id": {"type": ["string", "null"]},
+    "source_versions": {
+      "type": "object",
+      "required": ["source_version_id", "ir_revision_id", "adaptation_spec_version_id"],
+      "properties": {
+        "source_version_id": {"type": "string"},
+        "ir_revision_id": {"type": "string"},
+        "adaptation_spec_version_id": {"type": "string"},
+        "prompt_version": {"type": "string"},
+        "model_version": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "performance_bible_refs": {"type": "object"},
+    "continuity_entry_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "quality_report_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "layout": {"type": "object"},
+    "status": {"enum": ["draft", "approved", "superseded", "restored"]},
+    "change_reason": {"type": "string", "minLength": 1}
+  }
+}
