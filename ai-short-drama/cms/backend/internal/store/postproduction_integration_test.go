@@ -50,33 +50,51 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 	})
 
 	t.Run("template switches and restore always create successors", func(t *testing.T) {
-		first, applyErr := database.ApplyEditingTemplate(ctx, projectID, episodeID, ApplyEditingTemplateInput{
-			EditingTemplateVersionID: "etv_system_urban_power_v1",
-			Scope:                    "project", OverrideConfig: map[string]any{"fast_cut_ratio": .66},
-			Reason: "project template acceptance",
+		firstPlan := executeIntegrationChangePlan(t, ctx, database, projectID, localedit.Request{
+			Instruction: "switch project editing template through a confirmed change plan",
+			Target: localedit.Target{
+				EntityType: "timeline", EntityID: episodeID, Version: 1,
+			},
+			Changes: []localedit.Change{
+				{Operation: "replace", Field: "editing_template_version_id", Value: "etv_system_urban_power_v1"},
+				{Operation: "replace", Field: "template_scope", Value: "project"},
+				{Operation: "replace", Field: "override_config", Value: map[string]any{"fast_cut_ratio": .66}},
+			},
 		})
-		if applyErr != nil {
-			t.Fatal(applyErr)
+		first := currentTimeline(t, ctx, database, projectID, episodeID)
+		if firstPlan.Status != "applied" || len(firstPlan.RebuildTasks) != 1 ||
+			firstPlan.RebuildTasks[0].Status != "pending" {
+			t.Fatalf("template change was not queued through the version executor: %#v", firstPlan)
 		}
-		second, applyErr := database.ApplyEditingTemplate(ctx, projectID, episodeID, ApplyEditingTemplateInput{
-			EditingTemplateVersionID: "etv_system_action_v1",
-			Scope:                    "episode", OverrideConfig: map[string]any{"fast_cut_ratio": .8},
-			Reason: "episode override acceptance",
+		executeIntegrationChangePlan(t, ctx, database, projectID, localedit.Request{
+			Instruction: "switch episode editing template through a confirmed change plan",
+			Target: localedit.Target{
+				EntityType: "timeline", EntityID: episodeID, Version: 2,
+			},
+			Changes: []localedit.Change{
+				{Operation: "replace", Field: "editing_template_version_id", Value: "etv_system_action_v1"},
+				{Operation: "replace", Field: "template_scope", Value: "episode"},
+				{Operation: "replace", Field: "override_config", Value: map[string]any{"fast_cut_ratio": .8}},
+			},
 		})
-		if applyErr != nil {
-			t.Fatal(applyErr)
-		}
+		second := currentTimeline(t, ctx, database, projectID, episodeID)
 		if first.Version != 2 || second.Version != 3 || second.ParentTimelineID == nil ||
 			*second.ParentTimelineID != first.TimelineID {
 			t.Fatalf("template switch did not create a linear timeline history: first=%#v second=%#v", first, second)
 		}
-		restored, restoreErr := database.RestoreTimelineVersion(ctx, projectID, episodeID, "timeline_phase5_v1", nil)
-		if restoreErr != nil {
-			t.Fatal(restoreErr)
-		}
+		executeIntegrationChangePlan(t, ctx, database, projectID, localedit.Request{
+			Instruction: "restore historical timeline as a new successor",
+			Target: localedit.Target{
+				EntityType: "timeline", EntityID: episodeID, Version: 3,
+			},
+			Changes: []localedit.Change{{
+				Operation: "replace", Field: "restore_source_timeline_id", Value: "timeline_phase5_v1",
+			}},
+		})
+		restored := currentTimeline(t, ctx, database, projectID, episodeID)
 		if restored.Version != 4 || restored.ParentTimelineID == nil ||
 			*restored.ParentTimelineID != "timeline_phase5_v1" ||
-			restored.ApprovalState != "restored" || !restored.IsCurrent {
+			restored.ApprovalState != "draft" || !restored.IsCurrent {
 			t.Fatalf("restore must clone a new current version: %#v", restored)
 		}
 		var originalCurrent bool
@@ -90,15 +108,24 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 	})
 
 	t.Run("whole episode sound style replacement preserves source cues and timeline", func(t *testing.T) {
-		result, replaceErr := database.ReplaceEpisodeSoundStyle(ctx, projectID, episodeID, ReplaceSoundStyleInput{
-			ToStyleGroup: "cinematic_noir", Reason: "sound style acceptance",
+		result := executeIntegrationChangePlan(t, ctx, database, projectID, localedit.Request{
+			Instruction: "replace episode sound style through a confirmed change plan",
+			Target: localedit.Target{
+				EntityType: "timeline", EntityID: episodeID, Version: 4,
+			},
+			Changes: []localedit.Change{{
+				Operation: "replace", Field: "sound_style_group", Value: "cinematic_noir",
+			}},
 		})
-		if replaceErr != nil {
-			t.Fatal(replaceErr)
+		timeline := currentTimeline(t, ctx, database, projectID, episodeID)
+		if timeline.Version != 5 || len(result.RebuildTasks) != 1 ||
+			result.RebuildTasks[0].Status != "pending" {
+			t.Fatalf("unexpected sound style successor plan: timeline=%#v plan=%#v", timeline, result)
 		}
-		if result.Timeline.Version != 5 || result.FromStyleGroup != "suspense_minimal" ||
-			result.ToStyleGroup != "cinematic_noir" || len(result.ReplacedCueVersionIDs) != 3 {
-			t.Fatalf("unexpected sound style successor: %#v", result)
+		var requestedStyle string
+		if err = database.pool.QueryRow(ctx, `SELECT render_config->>'sound_style_group'
+			FROM drama.edit_timelines WHERE timeline_id=$1`, timeline.TimelineID).Scan(&requestedStyle); err != nil {
+			t.Fatal(err)
 		}
 		var historical, currentNoir, originalTimeline int
 		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.sound_cue_versions
@@ -110,9 +137,10 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 			episodeID).Scan(&currentNoir)
 		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.edit_timelines
 			WHERE timeline_id='timeline_phase5_v1'`).Scan(&originalTimeline)
-		if historical != 6 || currentNoir != 3 || originalTimeline != 1 {
-			t.Fatalf("sound replacement overwrote history: cues=%d current_noir=%d original_timeline=%d",
-				historical, currentNoir, originalTimeline)
+		if requestedStyle != "cinematic_noir" || historical != 3 || currentNoir != 0 ||
+			originalTimeline != 1 {
+			t.Fatalf("pending sound rebuild mutated old media: style=%q cues=%d current_noir=%d original_timeline=%d",
+				requestedStyle, historical, currentNoir, originalTimeline)
 		}
 	})
 
@@ -176,35 +204,44 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if record.Status != "applied" || len(record.RebuildTasks) != 3 {
-			t.Fatalf("expected voice, subtitle and timeline rebuilds: %#v", record)
+		if record.Status != "applied" || len(record.RebuildTasks) != 4 {
+			t.Fatalf("expected voice, subtitle, shot interval and timeline interval rebuilds: %#v", record)
 		}
+		targetTypes := map[string]bool{}
 		for _, task := range record.RebuildTasks {
+			if task.Status != "pending" || task.Provider != "workflow" || task.CompletedAt != nil {
+				t.Fatalf("media rebuild was falsely marked complete: %#v", task)
+			}
 			if task.RangeStartMS == nil || task.RangeEndMS == nil ||
 				*task.RangeStartMS != 800 || *task.RangeEndMS != 2600 {
 				t.Fatalf("rebuild escaped exact dialogue range: %#v", task)
 			}
+			targetTypes[task.TargetEntityType] = true
 		}
-		var originalText, currentText string
+		for _, expected := range []string{
+			"dialogue", "storyboard_shot_interval", "edit_timeline_interval",
+		} {
+			if !targetTypes[expected] {
+				t.Fatalf("missing exact dialogue rebuild target %s: %#v", expected, record.RebuildTasks)
+			}
+		}
+		var originalText string
 		var originalCurrent bool
 		_ = database.pool.QueryRow(ctx, `SELECT text,is_current FROM drama.subtitle_cues
 			WHERE subtitle_cue_id='subtitle_phase5_1'`).Scan(&originalText, &originalCurrent)
-		_ = database.pool.QueryRow(ctx, `SELECT text FROM drama.subtitle_cues
-			WHERE dialogue_id='dlg_phase5_1' AND is_current`).Scan(&currentText)
-		if originalText != "门不是风吹开的。" || originalCurrent ||
-			currentText != "门，是有人从里面打开的。" {
-			t.Fatalf("subtitle version history was overwritten: old=%q/%v current=%q",
-				originalText, originalCurrent, currentText)
+		if originalText != "门不是风吹开的。" || !originalCurrent {
+			t.Fatalf("pending rebuild changed approved subtitle media: old=%q current=%v",
+				originalText, originalCurrent)
 		}
-		var oldDuration, newDuration int64
+		if currentEntityString(t, ctx, database, "dialogue", "dlg_phase5_1", "text") !=
+			"门，是有人从里面打开的。" {
+			t.Fatal("dialogue successor did not become current")
+		}
+		var oldDuration int64
 		_ = database.pool.QueryRow(ctx, `SELECT duration_ms FROM drama.edit_timeline_items
 			WHERE timeline_item_id='item_phase5_dialogue_1'`).Scan(&oldDuration)
-		_ = database.pool.QueryRow(ctx, `SELECT item.duration_ms FROM drama.edit_timeline_items item
-			JOIN drama.edit_timelines timeline USING(timeline_id)
-			WHERE timeline.is_current AND item.entity_type='dialogue' AND item.entity_id='dlg_phase5_1'
-			  AND item.track_type='dialogue'`).Scan(&newDuration)
-		if oldDuration != 1800 || newDuration != 1800 {
-			t.Fatalf("timeline history or exact successor changed unexpectedly: old=%d new=%d", oldDuration, newDuration)
+		if oldDuration != 1800 || currentTimeline(t, ctx, database, projectID, episodeID).Version != 5 {
+			t.Fatalf("pending dialogue rebuild changed old timeline: old=%d", oldDuration)
 		}
 	})
 
@@ -239,4 +276,43 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 			t.Fatalf("expected dialogue→audio→timeline→master lineage, got %d nodes", downstream)
 		}
 	})
+}
+
+func executeIntegrationChangePlan(
+	t *testing.T, ctx context.Context, database *Store, projectID string, request localedit.Request,
+) ChangePlan {
+	t.Helper()
+	plan, err := localedit.Build(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := database.CreateChangePlan(ctx, projectID, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = database.ConfirmChangePlan(ctx, projectID, record.ChangePlanID, nil)
+	if err == nil {
+		record, err = database.ExecuteChangePlan(ctx, projectID, record.ChangePlanID)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func currentTimeline(
+	t *testing.T, ctx context.Context, database *Store, projectID, episodeID string,
+) TimelineVersionRecord {
+	t.Helper()
+	versions, err := database.ListTimelineVersions(ctx, projectID, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range versions {
+		if version.IsCurrent {
+			return version
+		}
+	}
+	t.Fatal("current timeline not found")
+	return TimelineVersionRecord{}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -223,15 +224,114 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("concurrent plan against superseded current returns conflict", func(t *testing.T) {
+		version := currentEntityVersion(t, ctx, database, "dialogue", dialogueID)
+		build := func(value string) ChangePlan {
+			plan := mustPlan(t, localedit.Request{
+				Instruction: "concurrent dialogue edit",
+				Target: localedit.Target{
+					EntityType: "dialogue", EntityID: dialogueID, Version: version,
+				},
+				Changes: []localedit.Change{{
+					Operation: "replace", Field: "text", Value: value,
+				}},
+			})
+			record, createErr := database.CreateChangePlan(ctx, projectID, plan, nil)
+			if createErr != nil {
+				t.Fatal(createErr)
+			}
+			record, createErr = database.ConfirmChangePlan(ctx, projectID, record.ChangePlanID, nil)
+			if createErr != nil {
+				t.Fatal(createErr)
+			}
+			return record
+		}
+		first, second := build("first concurrent line"), build("stale concurrent line")
+		if _, err = database.ExecuteChangePlan(ctx, projectID, first.ChangePlanID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = database.ExecuteChangePlan(ctx, projectID, second.ChangePlanID); !errors.Is(err, ErrConflict) {
+			t.Fatalf("expected stale current conflict, got %v", err)
+		}
+		second, err = database.GetChangePlan(ctx, projectID, second.ChangePlanID)
+		if err != nil || second.Status != "confirmed" {
+			t.Fatalf("conflicted plan left a partial executing state: status=%s err=%v", second.Status, err)
+		}
+		if currentEntityString(t, ctx, database, "dialogue", dialogueID, "text") != "first concurrent line" {
+			t.Fatal("conflicted plan changed the current dialogue")
+		}
+	})
+
+	t.Run("scene reorder versions displaced scenes and only adjacent continuity", func(t *testing.T) {
+		version := currentEntityVersion(t, ctx, database, "scene", sceneID)
+		plan := mustPlan(t, localedit.Request{
+			Instruction: "move the first scene to position three",
+			Target: localedit.Target{
+				EntityType: "scene", EntityID: sceneID, Version: version,
+			},
+			Changes: []localedit.Change{{
+				Operation: "reorder", Field: "scene_number", Value: 3,
+			}},
+		})
+		record, createErr := database.CreateChangePlan(ctx, projectID, plan, nil)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		record, createErr = database.ConfirmChangePlan(ctx, projectID, record.ChangePlanID, nil)
+		if createErr == nil {
+			record, createErr = database.ExecuteChangePlan(ctx, projectID, record.ChangePlanID)
+		}
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if currentEntityString(t, ctx, database, "scene", sceneID, "scene_number") != "3" ||
+			currentEntityString(t, ctx, database, "scene", scene2ID, "scene_number") != "1" ||
+			currentEntityString(t, ctx, database, "scene", scene3ID, "scene_number") != "2" {
+			t.Fatal("scene reorder did not create a coherent successor order")
+		}
+		continuityIDs := []string{}
+		for _, task := range record.RebuildTasks {
+			if task.Action == "update_continuity" {
+				continuityIDs = append(continuityIDs, task.TargetEntityID)
+			}
+		}
+		sort.Strings(continuityIDs)
+		expectedIDs := []string{sceneID, scene2ID, scene3ID}
+		sort.Strings(expectedIDs)
+		if !equalStrings(continuityIDs, expectedIDs) {
+			t.Fatalf("continuity rebuild scope=%v want=%v", continuityIDs, expectedIDs)
+		}
+		var nativeOrder []int
+		rows, queryErr := database.pool.Query(ctx, `SELECT scene_number FROM drama.script_scenes
+			WHERE scene_id=ANY($1) ORDER BY scene_number`, []string{sceneID, scene2ID, scene3ID})
+		if queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		for rows.Next() {
+			var number int
+			if queryErr = rows.Scan(&number); queryErr != nil {
+				rows.Close()
+				t.Fatal(queryErr)
+			}
+			nativeOrder = append(nativeOrder, number)
+		}
+		rows.Close()
+		if !reflect.DeepEqual(nativeOrder, []int{1, 2, 3}) {
+			t.Fatalf("scene reorder overwrote immutable formal rows: %v", nativeOrder)
+		}
+	})
+
 	t.Run("failed execution leaves no partial current version", func(t *testing.T) {
 		var currentVideoID string
 		_ = database.pool.QueryRow(ctx, `SELECT shot_video_id FROM drama.shot_videos
 			WHERE shot_id=$1 AND is_current ORDER BY generation_version DESC LIMIT 1`, shotID).Scan(&currentVideoID)
-		var generation int
-		_ = database.pool.QueryRow(ctx, `SELECT generation_version FROM drama.shot_videos WHERE shot_video_id=$1`, currentVideoID).Scan(&generation)
+		version := currentEntityVersion(t, ctx, database, "shot_video", currentVideoID)
+		var versionCountBefore int
+		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.entity_versions
+			WHERE entity_type='shot_video' AND entity_id=$1`, currentVideoID).Scan(&versionCountBefore)
 		plan := mustPlan(t, localedit.Request{
 			Instruction: "重做超出时长的片段",
-			Target:      localedit.Target{EntityType: "shot_video", EntityID: currentVideoID, Version: generation},
+			Target:      localedit.Target{EntityType: "shot_video", EntityID: currentVideoID, Version: version},
 			Changes:     []localedit.Change{{Operation: "regenerate_segment", Field: "segment", Value: "invalid", StartMS: pointer(int64(0)), EndMS: pointer(int64(999999))}},
 		})
 		record, err := database.CreateChangePlan(ctx, projectID, plan, nil)
@@ -247,12 +347,14 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 			t.Fatalf("expected invalid segment, got %v", err)
 		}
 		var afterCurrent string
-		var partialVersions int
+		var versionCountAfter int
 		_ = database.pool.QueryRow(ctx, `SELECT shot_video_id FROM drama.shot_videos WHERE shot_id=$1 AND is_current`, shotID).Scan(&afterCurrent)
 		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.entity_versions
-			WHERE entity_type='shot_video' AND entity_id=$1 AND version>$2`, currentVideoID, generation).Scan(&partialVersions)
-		if afterCurrent != currentVideoID || partialVersions != 0 {
-			t.Fatalf("failed transaction left partial current: current=%s versions=%d", afterCurrent, partialVersions)
+			WHERE entity_type='shot_video' AND entity_id=$1`, currentVideoID).Scan(&versionCountAfter)
+		if afterCurrent != currentVideoID || versionCountAfter != versionCountBefore ||
+			currentEntityVersion(t, ctx, database, "shot_video", currentVideoID) != version {
+			t.Fatalf("failed transaction left partial current: current=%s versions=%d→%d",
+				afterCurrent, versionCountBefore, versionCountAfter)
 		}
 	})
 }
@@ -308,6 +410,31 @@ func mustPlan(t *testing.T, request localedit.Request) localedit.Plan {
 }
 
 func pointer[T any](value T) *T { return &value }
+
+func currentEntityVersion(
+	t *testing.T, ctx context.Context, database *Store, entityType, entityID string,
+) int {
+	t.Helper()
+	var version int
+	if err := database.pool.QueryRow(ctx, `SELECT version FROM drama.entity_versions
+		WHERE entity_type=$1 AND entity_id=$2 AND is_current`, entityType, entityID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
+func currentEntityString(
+	t *testing.T, ctx context.Context, database *Store, entityType, entityID, field string,
+) string {
+	t.Helper()
+	var value string
+	if err := database.pool.QueryRow(ctx, `SELECT content->>$3 FROM drama.entity_versions
+		WHERE entity_type=$1 AND entity_id=$2 AND is_current`,
+		entityType, entityID, field).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
 
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {

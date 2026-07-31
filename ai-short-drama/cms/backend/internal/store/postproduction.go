@@ -306,10 +306,8 @@ func cloneTimelineVersion(
 		resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
 		tracks,
 		CASE WHEN $9::jsonb IS NULL THEN transitions ELSE COALESCE($9::jsonb->'transitions',transitions) END,
-		CASE WHEN $9::jsonb IS NULL THEN subtitle_config
-			ELSE subtitle_config||COALESCE($9::jsonb->'subtitle','{}')||COALESCE($10::jsonb->'subtitle','{}') END,
-		CASE WHEN $9::jsonb IS NULL THEN render_config
-			ELSE render_config||$9::jsonb||COALESCE($10::jsonb,'{}') END,
+		subtitle_config||COALESCE($9::jsonb->'subtitle','{}')||COALESCE($10::jsonb->'subtitle','{}'),
+		render_config||COALESCE($9::jsonb,'{}')||COALESCE($10::jsonb,'{}'),
 		source_versions,'draft',$3,
 		COALESCE(NULLIF($5,''),editing_template_binding_id),
 		COALESCE(NULLIF($6,''),editing_template_version_id),$7,$8,true
