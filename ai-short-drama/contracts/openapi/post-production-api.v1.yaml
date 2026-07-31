@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: AI Short Drama Post-production and Creative Workbench API
   version: 1.0.0-phase5
-  description: Unified Phase 5 API over the existing Narrative IR, local-edit, performance, continuity and artifact lineage stores.
+  description: Unified Phase 5 read API. All formal timeline mutations use the project change-plan preview, confirm and execute endpoints; legacy direct mutation paths return 410.
 servers:
   - url: /api/v1
 tags:
@@ -62,6 +62,7 @@ paths:
                   data: {type: array, items: {$ref: '#/components/schemas/EditingTemplateVersion'}}
   /projects/{project_id}/episodes/{episode_id}/editing-template:
     post:
+      deprecated: true
       tags: [EditingTemplates]
       operationId: applyEditingTemplate
       parameters:
@@ -73,11 +74,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ApplyEditingTemplateRequest'}
       responses:
-        '201':
-          description: Newly cloned current timeline version; source timeline is retained.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/TimelineVersionResponse'}
+        '410':
+          description: Direct mutation disabled. Create a timeline-targeted change plan, confirm it, then execute it.
   /projects/{project_id}/episodes/{episode_id}/timeline-versions:
     get:
       tags: [CreativeWorkbench]
@@ -90,6 +88,7 @@ paths:
           description: Timeline version history.
   /projects/{project_id}/episodes/{episode_id}/sound-style:
     post:
+      deprecated: true
       tags: [Sound]
       operationId: replaceEpisodeSoundStyle
       parameters:
@@ -101,15 +100,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ReplaceSoundStyleRequest'}
       responses:
-        '201':
-          description: Successor sound cue versions and a successor timeline; approved source versions are retained.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SoundStyleReplacementResponse'}
-        '404': {$ref: '#/components/responses/NotFound'}
-        '422': {$ref: '#/components/responses/Unprocessable'}
+        '410':
+          description: Direct mutation disabled. Preview the affected sound assets and rebuild scope in a timeline change plan.
   /projects/{project_id}/episodes/{episode_id}/timeline-versions/{timeline_id}/restore:
     post:
+      deprecated: true
       tags: [CreativeWorkbench]
       operationId: restoreTimelineVersion
       parameters:
@@ -120,8 +115,8 @@ paths:
           required: true
           schema: {$ref: '#/components/schemas/ID'}
       responses:
-        '201':
-          description: A new restored timeline version; the selected version is not overwritten.
+        '410':
+          description: Direct restore disabled. Restoration must be a confirmed change plan that creates a new version.
 components:
   parameters:
     ProjectID:

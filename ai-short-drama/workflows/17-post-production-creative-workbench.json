@@ -119,17 +119,17 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{($env.CMS_INTERNAL_URL || 'http://cms-api:8888') + '/api/v1/projects/' + encodeURIComponent($('Normalize Versioned Request').item.json.project_id) + '/episodes/' + encodeURIComponent($('Normalize Versioned Request').item.json.episode_id) + '/editing-template'}}",
+        "url": "={{($env.CMS_INTERNAL_URL || 'http://cms-api:8888') + '/api/v1/projects/' + encodeURIComponent($('Normalize Versioned Request').item.json.project_id) + '/change-plans'}}",
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{JSON.stringify({editing_template_version_id:$('Normalize Versioned Request').item.json.editing_template_version_id,scope:$('Normalize Versioned Request').item.json.template_scope,override_config:{},reason:'phase5_workflow_template_switch',actor:$('Normalize Versioned Request').item.json.actor})}}",
+        "body": "={{JSON.stringify({instruction:'预览剪辑模板切换；确认后创建 successor 时间线',target:{entity_type:'timeline',entity_id:$('Normalize Versioned Request').item.json.episode_id,version:$('Normalize Versioned Request').item.json.generation_version},allowed_fields:['editing_template_version_id','template_scope','override_config'],changes:[{operation:'replace',field:'editing_template_version_id',value:$('Normalize Versioned Request').item.json.editing_template_version_id},{operation:'replace',field:'template_scope',value:$('Normalize Versioned Request').item.json.template_scope},{operation:'replace',field:'override_config',value:{}}],must_preserve:['原时间线','原媒体资产','已批准版本'],locks:['character','location','composition'],requested_by:$('Normalize Versioned Request').item.json.actor})}}",
         "options": {
           "timeout": 30000
         }
       },
       "id": "17-template",
-      "name": "Create Template Timeline Version",
+      "name": "Preview Template Timeline Change Plan",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -139,7 +139,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const n=$('Normalize Versioned Request').item.json;return [{json:{success:true,stage:'post_production_creative_workbench',project_id:n.project_id,episode_id:n.episode_id,dialogue_timing_report:$('Validate and Persist Dialogue Timing').item.json.data?.report||null,timeline_version:$json.template_response?.data||$json.template_response,effective_input_provenance:$json.effective_input_provenance,effective_input_context:$('Enforce Effective Inputs').first().json.effective_context,incremental_only:true,history_preserved:true}}];"
+        "jsCode": "const n=$('Normalize Versioned Request').item.json;return [{json:{success:true,stage:'post_production_creative_workbench',project_id:n.project_id,episode_id:n.episode_id,dialogue_timing_report:$('Validate and Persist Dialogue Timing').item.json.data?.report||null,change_plan:$json.change_plan_response?.data||$json.change_plan_response,requires_user_confirmation:true,effective_input_provenance:$json.effective_input_provenance,effective_input_context:$('Enforce Effective Inputs').first().json.effective_context,incremental_only:true,history_preserved:true}}];"
       },
       "id": "17-result",
       "name": "Return Phase 5 Result",
@@ -189,9 +189,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT $1::jsonb template_response,drama.record_effective_input_outputs($2,$3,NULLIF($4,'')) effective_input_provenance;",
+        "query": "SELECT $1::jsonb change_plan_response,drama.record_effective_input_outputs($2,$3,NULLIF($4,'')) effective_input_provenance;",
         "options": {
-          "queryReplacement": "={{[JSON.stringify($('Create Template Timeline Version').item.json),$('Enforce Effective Inputs').first().json.trace_id,'post_production',$('Create Template Timeline Version').item.json.data?.timeline_id||$('Create Template Timeline Version').item.json.timeline_id||'']}}"
+          "queryReplacement": "={{[JSON.stringify($('Preview Template Timeline Change Plan').item.json),$('Enforce Effective Inputs').first().json.trace_id,'post_production',$('Preview Template Timeline Change Plan').item.json.data?.change_plan_id||$('Preview Template Timeline Change Plan').item.json.change_plan_id||'']}}"
         }
       },
       "id": "17-effective-input-provenance",
@@ -259,14 +259,14 @@
       "main": [
         [
           {
-            "node": "Create Template Timeline Version",
+            "node": "Preview Template Timeline Change Plan",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Create Template Timeline Version": {
+    "Preview Template Timeline Change Plan": {
       "main": [
         [
           {

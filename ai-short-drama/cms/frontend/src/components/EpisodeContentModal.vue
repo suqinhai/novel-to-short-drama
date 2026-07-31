@@ -24,11 +24,17 @@ const editing = ref(false)
 const activeTab = ref('outline')
 const savedNotice = ref('')
 const pendingPlan = ref(null)
+const selectedRebuildTasks = ref([])
 
 const changed = computed(() => content.value && draft.value && episodeContentChanged(content.value, draft.value))
 const current = computed(() => editing.value ? draft.value : content.value)
 const script = computed(() => current.value?.script || null)
 const planDiff = computed(() => pendingPlan.value?.plan?.expected_changes || [])
+const rebuildSelectionChanged = computed(() => {
+  const planned = pendingPlan.value?.plan?.impact?.rebuild_tasks || []
+  return planned.length !== selectedRebuildTasks.value.length ||
+    planned.some(item => !selectedRebuildTasks.value.includes(item))
+})
 
 function formatDuration(seconds) {
   const value = Number(seconds || 0)
@@ -72,6 +78,7 @@ function cancelEdit() {
   editing.value = false
   error.value = ''
   pendingPlan.value = null
+  selectedRebuildTasks.value = []
 }
 
 function requestClose() {
@@ -95,6 +102,7 @@ async function saveContent() {
         locks: ['character'],
       },
     )
+    selectedRebuildTasks.value = [...(pendingPlan.value.plan?.impact?.rebuild_tasks || [])]
     savedNotice.value = '修改计划已生成；正式内容尚未改变。'
   } catch (err) {
     error.value = err.message
@@ -108,6 +116,18 @@ async function confirmPlan(executeImmediately = false) {
   saving.value = true
   error.value = ''
   try {
+    if (rebuildSelectionChanged.value) {
+      pendingPlan.value = await api.createEpisodeContentChangePlan(
+        props.projectId,
+        props.episodeRun.episode_run_id,
+        {
+          ...buildEpisodeContentPayload(draft.value),
+          must_preserve: ['未修改字段', '来源证据', '人物与场景标识'],
+          locks: ['character'],
+          rebuild_tasks: [...selectedRebuildTasks.value],
+        },
+      )
+    }
     pendingPlan.value = await api.confirmChangePlan(
       props.projectId, pendingPlan.value.change_plan_id, { actor: 'episode-content-modal' },
     )
@@ -134,6 +154,7 @@ async function executePlan(nested = false) {
     savedNotice.value = '已创建新版本并切换 current；重建任务已进入 pending。'
     emit('saved', content.value)
     pendingPlan.value = null
+    selectedRebuildTasks.value = []
   } catch (err) {
     error.value = err.message
   } finally {
@@ -203,7 +224,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <article><b>must_preserve</b><span v-for="item in pendingPlan.plan.must_preserve" :key="item"><ShieldCheck :size="12" />{{ item }}</span></article>
             <article><b>锁定项</b><span v-for="item in pendingPlan.plan.locks" :key="item">锁定 {{ item }}</span><span v-if="!pendingPlan.plan.locks.length">无</span></article>
             <article><b>影响 artifact</b><span v-for="item in pendingPlan.impacts" :key="item.artifact_id">{{ item.artifact_type }} · {{ item.native_entity_id }}</span><span v-for="item in pendingPlan.plan.impact.downstream" :key="`planned:${item}`">{{ item }} · 计划范围</span><span v-if="!pendingPlan.impacts.length && !pendingPlan.plan.impact.downstream.length">无现存下游 artifact</span></article>
-            <article><b>重建范围 / 选择</b><span v-for="item in pendingPlan.plan.impact.rebuild_tasks" :key="item"><input type="checkbox" checked disabled />{{ item }} · 执行后 pending</span><span v-if="!pendingPlan.plan.impact.rebuild_tasks.length">无需重建，可保存并确认</span></article>
+            <article><b>重建范围 / 选择</b><label v-for="item in pendingPlan.plan.impact.rebuild_tasks" :key="item"><input v-model="selectedRebuildTasks" type="checkbox" :value="item" :disabled="pendingPlan.status !== 'validated' || saving" />{{ item }} · 选中后执行状态为 pending</label><span v-if="rebuildSelectionChanged">未选任务对应 artifact 将保持 stale，不会被伪标记为已完成。</span><span v-if="!pendingPlan.plan.impact.rebuild_tasks.length">无需重建，可保存并确认</span></article>
           </div>
           <div class="episode-plan-diff">
             <div class="episode-plan-diff-head"><b>字段</b><b>修改前</b><b>修改后</b></div>
