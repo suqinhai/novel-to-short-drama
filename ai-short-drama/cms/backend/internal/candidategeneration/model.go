@@ -1,17 +1,26 @@
 package candidategeneration
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"hash/fnv"
 	"math"
 	"sort"
 	"strings"
 )
 
 const (
-	GeneratorVersion = "deterministic-candidate-mock-v1"
-	PromptVersion    = "multi-candidate-v1"
+	GeneratorVersion = "candidate-provider-v2"
+	PromptVersion    = "multi-candidate-v2"
+)
+
+var (
+	ErrProviderUnavailable = errors.New("candidate provider is unavailable")
+	ErrProviderFailed      = errors.New("candidate provider failed")
+	ErrInvalidProviderData = errors.New("candidate provider returned invalid data")
 )
 
 var AllowedTargetTypes = map[string]bool{
@@ -26,20 +35,39 @@ var AllowedComponents = map[string]bool{
 	"key_image": true, "video_shot": true,
 }
 
+type FrozenInput struct {
+	SchemaVersion  string          `json:"schema_version"`
+	ResolutionID   string          `json:"resolution_id"`
+	ContextHash    string          `json:"context_hash"`
+	ResolutionHash string          `json:"resolution_hash"`
+	FrozenHash     string          `json:"frozen_hash"`
+	Stage          string          `json:"stage"`
+	EpisodeID      string          `json:"episode_id,omitempty"`
+	Resolution     json.RawMessage `json:"resolution"`
+	TargetContext  json.RawMessage `json:"target_context"`
+}
+
 type Request struct {
-	TargetType           string          `json:"target_type"`
-	TargetID             string          `json:"target_id"`
-	ComponentTypes       []string        `json:"component_types"`
-	CandidateCount       int             `json:"candidate_count"`
-	DifferenceDirections []string        `json:"difference_directions"`
-	MustPreserve         []string        `json:"must_preserve"`
-	AllowedChanges       []string        `json:"allowed_changes"`
-	Model                string          `json:"model"`
+	TargetType           string   `json:"target_type"`
+	TargetID             string   `json:"target_id"`
+	ComponentTypes       []string `json:"component_types"`
+	CandidateCount       int      `json:"candidate_count"`
+	DifferenceDirections []string `json:"difference_directions"`
+	MustPreserve         []string `json:"must_preserve"`
+	AllowedChanges       []string `json:"allowed_changes"`
+	// Model remains accepted for the v1 deterministic_mock request shape.
+	Model                string          `json:"model,omitempty"`
+	GeneratorProvider    string          `json:"generator_provider,omitempty"`
+	GeneratorModel       string          `json:"generator_model,omitempty"`
+	ReviewerProvider     string          `json:"reviewer_provider,omitempty"`
+	ReviewerModel        string          `json:"reviewer_model,omitempty"`
+	BlindReview          bool            `json:"blind_review"`
 	PromptVersion        string          `json:"prompt_version"`
 	RandomSeed           int64           `json:"random_seed"`
 	GenerationParameters json.RawMessage `json:"generation_parameters"`
 	BaseContent          json.RawMessage `json:"base_content,omitempty"`
 	BaseDurationSeconds  int             `json:"base_duration_seconds,omitempty"`
+	FrozenInput          FrozenInput     `json:"frozen_input"`
 }
 
 type Component struct {
@@ -49,17 +77,44 @@ type Component struct {
 	Content string `json:"content"`
 }
 
+type Evidence struct {
+	SourceKind string `json:"source_kind"`
+	SourceID   string `json:"source_id"`
+	Path       string `json:"path"`
+	Quote      string `json:"quote,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+type Deduction struct {
+	Dimension string   `json:"dimension"`
+	Penalty   float64  `json:"penalty"`
+	Reason    string   `json:"reason"`
+	Location  Evidence `json:"location"`
+}
+
+type DimensionScore struct {
+	Dimension  string      `json:"dimension"`
+	Score      float64     `json:"score"`
+	Evidence   []Evidence  `json:"evidence"`
+	Deductions []Deduction `json:"deductions"`
+}
+
 type Score struct {
-	TotalScore               float64  `json:"total_score"`
-	Fidelity                 float64  `json:"fidelity"`
-	Hook                     float64  `json:"hook"`
-	Pacing                   float64  `json:"pacing"`
-	Continuity               float64  `json:"continuity"`
-	Filmability              float64  `json:"filmability"`
-	EstimatedDurationSeconds int      `json:"estimated_duration_seconds"`
-	ModificationRisk         float64  `json:"modification_risk"`
-	RecommendationReasons    []string `json:"recommendation_reasons"`
-	DeductionReasons         []string `json:"deduction_reasons"`
+	TotalScore               float64          `json:"total_score"`
+	Fidelity                 float64          `json:"fidelity"`
+	Causality                float64          `json:"causality"`
+	CharacterConsistency     float64          `json:"character_consistency"`
+	Hook                     float64          `json:"hook"`
+	Pacing                   float64          `json:"pacing"`
+	Filmability              float64          `json:"filmability"`
+	Continuity               float64          `json:"continuity"`
+	EstimatedDurationSeconds int              `json:"estimated_duration_seconds"`
+	ModificationRisk         float64          `json:"modification_risk"`
+	Dimensions               []DimensionScore `json:"dimensions"`
+	RecommendationReasons    []string         `json:"recommendation_reasons"`
+	DeductionReasons         []string         `json:"deduction_reasons"`
+	ReviewerProvider         string           `json:"reviewer_provider"`
+	ReviewerModel            string           `json:"reviewer_model"`
 }
 
 type Candidate struct {
@@ -69,6 +124,7 @@ type Candidate struct {
 	Components           []Component     `json:"components"`
 	Content              map[string]any  `json:"content"`
 	Score                Score           `json:"score"`
+	Provider             string          `json:"provider"`
 	Model                string          `json:"model"`
 	PromptVersion        string          `json:"prompt_version"`
 	RandomSeed           int64           `json:"random_seed"`
@@ -76,91 +132,130 @@ type Candidate struct {
 	StructuredDiff       []DiffEntry     `json:"structured_diff"`
 }
 
-type DiffEntry struct {
-	Path   string `json:"path"`
-	Kind   string `json:"kind"`
-	Before any    `json:"before,omitempty"`
-	After  any    `json:"after,omitempty"`
+type CandidateDraft struct {
+	Components []Component    `json:"components"`
+	Content    map[string]any `json:"content"`
 }
 
-type HardRuleResult struct {
-	Rule    string `json:"rule"`
-	Passed  bool   `json:"passed"`
-	Message string `json:"message"`
+type GenerationInput struct {
+	Request             Request
+	Ordinal             int
+	DifferenceDirection string
+	Seed                int64
 }
 
-type Validation struct {
-	Passed  bool             `json:"passed"`
-	Results []HardRuleResult `json:"results"`
+type ReviewInput struct {
+	Request             Request
+	Ordinal             int
+	DifferenceDirection string
+	Candidate           CandidateDraft
+	HideGenerator       bool
 }
 
-func ValidateRequest(r Request) error {
-	if !AllowedTargetTypes[r.TargetType] {
-		return fmt.Errorf("unsupported target_type")
+// CandidateProvider is implemented independently by text, image and video generators.
+// A provider must either return a real candidate or an error; fallback is an orchestration decision
+// and this package deliberately never substitutes deterministic_mock.
+type CandidateProvider interface {
+	Name() string
+	MediaKind() string
+	Generate(context.Context, GenerationInput) (CandidateDraft, error)
+}
+
+// CandidateReviewer is separate from CandidateProvider so generation credentials/models never
+// implicitly become scoring credentials/models.
+type CandidateReviewer interface {
+	Name() string
+	Review(context.Context, ReviewInput) (Score, error)
+}
+
+type Registry struct {
+	providers map[string]CandidateProvider
+	reviewers map[string]CandidateReviewer
+}
+
+func NewRegistry(providers []CandidateProvider, reviewers []CandidateReviewer) *Registry {
+	result := &Registry{providers: map[string]CandidateProvider{}, reviewers: map[string]CandidateReviewer{}}
+	for _, provider := range providers {
+		_ = result.RegisterProvider(provider)
 	}
-	if strings.TrimSpace(r.TargetID) == "" {
-		return fmt.Errorf("target_id is required")
+	for _, reviewer := range reviewers {
+		_ = result.RegisterReviewer(reviewer)
 	}
-	if r.CandidateCount < 2 || r.CandidateCount > 12 {
-		return fmt.Errorf("candidate_count must be between 2 and 12")
+	return result
+}
+
+func (r *Registry) RegisterProvider(provider CandidateProvider) error {
+	if r == nil || provider == nil || strings.TrimSpace(provider.Name()) == "" || strings.TrimSpace(provider.MediaKind()) == "" {
+		return fmt.Errorf("invalid candidate provider")
 	}
-	if len(r.ComponentTypes) == 0 || len(r.ComponentTypes) > 20 {
-		return fmt.Errorf("component_types must contain 1 to 20 items")
+	if r.providers == nil {
+		r.providers = map[string]CandidateProvider{}
 	}
-	seen := map[string]bool{}
-	for _, item := range r.ComponentTypes {
-		if !AllowedComponents[item] || seen[item] {
-			return fmt.Errorf("unsupported or duplicate component_type %q", item)
-		}
-		seen[item] = true
-	}
-	if len(r.DifferenceDirections) == 0 {
-		return fmt.Errorf("difference_directions is required")
-	}
-	if r.Model != "" && r.Model != "deterministic_mock" {
-		return fmt.Errorf("only deterministic_mock is enabled")
-	}
-	if len(r.GenerationParameters) > 0 {
-		var object map[string]any
-		if json.Unmarshal(r.GenerationParameters, &object) != nil || object == nil {
-			return fmt.Errorf("generation_parameters must be an object")
-		}
-	}
+	r.providers[provider.Name()] = provider
 	return nil
 }
 
-func Generate(r Request) ([]Candidate, error) {
-	if err := ValidateRequest(r); err != nil {
+func (r *Registry) RegisterReviewer(reviewer CandidateReviewer) error {
+	if r == nil || reviewer == nil || strings.TrimSpace(reviewer.Name()) == "" {
+		return fmt.Errorf("invalid candidate reviewer")
+	}
+	if r.reviewers == nil {
+		r.reviewers = map[string]CandidateReviewer{}
+	}
+	r.reviewers[reviewer.Name()] = reviewer
+	return nil
+}
+
+func (r *Registry) GenerateAndReview(ctx context.Context, request Request) ([]Candidate, error) {
+	normalizeRequest(&request)
+	if err := ValidateRequest(request); err != nil {
 		return nil, err
 	}
-	if r.Model == "" {
-		r.Model = "deterministic_mock"
+	provider := r.providers[request.GeneratorProvider]
+	if provider == nil || (provider.MediaKind() != "any" && provider.MediaKind() != targetMediaKind(request.TargetType)) {
+		return nil, fmt.Errorf("%w: generator %q does not support %s", ErrProviderUnavailable, request.GeneratorProvider, request.TargetType)
 	}
-	if r.PromptVersion == "" {
-		r.PromptVersion = PromptVersion
+	reviewer := r.reviewers[request.ReviewerProvider]
+	if reviewer == nil {
+		return nil, fmt.Errorf("%w: reviewer %q", ErrProviderUnavailable, request.ReviewerProvider)
 	}
-	if len(r.GenerationParameters) == 0 {
-		r.GenerationParameters = json.RawMessage(`{}`)
-	}
-	candidates := make([]Candidate, 0, r.CandidateCount)
-	for i := 0; i < r.CandidateCount; i++ {
-		direction := r.DifferenceDirections[i%len(r.DifferenceDirections)]
-		seed := r.RandomSeed + int64(i)
-		components := make([]Component, 0, len(r.ComponentTypes))
-		for _, componentType := range r.ComponentTypes {
-			components = append(components, buildComponent(r, componentType, direction, i+1, seed))
+	candidates := make([]Candidate, 0, request.CandidateCount)
+	contentHashes := map[string]bool{}
+	for index := 0; index < request.CandidateCount; index++ {
+		direction := request.DifferenceDirections[index%len(request.DifferenceDirections)]
+		seed := request.RandomSeed + int64(index)
+		draft, err := provider.Generate(ctx, GenerationInput{Request: request, Ordinal: index + 1, DifferenceDirection: direction, Seed: seed})
+		if err != nil {
+			return nil, fmt.Errorf("%w: generator %s candidate %d: %v", ErrProviderFailed, provider.Name(), index+1, err)
 		}
-		duration := estimateDuration(r, components, i)
-		score := scoreCandidate(r, direction, duration, i, seed)
-		content := map[string]any{
-			"schema_version": "candidate-content.v1", "target_type": r.TargetType, "target_id": r.TargetID,
-			"components": components, "must_preserve": r.MustPreserve, "allowed_changes": r.AllowedChanges,
+		if err := validateDraft(request, draft); err != nil {
+			return nil, fmt.Errorf("%w: candidate %d: %v", ErrInvalidProviderData, index+1, err)
+		}
+		substantive := map[string]any{"components": draft.Components}
+		if media, ok := draft.Content["media"]; ok {
+			substantive["media"] = media
+		}
+		canonical, _ := json.Marshal(substantive)
+		digest := sha256.Sum256(canonical)
+		hash := hex.EncodeToString(digest[:])
+		if contentHashes[hash] {
+			return nil, fmt.Errorf("%w: difference direction %q produced duplicate content", ErrInvalidProviderData, direction)
+		}
+		contentHashes[hash] = true
+		score, err := reviewer.Review(ctx, ReviewInput{Request: request, Ordinal: index + 1,
+			DifferenceDirection: direction, Candidate: draft, HideGenerator: request.BlindReview})
+		if err != nil {
+			return nil, fmt.Errorf("%w: reviewer %s candidate %d: %v", ErrProviderFailed, reviewer.Name(), index+1, err)
+		}
+		score.ReviewerProvider, score.ReviewerModel = reviewer.Name(), request.ReviewerModel
+		if err := ValidateScore(score); err != nil {
+			return nil, fmt.Errorf("%w: candidate %d score: %v", ErrInvalidProviderData, index+1, err)
 		}
 		candidates = append(candidates, Candidate{
-			Ordinal: i + 1, Label: fmt.Sprintf("候选%c", 'A'+rune(i)), DifferenceDirection: direction,
-			Components: components, Content: content, Score: score, Model: r.Model,
-			PromptVersion: r.PromptVersion, RandomSeed: seed, GenerationParameters: r.GenerationParameters,
-			StructuredDiff: structuredDiff(r.BaseContent, content),
+			Ordinal: index + 1, Label: fmt.Sprintf("候选 %c", 'A'+rune(index)), DifferenceDirection: direction,
+			Components: draft.Components, Content: draft.Content, Score: score, Provider: provider.Name(),
+			Model: request.GeneratorModel, PromptVersion: request.PromptVersion, RandomSeed: seed,
+			GenerationParameters: request.GenerationParameters, StructuredDiff: structuredDiff(request.BaseContent, draft.Content),
 		})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -172,123 +267,170 @@ func Generate(r Request) ([]Candidate, error) {
 	return candidates, nil
 }
 
-func Compose(parts map[string]Candidate, selected map[string]string, baseDuration int) (map[string]any, Validation) {
-	keys := make([]string, 0, len(selected))
-	for key := range selected {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	components := make([]Component, 0, len(keys))
-	for _, key := range keys {
-		candidate, ok := parts[selected[key]]
-		if !ok {
-			continue
+// Generate is retained as a deterministic test helper. Production Store code uses an injected
+// registry built from the configured real providers.
+func Generate(request Request) ([]Candidate, error) {
+	registry := NewRegistry([]CandidateProvider{NewDeterministicMockProvider()}, []CandidateReviewer{NewDeterministicMockReviewer()})
+	return registry.GenerateAndReview(context.Background(), request)
+}
+
+func normalizeRequest(request *Request) {
+	if request.Model == "deterministic_mock" || (request.Model == "" && request.GeneratorProvider == "") {
+		if request.GeneratorProvider == "" {
+			request.GeneratorProvider = "deterministic_mock"
 		}
-		for _, component := range candidate.Components {
-			if component.Key == key || component.Type == key {
-				components = append(components, component)
-				break
+	}
+	if request.GeneratorModel == "" {
+		if request.GeneratorProvider == "deterministic_mock" {
+			request.GeneratorModel = "deterministic-generator-v2"
+		} else {
+			request.GeneratorModel = request.Model
+		}
+	}
+	if request.ReviewerProvider == "" {
+		request.ReviewerProvider = "deterministic_mock"
+	}
+	if request.ReviewerModel == "" && request.ReviewerProvider == "deterministic_mock" {
+		request.ReviewerModel = "deterministic-reviewer-v2"
+	}
+	if request.PromptVersion == "" {
+		request.PromptVersion = PromptVersion
+	}
+	if len(request.GenerationParameters) == 0 {
+		request.GenerationParameters = json.RawMessage(`{}`)
+	}
+}
+
+func NormalizeRequest(request *Request) { normalizeRequest(request) }
+
+func ValidateRequest(request Request) error {
+	normalizeRequest(&request)
+	if !AllowedTargetTypes[request.TargetType] {
+		return fmt.Errorf("unsupported target_type")
+	}
+	if strings.TrimSpace(request.TargetID) == "" {
+		return fmt.Errorf("target_id is required")
+	}
+	if request.CandidateCount < 2 || request.CandidateCount > 12 {
+		return fmt.Errorf("candidate_count must be between 2 and 12")
+	}
+	if len(request.ComponentTypes) == 0 || len(request.ComponentTypes) > 20 {
+		return fmt.Errorf("component_types must contain 1 to 20 items")
+	}
+	seen := map[string]bool{}
+	for _, item := range request.ComponentTypes {
+		if !AllowedComponents[item] || seen[item] {
+			return fmt.Errorf("unsupported or duplicate component_type %q", item)
+		}
+		seen[item] = true
+	}
+	if len(request.DifferenceDirections) == 0 {
+		return fmt.Errorf("difference_directions is required")
+	}
+	for _, direction := range request.DifferenceDirections {
+		if strings.TrimSpace(direction) == "" {
+			return fmt.Errorf("difference direction cannot be empty")
+		}
+	}
+	if request.GeneratorProvider == "" || request.GeneratorModel == "" || request.ReviewerProvider == "" || request.ReviewerModel == "" {
+		return fmt.Errorf("generator and reviewer provider/model are required")
+	}
+	if request.GeneratorProvider == request.ReviewerProvider && request.GeneratorModel == request.ReviewerModel {
+		return fmt.Errorf("generator and reviewer must not be the same model")
+	}
+	var parameters map[string]any
+	if json.Unmarshal(request.GenerationParameters, &parameters) != nil || parameters == nil {
+		return fmt.Errorf("generation_parameters must be an object")
+	}
+	if request.FrozenInput.SchemaVersion != "" {
+		if request.FrozenInput.SchemaVersion != "candidate-frozen-input.v1" || request.FrozenInput.ContextHash == "" ||
+			request.FrozenInput.FrozenHash == "" || len(request.FrozenInput.Resolution) == 0 || len(request.FrozenInput.TargetContext) == 0 {
+			return fmt.Errorf("frozen_input is incomplete")
+		}
+	}
+	return nil
+}
+
+func ValidateScore(score Score) error {
+	values := []float64{score.TotalScore, score.Fidelity, score.Causality, score.CharacterConsistency,
+		score.Hook, score.Pacing, score.Filmability, score.Continuity, score.ModificationRisk}
+	for _, value := range values {
+		if value < 0 || value > 100 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("score outside 0..100")
+		}
+	}
+	if score.EstimatedDurationSeconds < 1 {
+		return fmt.Errorf("estimated duration is required")
+	}
+	required := map[string]bool{"fidelity": false, "causality": false, "character_consistency": false,
+		"hook": false, "pacing": false, "filmability": false, "continuity": false,
+		"estimated_duration": false, "modification_risk": false}
+	for _, dimension := range score.Dimensions {
+		if _, ok := required[dimension.Dimension]; !ok || required[dimension.Dimension] || len(dimension.Evidence) == 0 {
+			return fmt.Errorf("missing, duplicate, or unknown evidence for %q", dimension.Dimension)
+		}
+		for _, evidence := range dimension.Evidence {
+			if evidence.SourceKind == "" || evidence.SourceID == "" || evidence.Path == "" || evidence.Reason == "" {
+				return fmt.Errorf("dimension %s has non-locatable evidence", dimension.Dimension)
 			}
 		}
-	}
-	content := map[string]any{"schema_version": "candidate-composition.v1", "components": components, "sources": selected}
-	return content, ValidateComposition(content, baseDuration)
-}
-
-func ValidateComposition(content map[string]any, baseDuration int) Validation {
-	raw, _ := json.Marshal(content)
-	text := string(raw)
-	componentCount := 0
-	componentChars := 0
-	if items, ok := content["components"].([]Component); ok {
-		componentCount = len(items)
-		for _, item := range items {
-			componentChars += len([]rune(item.Content))
-		}
-	} else if items, ok := content["components"].([]any); ok {
-		componentCount = len(items)
-		for _, item := range items {
-			if object, ok := item.(map[string]any); ok {
-				if value, ok := object["content"].(string); ok {
-					componentChars += len([]rune(value))
-				}
+		for _, deduction := range dimension.Deductions {
+			if deduction.Penalty <= 0 || deduction.Reason == "" || deduction.Location.SourceID == "" || deduction.Location.Path == "" {
+				return fmt.Errorf("dimension %s has non-locatable deduction", dimension.Dimension)
 			}
 		}
+		required[dimension.Dimension] = true
 	}
-	duration := max(1, componentChars/4)
-	if baseDuration <= 0 {
-		baseDuration = max(30, duration)
+	for dimension, present := range required {
+		if !present {
+			return fmt.Errorf("dimension %s lacks evidence", dimension)
+		}
 	}
-	results := []HardRuleResult{
-		{Rule: "causality", Passed: componentCount > 0, Message: "因果链包含至少一个可执行叙事组件"},
-		{Rule: "duration", Passed: duration <= int(float64(baseDuration)*1.35), Message: fmt.Sprintf("预计 %d 秒，硬上限 %d 秒", duration, int(float64(baseDuration)*1.35))},
-		{Rule: "character_state", Passed: !strings.Contains(text, `"character_state_conflict":true`), Message: "人物状态迁移无冲突标记"},
-		{Rule: "foreshadowing", Passed: !strings.Contains(text, `"unresolved_foreshadowing":true`), Message: "伏笔引用与回收关系完整"},
-		{Rule: "continuity", Passed: !strings.Contains(text, `"continuity_break":true`), Message: "场景、道具与时空连续性通过"},
+	if len(score.RecommendationReasons) == 0 || len(score.DeductionReasons) == 0 {
+		return fmt.Errorf("recommendation and deduction summaries are required")
 	}
-	passed := true
-	for _, result := range results {
-		passed = passed && result.Passed
-	}
-	return Validation{Passed: passed, Results: results}
+	return nil
 }
 
-func buildComponent(r Request, typ, direction string, ordinal int, seed int64) Component {
-	titles := map[string]string{
-		"episode_plan": "分集方案", "opening": "开场", "conflict": "冲突推进", "climax": "高潮",
-		"ending_hook": "结尾钩子", "dialogue": "对白", "action": "动作", "narration": "旁白",
-		"composition": "构图", "shot_size": "景别", "camera_movement": "运镜", "performance": "表演",
-		"transition": "转场", "key_image": "关键图片", "video_shot": "视频镜头",
+func validateDraft(request Request, draft CandidateDraft) error {
+	if len(draft.Components) == 0 || draft.Content == nil {
+		return fmt.Errorf("components and content are required")
 	}
-	preserved := strings.Join(r.MustPreserve, "、")
-	if preserved == "" {
-		preserved = "核心因果与人物目标"
+	wanted := map[string]bool{}
+	for _, component := range request.ComponentTypes {
+		wanted[component] = true
 	}
-	content := fmt.Sprintf("%s方案%d：以“%s”为差异方向，保持%s；围绕目标 %s 给出可直接执行的版本。",
-		titles[typ], ordinal, direction, preserved, r.TargetID)
-	return Component{Key: typ, Type: typ, Title: titles[typ], Content: content}
+	seen := map[string]bool{}
+	for _, component := range draft.Components {
+		if !wanted[component.Type] || seen[component.Type] || strings.TrimSpace(component.Content) == "" {
+			return fmt.Errorf("component %q is missing, duplicate, or empty", component.Type)
+		}
+		seen[component.Type] = true
+	}
+	for component := range wanted {
+		if !seen[component] {
+			return fmt.Errorf("component %q is missing", component)
+		}
+	}
+	draft.Content["components"] = draft.Components
+	return nil
 }
 
-func estimateDuration(r Request, components []Component, ordinal int) int {
-	if r.BaseDurationSeconds > 0 {
-		delta := []float64{-0.05, 0.03, 0.08, -0.02}[ordinal%4]
-		return max(1, int(math.Round(float64(r.BaseDurationSeconds)*(1+delta))))
+func targetMediaKind(targetType string) string {
+	if targetType == "image" {
+		return "image"
 	}
-	chars := 0
-	for _, component := range components {
-		chars += len([]rune(component.Content))
+	if targetType == "video" {
+		return "video"
 	}
-	return max(8, chars/4)
+	return "text"
 }
 
-func scoreCandidate(r Request, direction string, duration, ordinal int, seed int64) Score {
-	jitter := float64(stableNumber(fmt.Sprintf("%s:%d", direction, seed))%9) - 4
-	fidelity := clampScore(91 - float64(len(r.AllowedChanges))*1.2 + float64(len(r.MustPreserve))*.7 + jitter*.15)
-	hook := clampScore(74 + directionBoost(direction, "钩子", "悬念", "反转") + jitter)
-	pacing := clampScore(78 + directionBoost(direction, "节奏", "紧凑", "前置") + jitter*.6)
-	continuity := clampScore(89 - float64(ordinal)*.8 + float64(len(r.MustPreserve))*.5)
-	filmability := clampScore(82 + directionBoost(direction, "可拍", "视觉", "低成本") + jitter*.4)
-	risk := clampScore(100 - fidelity + float64(len(r.AllowedChanges))*2.5)
-	total := fidelity*.25 + hook*.18 + pacing*.18 + continuity*.16 + filmability*.15 + (100-risk)*.08
-	recommend := []string{fmt.Sprintf("忠实度 %.1f，连续性 %.1f", fidelity, continuity)}
-	deductions := []string{}
-	if hook >= 82 {
-		recommend = append(recommend, "开场或结尾钩子更强")
-	} else {
-		deductions = append(deductions, "钩子强度未进入优先区间")
-	}
-	if risk > 20 {
-		deductions = append(deductions, fmt.Sprintf("允许变化较多，修改风险 %.1f", risk))
-	}
-	if len(deductions) == 0 {
-		deductions = append(deductions, "无重大扣分；仍需人工确认创作取向")
-	}
-	return Score{
-		TotalScore: round(total), Fidelity: round(fidelity), Hook: round(hook), Pacing: round(pacing),
-		Continuity: round(continuity), Filmability: round(filmability),
-		EstimatedDurationSeconds: duration, ModificationRisk: round(risk),
-		RecommendationReasons: recommend, DeductionReasons: deductions,
-	}
+type DiffEntry struct {
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Before any    `json:"before,omitempty"`
+	After  any    `json:"after,omitempty"`
 }
 
 func structuredDiff(base json.RawMessage, after map[string]any) []DiffEntry {
@@ -301,9 +443,12 @@ func structuredDiff(base json.RawMessage, after map[string]any) []DiffEntry {
 	}
 	result := []DiffEntry{}
 	for key, value := range after {
-		if old, ok := before[key]; !ok {
+		old, ok := before[key]
+		oldJSON, _ := json.Marshal(old)
+		newJSON, _ := json.Marshal(value)
+		if !ok {
 			result = append(result, DiffEntry{Path: "/" + key, Kind: "add", After: value})
-		} else if fmt.Sprint(old) != fmt.Sprint(value) {
+		} else if string(oldJSON) != string(newJSON) {
 			result = append(result, DiffEntry{Path: "/" + key, Kind: "replace", Before: old, After: value})
 		}
 	}
@@ -311,26 +456,5 @@ func structuredDiff(base json.RawMessage, after map[string]any) []DiffEntry {
 	return result
 }
 
-func stableNumber(value string) uint64 {
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(value))
-	return hash.Sum64()
-}
-
-func directionBoost(direction string, words ...string) float64 {
-	for _, word := range words {
-		if strings.Contains(direction, word) {
-			return 10
-		}
-	}
-	return 0
-}
-
 func clampScore(value float64) float64 { return math.Max(0, math.Min(100, value)) }
 func round(value float64) float64      { return math.Round(value*100) / 100 }
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

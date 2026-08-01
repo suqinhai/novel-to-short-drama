@@ -16,6 +16,7 @@ import CandidateWorkbenchView from '../views/CandidateWorkbenchView.vue'
 import LocalEditingWorkbenchView from '../views/LocalEditingWorkbenchView.vue'
 import PerformanceContinuityView from '../views/PerformanceContinuityView.vue'
 import CreativeWorkbenchView from '../views/CreativeWorkbenchView.vue'
+import IRMergeReviewView from '../views/IRMergeReviewView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -35,6 +36,7 @@ const router = createRouter({
     { path: '/library', name: 'source-works', component: SourceWorksView, meta: { title: '原著资料库', eyebrow: 'SOURCE LIBRARY' } },
     { path: '/library/:workId', name: 'source-work-detail', component: SourceWorkDetailView, meta: { title: '作品版本', eyebrow: 'SOURCE LIBRARY' } },
     { path: '/library/versions/:versionId', name: 'source-version-detail', component: SourceVersionView, meta: { title: '章节管理', eyebrow: 'SOURCE VERSION' } },
+    { path: '/library/ir-merge/:proposalId', name: 'ir-merge-review', component: IRMergeReviewView, meta: { title: 'IR 审核合并', eyebrow: 'INCREMENTAL → FULL IR' } },
     { path: '/reviews', name: 'reviews', component: ReviewsView, meta: { title: '审核中心', eyebrow: 'REVIEW OPERATIONS' } },
     { path: '/media-assets', name: 'media-assets', component: MediaAssetsView, meta: { title: '媒体资产库', eyebrow: 'MEDIA LIBRARY' } },
     { path: '/diagnostics', name: 'diagnostics', component: DiagnosticsView, meta: { title: '系统诊断', eyebrow: 'SYSTEM HEALTH' } },

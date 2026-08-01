@@ -30,6 +30,7 @@ const migrationFiles = [
   'database/17-post-production-creative-workbench.sql',
   'database/18-effective-input-resolver.sql',
   'database/19-unified-versioned-change-entry.sql',
+  'database/20-ir-merge-closure.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -41,6 +42,7 @@ const verifyFiles = [
   'database/17-verify-post-production-creative-workbench.sql',
   'database/18-verify-effective-input-resolver.sql',
   'database/19-verify-unified-versioned-change-entry.sql',
+  'database/20-verify-ir-merge-closure.sql',
 ];
 
 function loadEnv() {
@@ -122,6 +124,9 @@ try {
     {cwd: backendCwd, env: {...commandEnv, PHASE3_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 4 incremental extraction integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPublishedChapterRevisionQueuesOnlyChangedChapterIR'],
     {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(freshDatabase)}});
+  run('Go Phase 20 reviewed IR merge, UTF-8 spans and exact impact integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store',
+    '-run', 'TestIRMergePublishesAtomicFullSnapshotAndPreservesUTF8Spans'],
+  {cwd: backendCwd, env: {...commandEnv, PHASE20_DATABASE_URL: databaseURL(freshDatabase)}});
 
   run('Phase 3 compiler PostgreSQL E2E (valid + adversarial zero-write)', 'node', ['scripts/run-phase3-db-integration.js'], {
     env: {...commandEnv, PHASE3_TEST_DATABASE: legacyDatabase, PHASE3_POSTGRES_CONTAINER: container},
@@ -161,6 +166,7 @@ try {
     'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
+    'validate-phase20.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
   }

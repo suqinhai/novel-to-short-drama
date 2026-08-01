@@ -22,6 +22,8 @@ tags:
     description: Retryable asynchronous operations and worker lease protocol.
   - name: Lineage
     description: Artifact provenance, dependency and impact views.
+  - name: IRMerge
+    description: Human-reviewed Incremental IR to immutable published Full IR merge proposals.
 paths:
   /source-works:
     get:
@@ -391,6 +393,106 @@ paths:
                   contract_version: {type: string, const: '2.0'}
                   trace_id: {$ref: '#/components/schemas/ID'}
                   data: {type: array, items: {$ref: '#/components/schemas/StoryArcSummary'}}
+  /narrative-ir-merge-proposals:
+    post:
+      tags: [IRMerge]
+      operationId: createIRMergeProposal
+      summary: Materialize a reviewable diff between a published full IR and its published incremental IR
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [base_full_ir_revision_id, incremental_ir_revision_id]
+              properties:
+                base_full_ir_revision_id: {$ref: '#/components/schemas/ID'}
+                incremental_ir_revision_id: {$ref: '#/components/schemas/ID'}
+                created_by: {type: string, maxLength: 500}
+      responses:
+        '201':
+          description: Merge proposal created; no full IR was published
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IRMergeProposalResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /narrative-ir-merge-proposals/{proposal_id}:
+    get:
+      tags: [IRMerge]
+      operationId: getIRMergeProposal
+      summary: Compare IR versions with filtered diff items and side-by-side source evidence
+      parameters:
+        - name: proposal_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: item_type
+          in: query
+          schema: {type: string, enum: [entity, fact, event, relation, state, foreshadow, story_arc]}
+        - name: change_type
+          in: query
+          schema: {type: string, enum: [added, modified, deleted, relocated, unchanged, conflict]}
+        - name: resolution_status
+          in: query
+          schema: {type: string, enum: [unresolved, resolved, needs_manual_edit]}
+      responses:
+        '200':
+          description: Proposal, diff items, evidence and impact preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IRMergeProposalResponse'}
+  /narrative-ir-merge-proposals/{proposal_id}/items/{item_id}:
+    patch:
+      tags: [IRMerge]
+      operationId: resolveIRMergeItem
+      summary: Resolve one conflict without mutating either input IR
+      parameters:
+        - name: proposal_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: item_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IRMergeResolutionRequest'}
+      responses:
+        '200':
+          description: Conflict decision recorded
+        '409': {$ref: '#/components/responses/Conflict'}
+  /narrative-ir-merge-proposals/{proposal_id}/publish:
+    post:
+      tags: [IRMerge]
+      operationId: publishIRMergeProposal
+      summary: Atomically create and publish one immutable full IR snapshot
+      parameters:
+        - name: proposal_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirmed]
+              properties:
+                confirmed: {type: boolean, const: true}
+                published_by: {type: string, maxLength: 500}
+      responses:
+        '201':
+          description: Full IR published and authoritative impact scan queued; no downstream rebuild was started
+        '409': {$ref: '#/components/responses/Conflict'}
   /adaptation-projects:
     post:
       tags: [AdaptationProjects]
@@ -836,7 +938,7 @@ paths:
     post:
       tags: [AdaptationProjects]
       operationId: generateCandidateSet
-      summary: Deterministically generate and score multiple candidates
+      summary: Generate candidates from a frozen Effective Input and score them with an independent reviewer
       parameters:
         - $ref: '#/components/parameters/ProjectID'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -850,6 +952,17 @@ paths:
         '201': {description: New immutable candidate set}
         '200': {description: Idempotent replay of the same candidate set}
         '409': {$ref: '#/components/responses/Conflict'}
+        '502': {description: Real generator or reviewer failed; no mock candidates were created}
+  /adaptation-projects/{project_id}/candidate-targets:
+    get:
+      tags: [AdaptationProjects]
+      operationId: listCandidateTargets
+      summary: List the project, episode, scene and shot hierarchy used by candidate target selectors
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200': {description: Candidate target hierarchy}
+        '404': {$ref: '#/components/responses/NotFound'}
   /adaptation-projects/{project_id}/candidate-sets/{candidate_set_id}:
     get:
       tags: [AdaptationProjects]
@@ -1318,7 +1431,7 @@ components:
     GenerateCandidateSetRequest:
       type: object
       additionalProperties: false
-      required: [target_type, target_id, component_types, candidate_count, difference_directions, model]
+      required: [target_type, target_id, component_types, candidate_count, difference_directions, generator_provider, generator_model, reviewer_provider, reviewer_model, blind_review, random_seed]
       properties:
         target_type: {type: string, enum: [story_arc, episode, scene, storyboard, image, video]}
         target_id: {$ref: '#/components/schemas/ID'}
@@ -1334,7 +1447,20 @@ components:
         difference_directions: {type: array, minItems: 1, items: {type: string, minLength: 1}}
         must_preserve: {type: array, items: {type: string}}
         allowed_changes: {type: array, items: {type: string}}
-        model: {type: string, const: deterministic_mock}
+        model:
+          type: string
+          deprecated: true
+          description: Legacy deterministic_mock request field; use generator_provider and generator_model.
+        generator_provider: {type: string, enum: [deterministic_mock, text_http, image_http, video_http]}
+        generator_model: {type: string, minLength: 1}
+        reviewer_provider: {type: string, enum: [deterministic_mock, reviewer_http]}
+        reviewer_model:
+          type: string
+          minLength: 1
+          description: Must not identify the same provider/model pair as the generator.
+        blind_review:
+          type: boolean
+          description: Hide generator identity from the reviewer and provider/model metadata from comparison responses.
         prompt_version: {type: string, minLength: 1}
         random_seed: {type: integer, format: int64}
         generation_parameters: {type: object}
@@ -1346,15 +1472,15 @@ components:
     SelectCandidateRequest:
       type: object
       additionalProperties: false
-      required: [candidate_id, confirmed]
+      required: [candidate_id, confirmed, confirmed_by]
       properties:
         candidate_id: {$ref: '#/components/schemas/ID'}
         confirmed: {type: boolean, const: true}
-        confirmed_by: {type: string}
+        confirmed_by: {type: string, minLength: 1}
     ComposeCandidatesRequest:
       type: object
       additionalProperties: false
-      required: [parts, confirmed]
+      required: [parts, confirmed, confirmed_by]
       properties:
         parts:
           type: array
@@ -1368,7 +1494,39 @@ components:
               component_key: {type: string, minLength: 1}
               candidate_id: {$ref: '#/components/schemas/ID'}
         confirmed: {type: boolean, const: true}
-        confirmed_by: {type: string}
+        confirmed_by: {type: string, minLength: 1}
+    CandidateScoreEvidence:
+      type: object
+      additionalProperties: false
+      required: [source_kind, source_id, path, reason]
+      properties:
+        source_kind: {type: string, enum: [effective_input, narrative_ir, source, script, storyboard, candidate, selection]}
+        source_id: {type: string, minLength: 1}
+        path: {type: string, minLength: 1}
+        quote: {type: string}
+        reason: {type: string, minLength: 1}
+    CandidateDimensionScore:
+      type: object
+      additionalProperties: false
+      required: [dimension, score, evidence, deductions]
+      properties:
+        dimension: {type: string, enum: [fidelity, causality, character_consistency, hook, pacing, filmability, continuity, estimated_duration, modification_risk]}
+        score: {type: number, minimum: 0, maximum: 100}
+        evidence:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/CandidateScoreEvidence'}
+        deductions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [dimension, penalty, reason, location]
+            properties:
+              dimension: {type: string}
+              penalty: {type: number, exclusiveMinimum: 0}
+              reason: {type: string, minLength: 1}
+              location: {$ref: '#/components/schemas/CandidateScoreEvidence'}
     CandidateDecisionRequest:
       type: object
       additionalProperties: false
@@ -1511,11 +1669,63 @@ components:
         revision_number: {type: integer, minimum: 1}
         status: {type: string, enum: [staging, validating, published, rejected, superseded]}
         revision_scope: {type: string, enum: [full, incremental]}
+        base_ir_revision_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
         extractor_version: {type: string}
         changed_chapter_ids: {type: array, items: {$ref: '#/components/schemas/ID'}}
         validation_summary: {type: object}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         published_at: {anyOf: [{$ref: '#/components/schemas/Timestamp'}, {type: 'null'}]}
+    IRMergeResolutionRequest:
+      type: object
+      additionalProperties: false
+      required: [resolution]
+      properties:
+        resolution: {type: string, enum: [accept_new, keep_old, merge, manual_edit, delete_invalid]}
+        resolved_value: {type: object}
+        resolution_note: {type: string, maxLength: 4000}
+        resolved_by: {type: string, maxLength: 500}
+        canonicalization_confirmed: {type: boolean}
+        canonicalization_decision: {type: string, enum: [same_entity, distinct_entities]}
+        canonical_entity_id: {$ref: '#/components/schemas/ID'}
+    IRMergeProposalResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, trace_id, data]
+      properties:
+        contract_version: {type: string, const: '2.0'}
+        trace_id: {$ref: '#/components/schemas/ID'}
+        data:
+          type: object
+          required: [ir_merge_proposal_id, base_full_ir_revision_id, incremental_ir_revision_id, status, unresolved_count, items, impact_preview]
+          properties:
+            ir_merge_proposal_id: {$ref: '#/components/schemas/ID'}
+            base_full_ir_revision_id: {$ref: '#/components/schemas/ID'}
+            incremental_ir_revision_id: {$ref: '#/components/schemas/ID'}
+            published_full_ir_revision_id: {allOf: [{$ref: '#/components/schemas/ID'}], nullable: true}
+            status: {type: string, enum: [draft, ready, publishing, published, failed]}
+            unresolved_count: {type: integer, minimum: 0}
+            items: {type: array, items: {$ref: '#/components/schemas/IRMergeProposalItem'}}
+            impact_preview: {type: object}
+    IRMergeProposalItem:
+      type: object
+      required: [ir_merge_item_id, item_type, logical_id, change_type, semantic_changed, source_span_changed, confidence, resolution_status]
+      properties:
+        ir_merge_item_id: {$ref: '#/components/schemas/ID'}
+        item_type: {type: string, enum: [entity, fact, event, relation, state, foreshadow, story_arc]}
+        logical_id: {type: string}
+        change_type: {type: string, enum: [added, modified, deleted, relocated, unchanged, conflict]}
+        before_value: {type: [object, 'null']}
+        after_value: {type: [object, 'null']}
+        before_evidence: {type: [object, 'null']}
+        after_evidence: {type: [object, 'null']}
+        semantic_changed: {type: boolean}
+        source_span_changed: {type: boolean}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        conflict_code: {type: [string, 'null']}
+        resolution: {type: [string, 'null'], enum: [accept_new, keep_old, merge, manual_edit, delete_invalid, null]}
+        resolution_status: {type: string, enum: [unresolved, resolved, needs_manual_edit]}
+        canonicalization_required: {type: boolean}
+        canonicalization_confirmed: {type: boolean}
     StoryArcSummary:
       type: object
       additionalProperties: false

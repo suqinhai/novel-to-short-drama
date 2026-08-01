@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,8 @@ type GenerateCandidateSetInput struct {
 type CandidateScore struct {
 	TotalScore               float64         `json:"total_score"`
 	Fidelity                 float64         `json:"fidelity"`
+	Causality                float64         `json:"causality"`
+	CharacterConsistency     float64         `json:"character_consistency"`
 	Hook                     float64         `json:"hook"`
 	Pacing                   float64         `json:"pacing"`
 	Continuity               float64         `json:"continuity"`
@@ -32,6 +35,9 @@ type CandidateScore struct {
 	ModificationRisk         float64         `json:"modification_risk"`
 	RecommendationReasons    json.RawMessage `json:"recommendation_reasons"`
 	DeductionReasons         json.RawMessage `json:"deduction_reasons"`
+	Dimensions               json.RawMessage `json:"dimensions"`
+	ReviewerProvider         string          `json:"reviewer_provider,omitempty"`
+	ReviewerModel            string          `json:"reviewer_model,omitempty"`
 }
 
 type CandidateVersion struct {
@@ -47,6 +53,7 @@ type CandidateVersion struct {
 	Content              json.RawMessage `json:"content"`
 	StructuredDiff       json.RawMessage `json:"structured_diff"`
 	ContentHash          string          `json:"content_hash"`
+	Provider             string          `json:"provider,omitempty"`
 	Model                string          `json:"model"`
 	PromptVersion        string          `json:"prompt_version"`
 	RandomSeed           int64           `json:"random_seed"`
@@ -70,6 +77,15 @@ type CandidateSet struct {
 	MustPreserve         json.RawMessage    `json:"must_preserve"`
 	AllowedChanges       json.RawMessage    `json:"allowed_changes"`
 	Model                string             `json:"model"`
+	GeneratorProvider    string             `json:"generator_provider,omitempty"`
+	GeneratorModel       string             `json:"generator_model,omitempty"`
+	ReviewerProvider     string             `json:"reviewer_provider,omitempty"`
+	ReviewerModel        string             `json:"reviewer_model,omitempty"`
+	BlindReview          bool               `json:"blind_review"`
+	FrozenResolutionID   string             `json:"frozen_resolution_id"`
+	FrozenContextHash    string             `json:"frozen_context_hash"`
+	FrozenInputHash      string             `json:"frozen_input_hash"`
+	FrozenInput          json.RawMessage    `json:"frozen_input"`
 	PromptVersion        string             `json:"prompt_version"`
 	RandomSeed           int64              `json:"random_seed"`
 	GenerationParameters json.RawMessage    `json:"generation_parameters"`
@@ -140,16 +156,62 @@ type TimecodeComment struct {
 }
 
 func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string, input GenerateCandidateSetInput) (CandidateSet, bool, error) {
+	candidategeneration.NormalizeRequest(&input.Request)
 	if err := candidategeneration.ValidateRequest(input.Request); err != nil {
 		return CandidateSet{}, false, ErrConflict
+	}
+	clientRequestHash, err := hashJSON(input)
+	if err != nil {
+		return CandidateSet{}, false, err
+	}
+	var idempotentID, idempotentClientHash string
+	err = s.pool.QueryRow(ctx, `SELECT candidate_set_id,client_request_hash FROM drama.candidate_sets
+		WHERE idempotency_key=$1`, key).Scan(&idempotentID, &idempotentClientHash)
+	if err == nil {
+		if idempotentClientHash != clientRequestHash {
+			return CandidateSet{}, false, ErrConflict
+		}
+		result, replayErr := s.GetCandidateSet(ctx, projectID, idempotentID)
+		return result, false, replayErr
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return CandidateSet{}, false, err
+	}
+	frozen, err := s.freezeCandidateInputs(ctx, projectID, input.Request)
+	if err != nil {
+		return CandidateSet{}, false, err
+	}
+	input.FrozenInput = frozen
+	if len(input.BaseContent) == 0 {
+		input.BaseContent = frozen.TargetContext
 	}
 	requestHash, err := hashJSON(input)
 	if err != nil {
 		return CandidateSet{}, false, err
 	}
-	generated, err := candidategeneration.Generate(input.Request)
+	// A frozen input + request + seed is a replay identity, independent of the
+	// HTTP idempotency key. Returning the persisted set avoids a second real call.
+	var replayID, replayHash string
+	err = s.pool.QueryRow(ctx, `SELECT candidate_set_id,request_hash FROM drama.candidate_sets
+		WHERE idempotency_key=$1 OR (project_id=$2 AND request_hash=$3)
+		ORDER BY (idempotency_key=$1) DESC,created_at DESC LIMIT 1`, key, projectID, requestHash).Scan(&replayID, &replayHash)
+	if err == nil {
+		if replayHash != requestHash {
+			return CandidateSet{}, false, ErrConflict
+		}
+		result, replayErr := s.GetCandidateSet(ctx, projectID, replayID)
+		return result, false, replayErr
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return CandidateSet{}, false, err
+	}
+	engine := s.candidateEngine
+	if engine == nil {
+		engine = candidategeneration.NewRegistryFromEnvironment()
+	}
+	generated, err := engine.GenerateAndReview(ctx, input.Request)
 	if err != nil {
-		return CandidateSet{}, false, ErrConflict
+		return CandidateSet{}, false, fmt.Errorf("%w: %v", ErrCandidateProvider, err)
 	}
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
@@ -160,7 +222,9 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 		return CandidateSet{}, false, err
 	}
 	var existingID, existingHash string
-	err = tx.QueryRow(ctx, `SELECT candidate_set_id,request_hash FROM drama.candidate_sets WHERE idempotency_key=$1`, key).
+	err = tx.QueryRow(ctx, `SELECT candidate_set_id,request_hash FROM drama.candidate_sets
+		WHERE idempotency_key=$1 OR (project_id=$2 AND request_hash=$3)
+		ORDER BY (idempotency_key=$1) DESC,created_at DESC LIMIT 1`, key, projectID, requestHash).
 		Scan(&existingID, &existingHash)
 	if err == nil {
 		if existingHash != requestHash {
@@ -174,30 +238,14 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 	}
 	var qualityReportID, qualityArtifactID string
 	if err := tx.QueryRow(ctx, `SELECT quality_score_report_id,artifact_id
-		FROM drama.quality_score_reports WHERE project_id=$1 AND status='completed'`, projectID).
+		FROM drama.quality_score_reports WHERE project_id=$1 AND status='completed'
+		ORDER BY created_at DESC LIMIT 1`, projectID).
 		Scan(&qualityReportID, &qualityArtifactID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CandidateSet{}, false, ErrNotFound
 		}
 		return CandidateSet{}, false, err
 	}
-	phase1Dimensions := map[string]float64{}
-	scoreRows, err := tx.Query(ctx, `SELECT dimension,score::float8 FROM drama.quality_score_dimensions
-		WHERE quality_score_report_id=$1`, qualityReportID)
-	if err != nil {
-		return CandidateSet{}, false, err
-	}
-	for scoreRows.Next() {
-		var dimension string
-		var score float64
-		if err := scoreRows.Scan(&dimension, &score); err != nil {
-			scoreRows.Close()
-			return CandidateSet{}, false, err
-		}
-		phase1Dimensions[dimension] = score
-	}
-	scoreRows.Close()
-	applyPhase1QualityBaseline(generated, phase1Dimensions)
 	if input.BaseArtifactID != "" {
 		var belongs bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drama.artifacts
@@ -225,13 +273,18 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.candidate_sets(
 		candidate_set_id,project_id,target_type,target_id,base_artifact_id,quality_score_report_id,
 		candidate_count,component_types,difference_directions,must_preserve,allowed_changes,model,
-		prompt_version,random_seed,generation_parameters,estimated_cost,generator_version,idempotency_key,request_hash)
-		VALUES($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		prompt_version,random_seed,generation_parameters,estimated_cost,generator_version,idempotency_key,request_hash,
+		generator_provider,generator_model,reviewer_provider,reviewer_model,blind_review,
+		frozen_resolution_id,frozen_context_hash,frozen_input_hash,frozen_input,client_request_hash)
+		VALUES($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+		$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 		candidateSetID, projectID, input.TargetType, input.TargetID, input.BaseArtifactID, qualityReportID,
 		input.CandidateCount, mustJSON(input.ComponentTypes), mustJSON(input.DifferenceDirections),
-		mustJSON(input.MustPreserve), mustJSON(input.AllowedChanges), "deterministic_mock",
+		mustJSON(input.MustPreserve), mustJSON(input.AllowedChanges), input.GeneratorModel,
 		defaultCandidatePrompt(input.PromptVersion), input.RandomSeed, defaultJSON(input.GenerationParameters),
-		estimatedCost, candidategeneration.GeneratorVersion, key, requestHash); err != nil {
+		estimatedCost, candidategeneration.GeneratorVersion, key, requestHash,
+		input.GeneratorProvider, input.GeneratorModel, input.ReviewerProvider, input.ReviewerModel, input.BlindReview,
+		frozen.ResolutionID, frozen.ContextHash, frozen.FrozenHash, mustJSON(frozen), clientRequestHash); err != nil {
 		return CandidateSet{}, false, mapPGConflict(err)
 	}
 	for index, candidate := range generated {
@@ -249,12 +302,12 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 		parentID := input.ParentCandidateID
 		if _, err := tx.Exec(ctx, `INSERT INTO drama.candidates(
 			candidate_id,candidate_set_id,parent_candidate_id,artifact_id,ordinal,label,difference_direction,
-			derived_reason,content,structured_diff,content_hash,model,prompt_version,random_seed,generation_parameters)
-			VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15)`,
+			derived_reason,content,structured_diff,content_hash,model,prompt_version,random_seed,generation_parameters,provider)
+			VALUES($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,$13,$14,$15,$16)`,
 			candidateID, candidateSetID, parentID, artifactID, candidate.Ordinal, candidate.Label,
 			candidate.DifferenceDirection, input.DerivedReason, mustJSON(candidate.Content),
 			mustJSON(candidate.StructuredDiff), contentHash, candidate.Model, candidate.PromptVersion,
-			candidate.RandomSeed, candidate.GenerationParameters); err != nil {
+			candidate.RandomSeed, candidate.GenerationParameters, candidate.Provider); err != nil {
 			return CandidateSet{}, false, mapPGConflict(err)
 		}
 		scoreID, _ := newPublicID("candscore_")
@@ -262,17 +315,24 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 		if _, err := tx.Exec(ctx, `INSERT INTO drama.candidate_scores(
 			candidate_score_id,candidate_id,source_quality_score_report_id,total_score,fidelity,hook,pacing,
 			continuity,filmability,estimated_duration_seconds,modification_risk,recommendation_reasons,
-			deduction_reasons,scorer_version)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			deduction_reasons,scorer_version,causality,character_consistency,dimensions,reviewer_provider,reviewer_model)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 			scoreID, candidateID, qualityReportID, score.TotalScore, score.Fidelity, score.Hook, score.Pacing,
 			score.Continuity, score.Filmability, score.EstimatedDurationSeconds, score.ModificationRisk,
 			mustJSON(score.RecommendationReasons), mustJSON(score.DeductionReasons),
-			adaptationScoreVersion()); err != nil {
+			adaptationScoreVersion(), score.Causality, score.CharacterConsistency, mustJSON(score.Dimensions),
+			score.ReviewerProvider, score.ReviewerModel); err != nil {
 			return CandidateSet{}, false, mapPGConflict(err)
 		}
 		if err := createDependency(ctx, tx, qualityArtifactID, artifactID, "candidate_quality_baseline",
 			key+":quality:"+fmt.Sprint(index+1)); err != nil {
 			return CandidateSet{}, false, err
+		}
+		for dependencyIndex, upstream := range frozenArtifactIDs(frozen.Resolution) {
+			if err := createDependency(ctx, tx, upstream, artifactID, "candidate_frozen_effective_input",
+				fmt.Sprintf("%s:frozen:%d:%d", key, index+1, dependencyIndex+1)); err != nil {
+				return CandidateSet{}, false, err
+			}
 		}
 		if input.BaseArtifactID != "" {
 			if err := createDependency(ctx, tx, input.BaseArtifactID, artifactID, "candidate_derived_from",
@@ -363,14 +423,14 @@ func (s *Store) RecordCandidateDecision(ctx context.Context, candidateID, key st
 }
 
 func (s *Store) SelectCandidate(ctx context.Context, projectID, candidateSetID, key string, input CandidateSelectionInput) (CandidateSelection, bool, error) {
-	if !input.Confirmed {
+	if !input.Confirmed || strings.TrimSpace(input.ConfirmedBy) == "" {
 		return CandidateSelection{}, false, ErrConflict
 	}
 	return s.createSelection(ctx, projectID, candidateSetID, key, "candidate", input.CandidateID, nil, input.ConfirmedBy)
 }
 
 func (s *Store) ComposeCandidates(ctx context.Context, projectID, candidateSetID, key string, input CandidateCompositionInput) (CandidateSelection, bool, error) {
-	if !input.Confirmed || len(input.Parts) < 2 || len(input.Parts) > 20 {
+	if !input.Confirmed || strings.TrimSpace(input.ConfirmedBy) == "" || len(input.Parts) < 2 || len(input.Parts) > 20 {
 		return CandidateSelection{}, false, ErrConflict
 	}
 	seen := map[string]bool{}
@@ -574,6 +634,38 @@ func (s *Store) createSelection(ctx context.Context, projectID, candidateSetID, 
 		bindingID, projectID, targetType, targetID, artifactID); err != nil {
 		return CandidateSelection{}, false, mapPGConflict(err)
 	}
+	// A story-arc decision is a project-wide upstream decision. Alias the same
+	// confirmed artifact to every episode so the existing Effective Input
+	// Resolver exposes it to subsequent script/storyboard generations.
+	if targetType == "story_arc" {
+		episodeRows, queryErr := tx.Query(ctx, `SELECT episode_id FROM drama.episode_outlines
+			WHERE project_id=$1 ORDER BY episode_number,episode_id`, projectID)
+		if queryErr != nil {
+			return CandidateSelection{}, false, queryErr
+		}
+		for episodeRows.Next() {
+			var episodeID string
+			if queryErr = episodeRows.Scan(&episodeID); queryErr != nil {
+				episodeRows.Close()
+				return CandidateSelection{}, false, queryErr
+			}
+			aliasID, _ := newPublicID("currentbinding_")
+			if _, queryErr = tx.Exec(ctx, `INSERT INTO drama.artifact_current_bindings(
+				artifact_current_binding_id,project_id,target_type,target_id,component_scope,current_artifact_id)
+				VALUES($1,$2,'story_arc',$3,'whole',$4)
+				ON CONFLICT(project_id,target_type,target_id,component_scope)
+				DO UPDATE SET current_artifact_id=EXCLUDED.current_artifact_id,selected_at=CURRENT_TIMESTAMP`,
+				aliasID, projectID, episodeID, artifactID); queryErr != nil {
+				episodeRows.Close()
+				return CandidateSelection{}, false, mapPGConflict(queryErr)
+			}
+		}
+		if queryErr = episodeRows.Err(); queryErr != nil {
+			episodeRows.Close()
+			return CandidateSelection{}, false, queryErr
+		}
+		episodeRows.Close()
+	}
 	err = scanSelection(tx.QueryRow(ctx, selectionQuery+` WHERE selection.candidate_selection_id=$1`, selectionID), &replay)
 	if err != nil {
 		return CandidateSelection{}, false, err
@@ -622,13 +714,16 @@ func getCandidateSetQuery(ctx context.Context, queryer candidateQueryer, project
 	err := queryer.QueryRow(ctx, `SELECT candidate_set_id,project_id,target_type,target_id,base_artifact_id,
 		quality_score_report_id,candidate_count,component_types,difference_directions,must_preserve,
 		allowed_changes,model,prompt_version,random_seed,generation_parameters,estimated_cost::float8,
-		currency,generator_version,created_at
+		currency,generator_version,created_at,generator_provider,generator_model,reviewer_provider,
+		reviewer_model,blind_review,frozen_resolution_id,frozen_context_hash,frozen_input_hash,frozen_input
 		FROM drama.candidate_sets WHERE candidate_set_id=$1 AND project_id=$2`, candidateSetID, projectID).
 		Scan(&result.CandidateSetID, &result.ProjectID, &result.TargetType, &result.TargetID, &result.BaseArtifactID,
 			&result.QualityScoreReportID, &result.CandidateCount, &result.ComponentTypes,
 			&result.DifferenceDirections, &result.MustPreserve, &result.AllowedChanges, &result.Model,
 			&result.PromptVersion, &result.RandomSeed, &result.GenerationParameters, &result.EstimatedCost,
-			&result.Currency, &result.GeneratorVersion, &result.CreatedAt)
+			&result.Currency, &result.GeneratorVersion, &result.CreatedAt, &result.GeneratorProvider,
+			&result.GeneratorModel, &result.ReviewerProvider, &result.ReviewerModel, &result.BlindReview,
+			&result.FrozenResolutionID, &result.FrozenContextHash, &result.FrozenInputHash, &result.FrozenInput)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CandidateSet{}, ErrNotFound
 	}
@@ -647,10 +742,12 @@ func getCandidateSetQuery(ctx context.Context, queryer candidateQueryer, project
 	SELECT candidate.candidate_id,candidate.candidate_set_id,candidate.parent_candidate_id,candidate.artifact_id,
 		candidate.ordinal,candidate.label,candidate.difference_direction,candidate.derived_reason,candidate.content,
 		candidate.structured_diff,candidate.content_hash,candidate.model,candidate.prompt_version,candidate.random_seed,
-		candidate.generation_parameters,score.total_score::float8,score.fidelity::float8,score.hook::float8,
+		candidate.generation_parameters,candidate.provider,score.total_score::float8,score.fidelity::float8,
+		score.causality::float8,score.character_consistency::float8,score.hook::float8,
 		score.pacing::float8,score.continuity::float8,score.filmability::float8,
 		score.estimated_duration_seconds,score.modification_risk::float8,score.recommendation_reasons,
-		score.deduction_reasons,COALESCE(preference.decision='favorite',false),
+		score.deduction_reasons,score.dimensions,score.reviewer_provider,score.reviewer_model,
+		COALESCE(preference.decision='favorite',false),
 		COALESCE(elimination.decision='eliminate',false),candidate.created_at
 	FROM drama.candidates candidate JOIN drama.candidate_scores score USING(candidate_id)
 	LEFT JOIN latest_preference preference USING(candidate_id)
@@ -670,16 +767,29 @@ func getCandidateSetQuery(ctx context.Context, queryer candidateQueryer, project
 			&candidate.ArtifactID, &candidate.Ordinal, &candidate.Label, &candidate.DifferenceDirection,
 			&candidate.DerivedReason, &candidate.Content, &candidate.StructuredDiff, &candidate.ContentHash,
 			&candidate.Model, &candidate.PromptVersion, &candidate.RandomSeed, &candidate.GenerationParameters,
-			&candidate.Score.TotalScore, &candidate.Score.Fidelity, &candidate.Score.Hook,
+			&candidate.Provider, &candidate.Score.TotalScore, &candidate.Score.Fidelity,
+			&candidate.Score.Causality, &candidate.Score.CharacterConsistency, &candidate.Score.Hook,
 			&candidate.Score.Pacing, &candidate.Score.Continuity, &candidate.Score.Filmability,
 			&candidate.Score.EstimatedDurationSeconds, &candidate.Score.ModificationRisk,
-			&candidate.Score.RecommendationReasons, &candidate.Score.DeductionReasons,
+			&candidate.Score.RecommendationReasons, &candidate.Score.DeductionReasons, &candidate.Score.Dimensions,
+			&candidate.Score.ReviewerProvider, &candidate.Score.ReviewerModel,
 			&candidate.IsFavorite, &candidate.IsEliminated, &candidate.CreatedAt); err != nil {
 			return CandidateSet{}, err
 		}
 		result.Candidates = append(result.Candidates, candidate)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return CandidateSet{}, err
+	}
+	if result.BlindReview {
+		result.Model, result.GeneratorProvider, result.GeneratorModel = "", "", ""
+		result.ReviewerProvider, result.ReviewerModel = "", ""
+		for index := range result.Candidates {
+			result.Candidates[index].Provider, result.Candidates[index].Model = "", ""
+			result.Candidates[index].Score.ReviewerProvider, result.Candidates[index].Score.ReviewerModel = "", ""
+		}
+	}
+	return result, nil
 }
 
 const selectionQuery = `SELECT selection.candidate_selection_id,selection.candidate_set_id,

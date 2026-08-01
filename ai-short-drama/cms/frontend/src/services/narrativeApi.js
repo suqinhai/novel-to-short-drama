@@ -119,6 +119,23 @@ export const narrativeApi = {
   listStoryArcs(irRevisionId) {
     return request(`/narrative-ir-revisions/${id(irRevisionId)}/story-arcs`)
   },
+  createIRMergeProposal(payload, idempotencyKey) {
+    return command('/narrative-ir-merge-proposals', { body: payload, idempotencyKey })
+  },
+  getIRMergeProposal(proposalId, filters = {}) {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '' && value != null))
+    return request(`/narrative-ir-merge-proposals/${id(proposalId)}?${query}`)
+  },
+  resolveIRMergeItem(proposalId, itemId, payload) {
+    return request(`/narrative-ir-merge-proposals/${id(proposalId)}/items/${id(itemId)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+  },
+  publishIRMergeProposal(proposalId, payload, idempotencyKey) {
+    return command(`/narrative-ir-merge-proposals/${id(proposalId)}/publish`, {
+      body: payload, idempotencyKey,
+    })
+  },
   startImport(sourceVersionId, payload, idempotencyKey) {
     return command(`/source-versions/${id(sourceVersionId)}/imports`, {
       body: payload, idempotencyKey, versionResource: sourceVersionId,
@@ -203,6 +220,9 @@ export const narrativeApi = {
   },
   listCandidateSets(projectId) {
     return request(`/adaptation-projects/${id(projectId)}/candidate-sets`)
+  },
+  listCandidateTargets(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/candidate-targets`)
   },
   getCandidateSet(projectId, candidateSetId) {
     return request(`/adaptation-projects/${id(projectId)}/candidate-sets/${id(candidateSetId)}`)

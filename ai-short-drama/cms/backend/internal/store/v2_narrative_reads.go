@@ -50,7 +50,7 @@ func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID st
 			ELSE jsonb_array_length(ir.changed_chapter_ids)
 		END AS total_items,
 		operation.retry_count,operation.error_code,operation.error_message,operation.error_retryable,
-		ir.source_version_id,ir.revision_number,ir.status,ir.revision_scope,ir.extractor_version,
+		ir.source_version_id,ir.revision_number,ir.status,ir.revision_scope,ir.base_ir_revision_id,ir.extractor_version,
 		ir.changed_chapter_ids,ir.validation_summary,ir.created_at,ir.published_at
 		FROM drama.narrative_ir_revisions ir
 		JOIN drama.operations operation ON operation.operation_id=ir.operation_id
@@ -66,7 +66,7 @@ func (s *Store) ListNarrativeIRRevisions(ctx context.Context, sourceVersionID st
 			&item.CheckpointStage, &item.CompletedItems, &item.TotalItems,
 			&item.RetryCount, &item.OperationErrorCode, &item.OperationErrorMessage, &item.OperationErrorRetryable,
 			&item.SourceVersionID, &item.RevisionNumber,
-			&item.Status, &item.RevisionScope, &item.ExtractorVersion, &item.ChangedChapterIDs, &item.ValidationSummary, &item.CreatedAt, &item.PublishedAt); err != nil {
+			&item.Status, &item.RevisionScope, &item.BaseIRRevisionID, &item.ExtractorVersion, &item.ChangedChapterIDs, &item.ValidationSummary, &item.CreatedAt, &item.PublishedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

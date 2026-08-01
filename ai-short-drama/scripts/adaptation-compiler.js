@@ -60,8 +60,9 @@ function compile(input) {
   );
 
   if (!run.compiler_run_id || !spec.source_version_id || run.source_version_id !== spec.source_version_id ||
-      run.ir_revision_id !== spec.ir_revision_id || spec.status !== 'active' || input.ir_status !== 'published') {
-    block('FROZEN_INPUT_MISMATCH', 'Compiler inputs are not one active spec, one published IR and one source version.');
+      run.ir_revision_id !== spec.ir_revision_id || spec.status !== 'active' || input.ir_status !== 'published' ||
+      input.ir_scope !== 'full') {
+    block('FROZEN_INPUT_MISMATCH', 'Compiler inputs are not one active spec, one published full IR and one source version.');
   }
 
   const includeChapters = new Set(asArray(input.scope_chapters).filter((item) => item.include_mode === 'include').map((item) => item.chapter_id));

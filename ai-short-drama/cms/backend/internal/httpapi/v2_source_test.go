@@ -139,6 +139,13 @@ func (f *fakeSourceV2) GenerateCandidateSet(_ context.Context, projectID, _ stri
 		Candidates: []store.CandidateVersion{{CandidateID: "cand_a", Label: "候选A", Rank: 1},
 			{CandidateID: "cand_b", Label: "候选B", Rank: 2}, {CandidateID: "cand_c", Label: "候选C", Rank: 3}}}, true, nil
 }
+func (f *fakeSourceV2) ListCandidateTargets(_ context.Context, projectID string) (store.CandidateTargets, error) {
+	return store.CandidateTargets{ProjectID: projectID, Episodes: []store.CandidateEpisodeTarget{{
+		EpisodeID: "episode_test", EpisodeNumber: 1, Title: "测试集",
+		Scenes: []store.CandidateSceneTarget{{SceneID: "scene_test", SceneNumber: 1, Label: "测试场",
+			Shots: []store.CandidateShotTarget{{ShotID: "shot_test", ShotNumber: 1, ShotOrder: 1, Description: "测试镜头"}}}},
+	}}}, nil
+}
 func (f *fakeSourceV2) ListCandidateSets(context.Context, string) ([]store.CandidateSet, error) {
 	return []store.CandidateSet{{CandidateSetID: "candset_test", CandidateCount: 3}}, nil
 }

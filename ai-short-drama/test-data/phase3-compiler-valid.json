@@ -2,6 +2,7 @@
   "operation_id": "op_compile_fixture",
   "claim_token": "11111111-1111-4111-8111-111111111111",
   "ir_status": "published",
+  "ir_scope": "full",
   "run": {
     "compiler_run_id": "compiler_fixture_001",
     "project_id": "project_fixture_001",

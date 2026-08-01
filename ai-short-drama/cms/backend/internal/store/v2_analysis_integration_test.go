@@ -89,6 +89,26 @@ func TestPhase13MockE2EAndSelectiveBeatInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	projectID := projectOperation.TargetID
+	storyBibleID := "story-bible-" + suffix
+	seasonID := "season-" + suffix
+	episodeID := "episode-" + suffix
+	if _, err = database.writer.Exec(ctx, `INSERT INTO drama.story_bibles(
+		story_bible_id,project_id,version,status) VALUES($1,$2,1,'approved')`, storyBibleID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.writer.Exec(ctx, `INSERT INTO drama.seasons(
+		season_id,project_id,story_bible_id,season_number,title,target_episode_count,
+		target_episode_duration_seconds,status,version)
+		VALUES($1,$2,$3,1,'第一季',3,90,'approved',1)`, seasonID, projectID, storyBibleID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.writer.Exec(ctx, `INSERT INTO drama.episode_outlines(
+		episode_id,season_id,project_id,episode_number,title,opening_hook,story_goal,
+		main_conflict,climax,ending_hook,estimated_duration_seconds,status,version)
+		VALUES($1,$2,$3,1,'账册疑案','追杀中发现账册','查明父亲死亡真相',
+		'证据与亲人安危冲突','密信揭穿背叛','真正主谋在门外现身',90,'approved',1)`, episodeID, seasonID, projectID); err != nil {
+		t.Fatal(err)
+	}
 	analysisKey := "phase13-analysis-" + suffix
 	analysis, err := database.RunAdaptationAnalysis(ctx, projectID, analysisKey)
 	if err != nil || analysis.Status != "completed" {
@@ -144,7 +164,7 @@ func TestPhase13MockE2EAndSelectiveBeatInvalidation(t *testing.T) {
 	}
 
 	candidateInput := GenerateCandidateSetInput{Request: candidategeneration.Request{
-		TargetType: "episode", TargetID: "episode-" + suffix,
+		TargetType: "episode", TargetID: episodeID,
 		ComponentTypes: []string{"opening", "conflict", "climax", "ending_hook"},
 		CandidateCount: 3, DifferenceDirections: []string{"强钩子", "紧凑节奏", "低成本可拍"},
 		MustPreserve: []string{"主角目标", "真相"}, AllowedChanges: []string{"对白", "场景顺序"},

@@ -57,7 +57,7 @@ const claimAndLoadSQL = `WITH recovery AS MATERIALIZED (
   RETURNING run.*
 )
 SELECT jsonb_build_object(
-  'operation_id',claimed.operation_id,'claim_token',claimed.claim_token,'ir_status',ir.status,
+  'operation_id',claimed.operation_id,'claim_token',claimed.claim_token,'ir_status',ir.status,'ir_scope',ir.revision_scope,
   'run',jsonb_build_object('compiler_run_id',run.compiler_run_id,'project_id',run.project_id,'work_id',run.work_id,
     'source_version_id',run.source_version_id,'adaptation_spec_version_id',run.adaptation_spec_version_id,
     'ir_revision_id',run.ir_revision_id,'compiler_version',run.compiler_version),

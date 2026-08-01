@@ -16,7 +16,9 @@ for (const table of [
 assert(migration.includes('guard_candidate_snapshot_immutable'), 'candidate snapshot immutability trigger missing')
 assert(migration.includes('current_artifact_id'), 'downstream current binding missing')
 
-const generator = read('cms/backend/internal/candidategeneration/model.go')
+const generator = [
+  'model.go', 'mock.go', 'providers_http.go', 'composition.go',
+].map((file) => read(`cms/backend/internal/candidategeneration/${file}`)).join('\n')
 for (const component of [
   'episode_plan', 'opening', 'conflict', 'climax', 'ending_hook', 'dialogue', 'action',
   'narration', 'composition', 'shot_size', 'camera_movement', 'performance', 'transition',

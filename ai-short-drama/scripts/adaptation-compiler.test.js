@@ -34,4 +34,10 @@ const deterministicA = compile(fixture('phase3-compiler-valid.json'));
 const deterministicB = compile(fixture('phase3-compiler-valid.json'));
 assert.deepEqual(deterministicA, deterministicB);
 
-console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, 3 fixtures, deterministic output`);
+const unconfirmedIncremental = fixture('phase3-compiler-valid.json');
+unconfirmedIncremental.ir_scope = 'incremental';
+const incrementalResult = compile(unconfirmedIncremental);
+assert.equal(incrementalResult.publishable, false);
+assert(incrementalResult.plan.diagnostics.some((item) => item.code === 'FROZEN_INPUT_MISMATCH'));
+
+console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, published-full-IR gate, 3 fixtures, deterministic output`);

@@ -130,9 +130,18 @@ BEGIN
     RAISE EXCEPTION 'character state diff count mismatch';
   END IF;
   SELECT string_agg(required_type,',') INTO missing
-  FROM unnest(ARRAY['story_arc_revision','adaptation_episode_plan','episode_outline','episode_script']) required_type
+  FROM unnest(ARRAY['story_arc_revision','adaptation_episode_plan','episode_script']) required_type
   WHERE NOT EXISTS(SELECT 1 FROM drama.artifacts WHERE artifact_type=required_type AND validity_status='stale');
   IF missing IS NOT NULL THEN RAISE EXCEPTION 'missing stale artifact types: %',missing; END IF;
+  IF EXISTS(SELECT 1 FROM drama.artifacts WHERE artifact_type='episode_outline' AND validity_status='stale') THEN
+    RAISE EXCEPTION 'chapter-only episode outline was invalidated without reviewed fact/event lineage';
+  END IF;
+  IF (SELECT count(*) FROM drama.regeneration_requests)<>0
+    OR NOT EXISTS(SELECT 1 FROM drama.regeneration_proposals proposal
+      JOIN drama.source_change_sets change_set USING(source_change_set_id)
+      WHERE change_set.to_source_version_id='sv_phase4_revision') THEN
+    RAISE EXCEPTION 'impact scan must propose selectable regeneration without creating a request';
+  END IF;
   IF (SELECT status FROM drama.episode_outlines WHERE episode_id='ep_phase1_legacy_001')<>'approved'
     OR (SELECT status FROM drama.episode_scripts WHERE script_id='script_phase4_approved')<>'approved'
     OR (SELECT status FROM drama.adaptation_plans WHERE adaptation_plan_id='adaptation_plan_phase1_001')<>'approved' THEN

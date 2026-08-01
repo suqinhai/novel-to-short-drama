@@ -1,21 +1,31 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildCandidateRequest, buildCompositionParts, filterCandidates,
+  buildCandidateRequest, buildCompositionParts, filterCandidates, resolveTargetId,
   targetComponents, validationRuleLabels,
 } from '../src/services/candidateWorkbench.js'
 
-test('builds a deterministic three-candidate episode request', () => {
+test('builds a replayable request from selector IDs and separate models', () => {
   const request = buildCandidateRequest({
-    target_type: 'episode', target_id: ' episode_1 ', component_types: targetComponents.episode,
+    target_type: 'episode', episode_id: 'episode_1', component_types: targetComponents.episode,
     candidate_count: '3', difference_directions: '强钩子\n紧凑节奏\n低成本可拍',
-    must_preserve: '主角目标，真相', allowed_changes: '对白\n场景顺序',
-    random_seed: '42', temperature: '0', base_duration_seconds: '90',
+    must_preserve: '主角目标，真相', allowed_changes: '对白\n场景顺序', random_seed: '42',
+    temperature: '0', base_duration_seconds: '90', generator_provider: 'text_http',
+    generator_model: 'writer-model', reviewer_provider: 'reviewer_http', reviewer_model: 'judge-model', blind_review: true,
   })
+  assert.equal(request.target_id, 'episode_1')
   assert.equal(request.candidate_count, 3)
   assert.deepEqual(request.difference_directions, ['强钩子', '紧凑节奏', '低成本可拍'])
   assert.deepEqual(request.component_types, ['opening', 'conflict', 'climax', 'ending_hook'])
-  assert.equal(request.model, 'deterministic_mock')
+  assert.equal(request.generator_model, 'writer-model')
+  assert.equal(request.reviewer_model, 'judge-model')
+  assert.equal(request.blind_review, true)
+})
+test('resolves project hierarchy target without a manual target ID', () => {
+  assert.equal(resolveTargetId({ target_type: 'story_arc', story_arc_id: 'arc_1' }), 'arc_1')
+  assert.equal(resolveTargetId({ target_type: 'episode', episode_id: 'episode_1' }), 'episode_1')
+  assert.equal(resolveTargetId({ target_type: 'scene', scene_id: 'scene_1' }), 'scene_1')
+  assert.equal(resolveTargetId({ target_type: 'video', shot_id: 'shot_1' }), 'shot_1')
 })
 
 test('filters editorial state without mutating score order', () => {
@@ -29,8 +39,8 @@ test('filters editorial state without mutating score order', () => {
   assert.equal(candidates[0].ordinal, 1)
 })
 
-test('composition payload can take opening climax and ending from different candidates', () => {
-  assert.deepEqual(buildCompositionParts(targetComponents.episode, {
+test('composition payload can take components from different candidates', () => {
+  assert.deepEqual(buildCompositionParts(['opening', 'climax', 'ending_hook'], {
     opening: 'candidate_a', climax: 'candidate_b', ending_hook: 'candidate_c',
   }), [
     { component_key: 'opening', candidate_id: 'candidate_a' },
@@ -39,11 +49,11 @@ test('composition payload can take opening climax and ending from different cand
   ])
 })
 
-test('renders all hard-rule validation labels', () => {
-  const rules = validationRuleLabels({ results: [
+test('hard-rule labels preserve all five results', () => {
+  const labels = validationRuleLabels({ results: [
     { rule: 'causality', passed: true }, { rule: 'duration', passed: true },
     { rule: 'character_state', passed: true }, { rule: 'foreshadowing', passed: true },
     { rule: 'continuity', passed: true },
   ] })
-  assert.deepEqual(rules.map((item) => item.label), ['因果', '时长', '人物状态', '伏笔', '连续性'])
+  assert.deepEqual(labels.map((item) => item.label), ['因果', '时长', '人物状态', '伏笔', '连续性'])
 })

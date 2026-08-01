@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, ArrowLeft, BookPlus, BrainCircuit, CheckCircle2, Eye, FileStack, FlaskConical, History, PencilLine, RefreshCw, Send, Upload, X } from 'lucide-vue-next'
 import OperationTracker from '../components/OperationTracker.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -13,6 +13,7 @@ import {
 
 const MAX_IR_CHAPTERS = 30
 const route = useRoute()
+const router = useRouter()
 const version = ref(null)
 const work = ref(null)
 const chapters = ref([])
@@ -186,6 +187,23 @@ async function startTestIR() {
   }
 }
 
+async function openIRMerge(item) {
+  if (item.revision_scope !== 'incremental' || item.status !== 'published' || !item.base_ir_revision_id) return
+  submitting.value = true
+  error.value = ''
+  try {
+    const response = await narrativeApi.createIRMergeProposal({
+      base_full_ir_revision_id: item.base_ir_revision_id,
+      incremental_ir_revision_id: item.ir_revision_id,
+    }, createIdempotencyKey(`ir-merge-${item.ir_revision_id}`))
+    await router.push(`/library/ir-merge/${response.data.ir_merge_proposal_id}`)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    submitting.value = false
+  }
+}
+
 async function showChapterHistory(chapterId) {
   historyChapterId.value = chapterId
   historyLoading.value = true
@@ -314,7 +332,7 @@ onBeforeUnmount(stopIRPolling)
           <button class="button button-primary" :disabled="submitting || !irTestAcknowledged || !irRun.extractor_version.trim() || !irRun.chapter_ids.length || irRun.chapter_ids.length > MAX_IR_CHAPTERS"><BrainCircuit :size="16" />{{ submitting ? '提交中…' : `提取这 ${irRun.chapter_ids.length} 章` }}</button>
         </form>
         <div v-if="!irRevisions.length" class="compact-empty">当前版本还没有 Narrative IR 修订。</div>
-        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ getIRScopeSummary(item) }}</small><small v-if="getIRProgressSummary(item)" class="ir-operation-progress">{{ getIRProgressSummary(item) }}</small></div><StatusBadge :status="getIRRevisionDisplayStatus(item)" /><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
+        <div v-else class="ir-revision-list"><article v-for="item in irRevisions" :key="item.ir_revision_id"><b>IR r{{ item.revision_number }}</b><div><strong>{{ item.extractor_version }}</strong><code>{{ item.ir_revision_id }}</code><small>{{ getIRScopeSummary(item) }}</small><small v-if="getIRProgressSummary(item)" class="ir-operation-progress">{{ getIRProgressSummary(item) }}</small></div><StatusBadge :status="getIRRevisionDisplayStatus(item)" /><button v-if="item.revision_scope === 'incremental' && item.status === 'published' && item.base_ir_revision_id" class="button button-secondary" :disabled="submitting" @click="openIRMerge(item)">审核合并</button><time>{{ new Date(item.published_at || item.created_at).toLocaleString('zh-CN') }}</time></article></div>
       </article>
 
       <article class="panel chapter-list-panel">

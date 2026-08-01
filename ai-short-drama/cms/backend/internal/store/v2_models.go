@@ -102,6 +102,7 @@ type NarrativeIRRevisionSummary struct {
 	RevisionNumber          int             `json:"revision_number"`
 	Status                  string          `json:"status"`
 	RevisionScope           string          `json:"revision_scope"`
+	BaseIRRevisionID        *string         `json:"base_ir_revision_id,omitempty"`
 	ExtractorVersion        string          `json:"extractor_version"`
 	ChangedChapterIDs       json.RawMessage `json:"changed_chapter_ids"`
 	ValidationSummary       json.RawMessage `json:"validation_summary"`
@@ -117,6 +118,102 @@ type StoryArcSummary struct {
 	Summary            string  `json:"summary"`
 	ArcType            string  `json:"arc_type"`
 	Confidence         float64 `json:"confidence"`
+}
+
+type IRMergeProposalInput struct {
+	BaseFullIRRevisionID    string `json:"base_full_ir_revision_id"`
+	IncrementalIRRevisionID string `json:"incremental_ir_revision_id"`
+	CreatedBy               string `json:"created_by,omitempty"`
+}
+
+type IRMergeProposalItem struct {
+	IRMergeItemID             string          `json:"ir_merge_item_id"`
+	ItemType                  string          `json:"item_type"`
+	LogicalID                 string          `json:"logical_id"`
+	ChangeType                string          `json:"change_type"`
+	BeforeRevisionID          *string         `json:"before_revision_id"`
+	AfterRevisionID           *string         `json:"after_revision_id"`
+	BeforeValue               json.RawMessage `json:"before_value"`
+	AfterValue                json.RawMessage `json:"after_value"`
+	BeforeEvidence            json.RawMessage `json:"before_evidence"`
+	AfterEvidence             json.RawMessage `json:"after_evidence"`
+	SemanticFingerprint       *string         `json:"semantic_fingerprint,omitempty"`
+	SemanticChanged           bool            `json:"semantic_changed"`
+	SourceSpanChanged         bool            `json:"source_span_changed"`
+	Confidence                float64         `json:"confidence"`
+	ConflictCode              *string         `json:"conflict_code,omitempty"`
+	ConflictMessage           *string         `json:"conflict_message,omitempty"`
+	Resolution                *string         `json:"resolution,omitempty"`
+	ResolvedValue             json.RawMessage `json:"resolved_value"`
+	ResolutionStatus          string          `json:"resolution_status"`
+	CanonicalizationRequired  bool            `json:"canonicalization_required"`
+	CanonicalizationConfirmed bool            `json:"canonicalization_confirmed"`
+	CanonicalizationDecision  *string         `json:"canonicalization_decision,omitempty"`
+	CanonicalEntityID         *string         `json:"canonical_entity_id,omitempty"`
+	ResolutionNote            *string         `json:"resolution_note,omitempty"`
+	ResolvedBy                *string         `json:"resolved_by,omitempty"`
+	ResolvedAt                *time.Time      `json:"resolved_at,omitempty"`
+}
+
+type IRMergeImpactArtifact struct {
+	ArtifactID     string `json:"artifact_id"`
+	ArtifactType   string `json:"artifact_type"`
+	NativeEntityID string `json:"native_entity_id"`
+	ProjectID      string `json:"project_id,omitempty"`
+	Depth          int    `json:"propagation_depth"`
+}
+
+type IRMergeImpactPreview struct {
+	SemanticChangeCount int                     `json:"semantic_change_count"`
+	RelocationOnlyCount int                     `json:"relocation_only_count"`
+	AffectedArtifacts   []IRMergeImpactArtifact `json:"affected_artifacts"`
+	AutoRebuild         bool                    `json:"auto_rebuild"`
+}
+
+type IRMergeProposal struct {
+	IRMergeProposalID         string                `json:"ir_merge_proposal_id"`
+	WorkID                    string                `json:"work_id"`
+	TargetSourceVersionID     string                `json:"target_source_version_id"`
+	BaseFullIRRevisionID      string                `json:"base_full_ir_revision_id"`
+	IncrementalIRRevisionID   string                `json:"incremental_ir_revision_id"`
+	PublishedFullIRRevisionID *string               `json:"published_full_ir_revision_id,omitempty"`
+	Status                    string                `json:"status"`
+	ResourceRevision          int                   `json:"resource_revision"`
+	Confidence                float64               `json:"confidence"`
+	ConflictCount             int                   `json:"conflict_count"`
+	UnresolvedCount           int                   `json:"unresolved_count"`
+	ChangedChapterIDs         []string              `json:"changed_chapter_ids"`
+	ImpactPreview             IRMergeImpactPreview  `json:"impact_preview"`
+	Items                     []IRMergeProposalItem `json:"items"`
+	CreatedBy                 *string               `json:"created_by,omitempty"`
+	PublishedBy               *string               `json:"published_by,omitempty"`
+	PublishedAt               *time.Time            `json:"published_at,omitempty"`
+	CreatedAt                 time.Time             `json:"created_at"`
+	UpdatedAt                 time.Time             `json:"updated_at"`
+}
+
+type IRMergeItemResolutionInput struct {
+	Resolution                string          `json:"resolution"`
+	ResolvedValue             json.RawMessage `json:"resolved_value,omitempty"`
+	ResolutionNote            string          `json:"resolution_note,omitempty"`
+	ResolvedBy                string          `json:"resolved_by,omitempty"`
+	CanonicalizationConfirmed bool            `json:"canonicalization_confirmed,omitempty"`
+	CanonicalizationDecision  string          `json:"canonicalization_decision,omitempty"`
+	CanonicalEntityID         string          `json:"canonical_entity_id,omitempty"`
+}
+
+type PublishIRMergeInput struct {
+	Confirmed   bool   `json:"confirmed"`
+	PublishedBy string `json:"published_by,omitempty"`
+}
+
+type PublishIRMergeResult struct {
+	IRMergeProposalID  string    `json:"ir_merge_proposal_id"`
+	FullIRRevisionID   string    `json:"full_ir_revision_id"`
+	SourceChangeSetID  string    `json:"source_change_set_id"`
+	ImpactOperationIDs []string  `json:"impact_operation_ids"`
+	Status             string    `json:"status"`
+	PublishedAt        time.Time `json:"published_at"`
 }
 
 type ImportInput struct {

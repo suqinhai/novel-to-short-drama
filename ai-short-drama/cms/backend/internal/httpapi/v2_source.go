@@ -50,6 +50,7 @@ type sourceV2Service interface {
 }
 
 type candidateV2Service interface {
+	ListCandidateTargets(context.Context, string) (store.CandidateTargets, error)
 	GenerateCandidateSet(context.Context, string, string, store.GenerateCandidateSetInput) (store.CandidateSet, bool, error)
 	ListCandidateSets(context.Context, string) ([]store.CandidateSet, error)
 	GetCandidateSet(context.Context, string, string) (store.CandidateSet, error)
@@ -59,14 +60,23 @@ type candidateV2Service interface {
 	AddCandidateTimecodeComment(context.Context, string, string, store.TimecodeCommentInput) (store.TimecodeComment, bool, error)
 }
 
+type irMergeV2Service interface {
+	CreateIRMergeProposal(context.Context, string, store.IRMergeProposalInput) (store.IRMergeProposal, bool, error)
+	GetIRMergeProposal(context.Context, string, string, string, string) (store.IRMergeProposal, error)
+	ResolveIRMergeItem(context.Context, string, string, store.IRMergeItemResolutionInput) (store.IRMergeProposalItem, error)
+	PublishIRMergeProposal(context.Context, string, string, store.PublishIRMergeInput) (store.PublishIRMergeResult, error)
+}
+
 type sourceV2Handler struct {
 	service          sourceV2Service
 	candidateService candidateV2Service
+	irMergeService   irMergeV2Service
 }
 
 func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	h := &sourceV2Handler{service: service}
 	h.candidateService, _ = service.(candidateV2Service)
+	h.irMergeService, _ = service.(irMergeV2Service)
 	api := router.Group("/api/v2")
 	api.GET("/source-works", h.listWorks)
 	api.POST("/source-works", h.createWork)
@@ -82,6 +92,10 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.GET("/operations/:operationID", h.getOperation)
 	api.GET("/source-chapters/:chapterID/revisions", h.listChapterRevisions)
 	api.GET("/narrative-ir-revisions/:irRevisionID/story-arcs", h.listStoryArcs)
+	api.POST("/narrative-ir-merge-proposals", h.createIRMergeProposal)
+	api.GET("/narrative-ir-merge-proposals/:proposalID", h.getIRMergeProposal)
+	api.PATCH("/narrative-ir-merge-proposals/:proposalID/items/:itemID", h.resolveIRMergeItem)
+	api.POST("/narrative-ir-merge-proposals/:proposalID/publish", h.publishIRMergeProposal)
 	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
 	api.GET("/adaptation-projects/:projectID/adaptation-plans/latest", h.getLatestAdaptationPlan)
 	api.GET("/adaptation-projects/:projectID/impact", h.getProjectImpact)
@@ -98,11 +112,99 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.GET("/adaptation-projects/:projectID/quality-scores/latest", h.getLatestQualityScore)
 	api.POST("/adaptation-projects/:projectID/candidate-sets", h.generateCandidateSet)
 	api.GET("/adaptation-projects/:projectID/candidate-sets", h.listCandidateSets)
+	api.GET("/adaptation-projects/:projectID/candidate-targets", h.listCandidateTargets)
 	api.GET("/adaptation-projects/:projectID/candidate-sets/:candidateSetID", h.getCandidateSet)
 	api.POST("/adaptation-projects/:projectID/candidate-sets/:candidateSetID/selections", h.selectCandidate)
 	api.POST("/adaptation-projects/:projectID/candidate-sets/:candidateSetID/compositions", h.composeCandidates)
 	api.POST("/candidates/:candidateID/decisions", h.recordCandidateDecision)
 	api.POST("/candidates/:candidateID/timecode-comments", h.addCandidateTimecodeComment)
+}
+
+func (h *sourceV2Handler) createIRMergeProposal(c *gin.Context) {
+	if h.irMergeService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var input store.IRMergeProposalInput
+	if !decodeStrictJSON(c, &input) || !publicIDPattern.MatchString(input.BaseFullIRRevisionID) ||
+		!publicIDPattern.MatchString(input.IncrementalIRRevisionID) {
+		if !c.IsAborted() {
+			v2InputError(c, "INVALID_IR_MERGE", "base_full_ir_revision_id and incremental_ir_revision_id are required")
+		}
+		return
+	}
+	proposal, created, err := h.irMergeService.CreateIRMergeProposal(c.Request.Context(), key, input)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.Header("ETag", etag(proposal.ResourceRevision))
+	v2Response(c, status, traceID(c), proposal, nil)
+}
+
+func (h *sourceV2Handler) getIRMergeProposal(c *gin.Context) {
+	if h.irMergeService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	proposal, err := h.irMergeService.GetIRMergeProposal(c.Request.Context(), c.Param("proposalID"),
+		strings.TrimSpace(c.Query("item_type")), strings.TrimSpace(c.Query("change_type")),
+		strings.TrimSpace(c.Query("resolution_status")))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	c.Header("ETag", etag(proposal.ResourceRevision))
+	v2Response(c, http.StatusOK, traceID(c), proposal, nil)
+}
+
+func (h *sourceV2Handler) resolveIRMergeItem(c *gin.Context) {
+	if h.irMergeService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	var input store.IRMergeItemResolutionInput
+	if !decodeStrictJSON(c, &input) {
+		return
+	}
+	item, err := h.irMergeService.ResolveIRMergeItem(c.Request.Context(), c.Param("proposalID"), c.Param("itemID"), input)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), item, nil)
+}
+
+func (h *sourceV2Handler) publishIRMergeProposal(c *gin.Context) {
+	if h.irMergeService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var input store.PublishIRMergeInput
+	if !decodeStrictJSON(c, &input) || !input.Confirmed {
+		if !c.IsAborted() {
+			v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true")
+		}
+		return
+	}
+	result, err := h.irMergeService.PublishIRMergeProposal(c.Request.Context(), c.Param("proposalID"), key, input)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusCreated, traceID(c), result, nil)
 }
 
 func (h *sourceV2Handler) runAdaptationAnalysis(c *gin.Context) {
@@ -228,6 +330,19 @@ func (h *sourceV2Handler) generateCandidateSet(c *gin.Context) {
 	v2Response(c, status, result.CandidateSetID, result, nil)
 }
 
+func (h *sourceV2Handler) listCandidateTargets(c *gin.Context) {
+	if h.candidateService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	result, err := h.candidateService.ListCandidateTargets(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), result, nil)
+}
+
 func (h *sourceV2Handler) listCandidateSets(c *gin.Context) {
 	if h.candidateService == nil {
 		v2Error(c, store.ErrUnsupported)
@@ -292,8 +407,8 @@ func (h *sourceV2Handler) selectCandidate(c *gin.Context) {
 	if !decodeStrictJSON(c, &request) {
 		return
 	}
-	if !request.Confirmed {
-		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true")
+	if !request.Confirmed || strings.TrimSpace(request.ConfirmedBy) == "" {
+		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true and confirmed_by is required")
 		return
 	}
 	result, created, err := h.candidateService.SelectCandidate(c.Request.Context(), c.Param("projectID"),
@@ -322,8 +437,8 @@ func (h *sourceV2Handler) composeCandidates(c *gin.Context) {
 	if !decodeStrictJSON(c, &request) {
 		return
 	}
-	if !request.Confirmed {
-		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true")
+	if !request.Confirmed || strings.TrimSpace(request.ConfirmedBy) == "" {
+		v2InputError(c, "EXPLICIT_CONFIRMATION_REQUIRED", "confirmed must be true and confirmed_by is required")
 		return
 	}
 	result, created, err := h.candidateService.ComposeCandidates(c.Request.Context(), c.Param("projectID"),
@@ -1100,6 +1215,10 @@ func v2Error(c *gin.Context, err error) {
 		status, code, message, retryable = http.StatusConflict, "PUBLISHED_VERSION_IMMUTABLE", "published source versions are immutable", false
 	case errors.Is(err, store.ErrConflict):
 		status, code, message, retryable = http.StatusConflict, "CONFLICT", "request conflicts with current state or a prior idempotency key", false
+	case errors.Is(err, store.ErrIRMergeBlocked):
+		status, code, message, retryable = http.StatusConflict, "IR_MERGE_BLOCKED", err.Error(), false
+	case errors.Is(err, store.ErrCandidateProvider):
+		status, code, message, retryable = http.StatusBadGateway, "CANDIDATE_PROVIDER_FAILED", err.Error(), true
 	case errors.Is(err, store.ErrUnsupported):
 		status, code, message, retryable = http.StatusUnprocessableEntity, "UNSUPPORTED", "operation is not available", false
 	}

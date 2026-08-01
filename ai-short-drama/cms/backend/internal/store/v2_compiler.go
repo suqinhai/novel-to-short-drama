@@ -38,21 +38,21 @@ func (s *Store) StartCompilerRun(ctx context.Context, projectID, key string, inp
 		return replay, nil
 	}
 
-	var workID, sourceVersionID, specIR, specStatus, irStatus, sourceStatus string
-	err = tx.QueryRow(ctx, `SELECT spec.work_id,spec.source_version_id,spec.ir_revision_id,spec.status,ir.status,source.status
+	var workID, sourceVersionID, specIR, specStatus, irStatus, irScope, sourceStatus string
+	err = tx.QueryRow(ctx, `SELECT spec.work_id,spec.source_version_id,spec.ir_revision_id,spec.status,ir.status,ir.revision_scope,source.status
 		FROM drama.adaptation_spec_versions spec
 		JOIN drama.narrative_ir_revisions ir ON ir.ir_revision_id=spec.ir_revision_id
 		JOIN drama.source_versions source ON source.source_version_id=spec.source_version_id
 		WHERE spec.adaptation_spec_version_id=$1 AND spec.project_id=$2 FOR SHARE OF spec,ir,source`,
 		input.AdaptationSpecVersionID, projectID).
-		Scan(&workID, &sourceVersionID, &specIR, &specStatus, &irStatus, &sourceStatus)
+		Scan(&workID, &sourceVersionID, &specIR, &specStatus, &irStatus, &irScope, &sourceStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Operation{}, ErrNotFound
 	}
 	if err != nil {
 		return Operation{}, err
 	}
-	if specStatus != "active" || specIR != input.IRRevisionID || irStatus != "published" || sourceStatus != "published" {
+	if specStatus != "active" || specIR != input.IRRevisionID || irStatus != "published" || irScope != "full" || sourceStatus != "published" {
 		return Operation{}, ErrConflict
 	}
 

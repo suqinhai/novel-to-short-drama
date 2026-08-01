@@ -11,17 +11,21 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"short-drama-cms/backend/internal/candidategeneration"
 )
 
 var (
-	ErrNotFound      = errors.New("record not found")
-	ErrUnsafeArchive = errors.New("project cannot be archived safely")
-	ErrNotArchived   = errors.New("project is not archived")
+	ErrNotFound          = errors.New("record not found")
+	ErrUnsafeArchive     = errors.New("project cannot be archived safely")
+	ErrNotArchived       = errors.New("project is not archived")
+	ErrCandidateProvider = errors.New("candidate provider failed")
 )
 
 type Store struct {
-	pool   *pgxpool.Pool
-	writer *pgxpool.Pool
+	pool            *pgxpool.Pool
+	writer          *pgxpool.Pool
+	candidateEngine *candidategeneration.Registry
 }
 
 type BusinessDataSummary struct {
@@ -552,12 +556,22 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connect writer to short_drama: %w", err)
 	}
-	return &Store{pool: pool, writer: writer}, nil
+	return &Store{pool: pool, writer: writer, candidateEngine: candidategeneration.NewRegistryFromEnvironment()}, nil
 }
 
 func (s *Store) Close() {
 	s.pool.Close()
 	s.writer.Close()
+}
+
+// SetCandidateRegistry is intended for application startup and tests. It makes
+// custom providers pluggable without coupling Store to any vendor SDK.
+func (s *Store) SetCandidateRegistry(registry *candidategeneration.Registry) error {
+	if s == nil || registry == nil {
+		return fmt.Errorf("candidate registry is required")
+	}
+	s.candidateEngine = registry
+	return nil
 }
 
 func (s *Store) BusinessDataSummary(ctx context.Context) (BusinessDataSummary, error) {

@@ -6,6 +6,10 @@ export const targetComponents = {
   image: ['key_image'],
   video: ['video_shot'],
 }
+export const targetLabels = {
+  story_arc: '故事弧候选', episode: '分集候选', scene: '场景/对白动作候选',
+  storyboard: '分镜候选', image: '图片候选', video: '视频候选',
+}
 
 export const componentLabels = {
   episode_plan: '分集方案', opening: '开场', conflict: '冲突推进', climax: '高潮', ending_hook: '结尾钩子',
@@ -13,23 +17,44 @@ export const componentLabels = {
   camera_movement: '运镜', performance: '表演', transition: '转场', key_image: '关键图片', video_shot: '视频镜头',
 }
 
+export const scoreLabels = {
+  fidelity: '原著忠实度', causality: '因果完整性', character_consistency: '人物一致性', hook: '钩子',
+  pacing: '节奏', filmability: '可拍摄性', continuity: '连续性', estimated_duration: '预计时长',
+  modification_risk: '修改风险',
+}
+
 export function splitLines(value) {
   return String(value || '').split(/\r?\n|[,，]/).map((item) => item.trim()).filter(Boolean)
 }
 
+export function resolveTargetId(form) {
+  if (form.target_type === 'story_arc') return String(form.story_arc_id || '').trim()
+  if (form.target_type === 'episode') return String(form.episode_id || '').trim()
+  if (form.target_type === 'scene') return String(form.scene_id || '').trim()
+  return String(form.shot_id || '').trim()
+}
+
 export function buildCandidateRequest(form) {
+  const generatorProvider = form.generator_provider || 'deterministic_mock'
+  const reviewerProvider = form.reviewer_provider || 'deterministic_mock'
+  const generatorModel = form.generator_model || (generatorProvider === 'deterministic_mock' ? 'deterministic-generator-v2' : '')
+  const reviewerModel = form.reviewer_model || (reviewerProvider === 'deterministic_mock' ? 'deterministic-reviewer-v2' : '')
   return {
     target_type: form.target_type,
-    target_id: form.target_id.trim(),
+    target_id: resolveTargetId(form) || String(form.target_id || '').trim(),
     component_types: [...form.component_types],
     candidate_count: Number(form.candidate_count),
     difference_directions: splitLines(form.difference_directions),
     must_preserve: splitLines(form.must_preserve),
     allowed_changes: splitLines(form.allowed_changes),
-    model: 'deterministic_mock',
-    prompt_version: 'multi-candidate-v1',
+    generator_provider: generatorProvider,
+    generator_model: generatorModel,
+    reviewer_provider: reviewerProvider,
+    reviewer_model: reviewerModel,
+    blind_review: Boolean(form.blind_review),
+    prompt_version: 'multi-candidate-v2',
     random_seed: Number(form.random_seed) || 0,
-    generation_parameters: { temperature: Number(form.temperature), comparison_mode: 'structured' },
+    generation_parameters: { temperature: Number(form.temperature) || 0, comparison_mode: 'structured' },
     base_duration_seconds: Number(form.base_duration_seconds) || 90,
   }
 }
@@ -50,8 +75,7 @@ export function buildCompositionParts(componentTypes, selections) {
 
 export function validationRuleLabels(summary) {
   const labels = {
-    causality: '因果', duration: '时长', character_state: '人物状态',
-    foreshadowing: '伏笔', continuity: '连续性',
+    causality: '因果', duration: '时长', character_state: '人物状态', foreshadowing: '伏笔', continuity: '连续性',
   }
   return (summary?.results || []).map((item) => ({ ...item, label: labels[item.rule] || item.rule }))
 }
