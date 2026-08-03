@@ -1,6 +1,6 @@
 {
   "name": "17 口型声音剪辑与统一创作工作台",
-  "id": "wf_post_production_creative_workbench",
+  "id": "wf_postprod_creative_workbench",
   "active": false,
   "settings": {
     "executionOrder": "v1",

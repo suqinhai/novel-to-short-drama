@@ -84,6 +84,10 @@ var SecretSpecs = []SecretSpec{
 	{Key: "PUBLISH_API_KEY", Label: "发布 API Key"},
 }
 
+var preservedRuntimeKeys = []string{
+	"POSTGRES_CREDENTIAL_ID",
+}
+
 type FieldState struct {
 	FieldSpec
 	CurrentValue       string `json:"current_value"`
@@ -396,7 +400,8 @@ func writeEnvFile(path string, values map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	allowedOrder := make([]string, 0, len(FieldSpecs)+len(SecretSpecs))
+	allowedOrder := make([]string, 0, len(preservedRuntimeKeys)+len(FieldSpecs)+len(SecretSpecs))
+	allowedOrder = append(allowedOrder, preservedRuntimeKeys...)
 	for _, spec := range FieldSpecs {
 		allowedOrder = append(allowedOrder, spec.Key)
 	}

@@ -9,7 +9,7 @@ import (
 
 func TestManagerSaveUsesWhitelistAndPreservesSecretWithoutReturningIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cms-managed.env")
-	if err := os.WriteFile(path, []byte("POSTGRES_PASSWORD=must-not-survive\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("POSTGRES_PASSWORD=must-not-survive\nPOSTGRES_CREDENTIAL_ID=credential-123\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manager := New(path, "unused")
@@ -36,6 +36,9 @@ func TestManagerSaveUsesWhitelistAndPreservesSecretWithoutReturningIt(t *testing
 	}
 	if values["MOCK_MODE"] != "false" || values["IMAGE_MODEL"] != "image-model-v2" || values["IMAGE_API_KEY"] != "test-$-secret" {
 		t.Fatal("managed values did not round-trip")
+	}
+	if values["POSTGRES_CREDENTIAL_ID"] != "credential-123" {
+		t.Fatal("runtime credential id was not preserved")
 	}
 }
 

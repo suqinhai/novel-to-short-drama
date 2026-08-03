@@ -35,6 +35,17 @@ func TestScanWorkflowFilesRejectsMissingDirectory(t *testing.T) {
 	}
 }
 
+func TestScanWorkflowFilesRejectsWorkflowIDLongerThanN8nLimit(t *testing.T) {
+	directory := t.TempDir()
+	workflow := `{"id":"wf_post_production_creative_workbench","name":"Too Long","nodes":[]}`
+	if err := os.WriteFile(filepath.Join(directory, "too-long.json"), []byte(workflow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := scanWorkflowFiles(directory); err == nil {
+		t.Fatal("workflow IDs longer than n8n's 36-character limit should fail validation")
+	}
+}
+
 func TestConfiguredValueRejectsPlaceholders(t *testing.T) {
 	for _, value := range []string{"", "replace_me", "CHANGE_ME_NOW", "placeholder-id"} {
 		if configuredValue(value) {

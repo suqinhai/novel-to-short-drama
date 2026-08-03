@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type ServiceSpec struct {
@@ -191,7 +192,7 @@ func scanWorkflowFiles(directory string) ([]WorkflowRef, []UnsupportedNode, erro
 			return nil, nil, readErr
 		}
 		var workflow workflowFile
-		if json.Unmarshal(content, &workflow) != nil || workflow.ID == "" {
+		if json.Unmarshal(content, &workflow) != nil || workflow.ID == "" || utf8.RuneCountInString(workflow.ID) > 36 {
 			return nil, nil, fmt.Errorf("invalid workflow file: %s", filepath.Base(path))
 		}
 		expected = append(expected, WorkflowRef{ID: workflow.ID, Name: workflow.Name})
