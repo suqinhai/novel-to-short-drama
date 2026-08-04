@@ -34,9 +34,10 @@ type BusinessDataSummary struct {
 }
 
 var preservedBusinessTables = map[string]struct{}{
-	"artifact_types":    {},
-	"migration_audit":   {},
-	"schema_migrations": {},
+	"artifact_types":                     {},
+	"effective_input_stage_requirements": {},
+	"migration_audit":                    {},
+	"schema_migrations":                  {},
 }
 
 type Project struct {

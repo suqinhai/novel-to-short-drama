@@ -46,6 +46,8 @@ services:
       - ./database/20-verify-ir-merge-closure.sql:/opt/drama/20-verify-ir-merge-closure.sql:ro
       - ./database/21-pluggable-candidate-providers.sql:/opt/drama/21-pluggable-candidate-providers.sql:ro
       - ./database/21-verify-pluggable-candidate-providers.sql:/opt/drama/21-verify-pluggable-candidate-providers.sql:ro
+      - ./database/22-restore-effective-input-stage-requirements.sql:/opt/drama/22-restore-effective-input-stage-requirements.sql:ro
+      - ./database/22-verify-effective-input-stage-requirements.sql:/opt/drama/22-verify-effective-input-stage-requirements.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
