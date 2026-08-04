@@ -34,8 +34,12 @@ export function effectiveInputStateLabel(state) {
 
 export function summarizeEffectiveInputs(resolution = {}) {
   const items = Array.isArray(resolution.items) ? resolution.items : []
+  const compatibilityMode = resolution.mode === 'legacy'
+  const ready = resolution.status === 'ready'
   return {
-    ready: resolution.status === 'ready',
+    ready,
+    executable: ready || compatibilityMode,
+    compatibilityMode,
     required: items.filter(item => item.requirement === 'required').length,
     optional: items.filter(item => item.requirement === 'optional').length,
     resolved: items.filter(item => item.state === 'resolved').length,

@@ -14,10 +14,25 @@ test('effective input summary keeps requirement and blocking semantics separate'
     ],
   })
   assert.deepEqual(summary, {
-    ready: false, required: 2, optional: 1, resolved: 1, blocked: 2, missing: ['timeline'],
+    ready: false, executable: false, compatibilityMode: false,
+    required: 2, optional: 1, resolved: 1, blocked: 2, missing: ['timeline'],
   })
   assert.equal(effectiveInputStateLabel('stale'), '已过期')
   assert.equal(effectiveInputStateLabel('needs_review'), '待确认')
+})
+
+test('legacy compatibility diagnostics do not claim generation is blocked', () => {
+  const summary = summarizeEffectiveInputs({
+    mode: 'legacy',
+    status: 'blocked',
+    items: [
+      { kind: 'pacing_plan', requirement: 'required', state: 'missing', blocks: true },
+    ],
+  })
+  assert.equal(summary.ready, false)
+  assert.equal(summary.executable, true)
+  assert.equal(summary.compatibilityMode, true)
+  assert.equal(summary.blocked, 1)
 })
 
 test('project stages map to the matching resolver consumer', () => {

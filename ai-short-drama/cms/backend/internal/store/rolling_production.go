@@ -118,6 +118,20 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 	err = tx.QueryRow(ctx, `SELECT arc_run_id FROM drama.story_arc_runs
 		WHERE project_id=$1 AND adaptation_plan_id=$2`, projectID, adaptationPlanID).Scan(&existingArcID)
 	if err == nil {
+		var isCurrent bool
+		if err = tx.QueryRow(ctx, `SELECT status='approved' AND is_current
+			FROM drama.adaptation_plans
+			WHERE project_id=$1 AND adaptation_plan_id=$2`, projectID, adaptationPlanID).Scan(&isCurrent); err != nil {
+			return RollingProduction{}, err
+		}
+		// Older adoption code published only the native plan rows. Repair that
+		// projection on an idempotent replay, but never revive a genuinely stale
+		// or failed artifact and never displace a newer current plan.
+		if isCurrent {
+			if err = publishAdaptationPlanArtifacts(ctx, tx, projectID, adaptationPlanID); err != nil {
+				return RollingProduction{}, err
+			}
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return RollingProduction{}, err
 		}
@@ -382,6 +396,9 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 		WHERE project_id=$1`, projectID, adaptationPlanID); err != nil {
 		return RollingProduction{}, err
 	}
+	if err = publishAdaptationPlanArtifacts(ctx, tx, projectID, adaptationPlanID); err != nil {
+		return RollingProduction{}, err
+	}
 	if _, err = tx.Exec(ctx, `UPDATE drama.projects
 		SET target_episode_count=$2,current_stage='waiting_next_episode',
 			status='waiting_next_episode',error_message=NULL,
@@ -395,6 +412,54 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 		return RollingProduction{}, err
 	}
 	return s.GetRollingProduction(ctx, projectID)
+}
+
+func publishAdaptationPlanArtifacts(
+	ctx context.Context,
+	tx pgx.Tx,
+	projectID string,
+	adaptationPlanID string,
+) error {
+	if _, err := tx.Exec(ctx, `UPDATE drama.artifacts artifact
+		SET is_current=CASE
+				WHEN artifact.native_entity_id=$2
+					AND artifact.validity_status IN ('valid','needs_review') THEN true
+				ELSE false
+			END,
+			validity_status=CASE
+				WHEN artifact.native_entity_id=$2 AND artifact.validity_status='needs_review' THEN 'valid'
+				WHEN artifact.native_entity_id<>$2
+					AND artifact.validity_status IN ('valid','needs_review','rebuilding') THEN 'superseded'
+				ELSE artifact.validity_status
+			END,
+			updated_at=CURRENT_TIMESTAMP
+		WHERE artifact.project_id=$1 AND artifact.artifact_type='adaptation_plan'`,
+		projectID, adaptationPlanID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE drama.artifacts artifact
+		SET is_current=CASE
+				WHEN selected.adaptation_episode_plan_id IS NOT NULL
+					AND artifact.validity_status IN ('valid','needs_review') THEN true
+				ELSE false
+			END,
+			validity_status=CASE
+				WHEN selected.adaptation_episode_plan_id IS NOT NULL
+					AND artifact.validity_status='needs_review' THEN 'valid'
+				WHEN selected.adaptation_episode_plan_id IS NULL
+					AND artifact.validity_status IN ('valid','needs_review','rebuilding') THEN 'superseded'
+				ELSE artifact.validity_status
+			END,
+			updated_at=CURRENT_TIMESTAMP
+		FROM (SELECT episode.adaptation_episode_plan_id
+			FROM drama.adaptation_episode_plans episode
+			WHERE episode.adaptation_plan_id=$2) selected
+		RIGHT JOIN drama.artifacts candidate
+			ON candidate.native_entity_id=selected.adaptation_episode_plan_id
+		WHERE artifact.id=candidate.id
+			AND artifact.project_id=$1
+			AND artifact.artifact_type='adaptation_episode_plan'`, projectID, adaptationPlanID)
+	return err
 }
 
 func uniqueChapterIDs(seeds []adaptationEpisodeSeed) []string {

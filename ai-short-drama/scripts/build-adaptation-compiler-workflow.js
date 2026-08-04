@@ -73,13 +73,15 @@ SELECT jsonb_build_object(
     ORDER BY priority DESC,adaptation_rule_id) FROM drama.adaptation_rules WHERE adaptation_spec_version_id=spec.adaptation_spec_version_id),'[]'::jsonb),
   'events',COALESCE((SELECT jsonb_agg(jsonb_build_object('event_revision_id',event.event_revision_id,
     'fact_revision_id',event.fact_revision_id,'chapter_id',fact.chapter_id,'source_span_id',fact.primary_source_span_id,
-    'summary',event.summary,'narrative_order',event.narrative_order,'importance',event.importance,
+    'chapter_ordinal',version_chapter.ordinal,'summary',event.summary,'narrative_order',event.narrative_order,'importance',event.importance,
     'story_arc_revision_ids',COALESCE((SELECT jsonb_agg(arc.story_arc_revision_id ORDER BY arc.story_arc_revision_id)
       FROM drama.story_arc_events arc WHERE arc.event_revision_id=event.event_revision_id),'[]'::jsonb),
     'participant_entity_revision_ids',COALESCE((SELECT jsonb_agg(DISTINCT participant.entity_revision_id ORDER BY participant.entity_revision_id)
       FROM drama.event_participants participant WHERE participant.event_revision_id=event.event_revision_id),'[]'::jsonb))
-    ORDER BY event.narrative_order,event.event_revision_id)
+    ORDER BY version_chapter.ordinal,event.narrative_order,event.event_revision_id)
     FROM drama.narrative_event_revisions event JOIN drama.narrative_fact_revisions fact ON fact.fact_revision_id=event.fact_revision_id
+    JOIN drama.source_version_chapters version_chapter ON version_chapter.source_version_id=run.source_version_id
+      AND version_chapter.chapter_id=fact.chapter_id
     WHERE event.ir_revision_id=run.ir_revision_id),'[]'::jsonb),
   'relations',COALESCE((SELECT jsonb_agg(jsonb_build_object('from_event_revision_id',from_event_revision_id,
     'to_event_revision_id',to_event_revision_id,'relation_type',relation_type) ORDER BY event_relation_id)
@@ -286,7 +288,7 @@ const workflow = {
     {parameters: {conditions: {options: {caseSensitive: true, leftValue: '', typeValidation: 'strict'}, conditions: [{id: 'publishable', leftValue: '={{ $json.state.publishable }}', rightValue: true, operator: {type: 'boolean', operation: 'true', singleValue: true}}], combinator: 'and'}}, id: '04a-publishable', name: 'All Compiler Gates Passed?', type: 'n8n-nodes-base.if', typeVersion: 2.2, position: [240, 0]},
     postgresNode('04a-publish', 'Atomic Publish Reviewable Episode Plan', publishSQL, [500, -100], '={{ [$json.state.operation_id,$json.state.claim_token,JSON.stringify($json.state.plan),$json.state.output_hash] }}', 'continueErrorOutput'),
     codeNode('04a-result', 'Reviewable Plan Result', `return [{json:{success:true,operation_id:$json.operation_id,status:$json.status,adaptation_plan_id:$json.result_id,review_required:true}}];`, [760, -120]),
-    codeNode('04a-sanitize', 'Sanitize Compiler Failure', `const state=$json.state||$('Checkpoint Validated Reviewable Plan').first().json.state;const blocking=(state.plan?.diagnostics||[]).filter((item)=>item.severity==='blocking');const code=String(blocking[0]?.code||'ADAPTATION_COMPILE_FAILED').replace(/[^A-Z0-9_]/gi,'_').toUpperCase().slice(0,200);const message=String(blocking.map((item)=>item.message).join('; ')||$json.error?.message||'Constraint compiler validation failed').replace(/[\\r\\n\\t]+/g,' ').replace(/(?:sk-|Bearer\\s+)[A-Za-z0-9._-]+/gi,'[REDACTED]').slice(0,1000);return [{json:{...state,error_code:code,error_message:message}}];`, [500, 140]),
+    codeNode('04a-sanitize', 'Sanitize Compiler Failure', `const state=$json.state||$('Checkpoint Validated Reviewable Plan').first().json.state;const blocking=(state.plan?.diagnostics||[]).filter((item)=>item.severity==='blocking');const code=String(blocking[0]?.code||'ADAPTATION_COMPILE_FAILED').replace(/[^A-Z0-9_]/gi,'_').toUpperCase().slice(0,200);const primary=blocking[0]?.message;const remaining=blocking.length>1?\`（另有 \${blocking.length-1} 项阻断诊断）\`:'';const message=String((primary?primary+remaining:'')||$json.error?.message||'改编计划未通过约束校验。').replace(/[\\r\\n\\t]+/g,' ').replace(/(?:sk-|Bearer\\s+)[A-Za-z0-9._-]+/gi,'[REDACTED]').slice(0,1000);return [{json:{...state,error_code:code,error_message:message}}];`, [500, 140]),
     postgresNode('04a-reject', 'Atomically Reject Invalid Compiler Output', rejectSQL, [760, 140], '={{ [$json.operation_id,$json.claim_token,JSON.stringify($json.plan),$json.error_code,$json.error_message] }}'),
     codeNode('04a-failed', 'Compiler Rejected Result', `return [{json:{success:false,operation_id:$json.operation_id,status:$json.status,error:{code:$json.error_code,message:$json.error_message}}}];`, [1020, 140]),
   ],

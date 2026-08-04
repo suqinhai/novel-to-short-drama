@@ -25,7 +25,8 @@ const digest = (value) => crypto.createHash('sha256').update(JSON.stringify(stab
 const makeID = (prefix, value) => `${prefix}${digest(value).slice(0, 24)}`;
 const unique = (items) => [...new Set(items.filter(Boolean))];
 const asArray = (value) => Array.isArray(value) ? value : [];
-const compareEvent = (left, right) => Number(left.narrative_order) - Number(right.narrative_order) ||
+const compareEvent = (left, right) => Number(left.chapter_ordinal || 0) - Number(right.chapter_ordinal || 0) ||
+  Number(left.narrative_order) - Number(right.narrative_order) ||
   String(left.event_revision_id).localeCompare(String(right.event_revision_id));
 const diagnostic = (severity, code, message, entityType = null, entityID = null, details = {}) => ({
   severity, code, message, entity_type: entityType, entity_id: entityID, details,
@@ -45,6 +46,61 @@ function ruleMatchesEvent(rule, event) {
       asArray(event.story_arc_revision_ids).includes(owner) || asArray(event.participant_entity_revision_ids).includes(owner);
   }
   return false;
+}
+
+const ruleTargetsEvent = (rule, event) => rule?.target_type !== 'free_text' && ruleMatchesEvent(rule, event);
+
+function allocateByDuration(eventUnits, episodeCount, durationTarget) {
+  if (!Number.isInteger(episodeCount) || episodeCount < 1 || eventUnits.length < episodeCount ||
+      eventUnits.some((unit) => unit.estimated_seconds > durationTarget)) return null;
+
+  const buckets = [];
+  for (const unit of eventUnits) {
+    const current = buckets[buckets.length - 1];
+    const currentSeconds = current?.reduce((sum, item) => sum + item.estimated_seconds, 0) || 0;
+    if (!current || currentSeconds + unit.estimated_seconds > durationTarget) buckets.push([unit]);
+    else current.push(unit);
+  }
+  if (buckets.length > episodeCount) return null;
+
+  while (buckets.length < episodeCount) {
+    let splitBucketIndex = -1;
+    let splitUnitIndex = -1;
+    let bestDuration = -1;
+    let bestDifference = Infinity;
+    buckets.forEach((bucket, bucketIndex) => {
+      if (bucket.length < 2) return;
+      const total = bucket.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
+      let left = 0;
+      for (let index = 1; index < bucket.length; index += 1) {
+        left += bucket[index - 1].estimated_seconds;
+        const difference = Math.abs(total - left * 2);
+        if (total > bestDuration || (total === bestDuration && difference < bestDifference)) {
+          splitBucketIndex = bucketIndex;
+          splitUnitIndex = index;
+          bestDuration = total;
+          bestDifference = difference;
+        }
+      }
+    });
+    if (splitBucketIndex < 0) return null;
+    const bucket = buckets[splitBucketIndex];
+    buckets.splice(splitBucketIndex, 1, bucket.slice(0, splitUnitIndex), bucket.slice(splitUnitIndex));
+  }
+  return buckets;
+}
+
+function allocateByCount(eventUnits, episodeCount) {
+  const buckets = [];
+  let cursor = 0;
+  for (let number = 1; number <= episodeCount && cursor < eventUnits.length; number += 1) {
+    const remainingUnits = eventUnits.length - cursor;
+    const remainingEpisodes = episodeCount - number + 1;
+    const take = Math.ceil(remainingUnits / remainingEpisodes);
+    buckets.push(eventUnits.slice(cursor, cursor + take));
+    cursor += take;
+  }
+  return buckets;
 }
 
 function compile(input) {
@@ -148,37 +204,43 @@ function compile(input) {
   }));
   const totalCapacity = Math.max(0, episodeCount * durationTarget);
   let totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
-  for (let index = 0; totalSeconds > totalCapacity && index < eventUnits.length - 1 && eventUnits.length > episodeCount; index += 1) {
-    const left = eventUnits[index];
-    const right = eventUnits[index + 1];
-    if (left.events.length > 1 || right.events.length > 1) continue;
-    const leftEvent = left.events[0];
-    const rightEvent = right.events[0];
-    const authorizers = rules.filter((rule) => rule.rule_type === 'merge_allowed' && ruleMatchesEvent(rule, leftEvent) && ruleMatchesEvent(rule, rightEvent));
-    const immutable = rules.some((rule) => rule.rule_type === 'must_not_change' && (ruleMatchesEvent(rule, leftEvent) || ruleMatchesEvent(rule, rightEvent)));
-    if (!authorizers.length || immutable) continue;
-    const mergedSeconds = Math.max(15, Math.round((left.estimated_seconds + right.estimated_seconds) * 0.72));
+  let buckets = allocateByDuration(eventUnits, episodeCount, durationTarget);
+  while (!buckets && eventUnits.length > episodeCount) {
+    const candidates = [];
+    for (let index = 0; index < eventUnits.length - 1; index += 1) {
+      const left = eventUnits[index];
+      const right = eventUnits[index + 1];
+      const eventsToMerge = [...left.events, ...right.events];
+      const authorizers = rules.filter((rule) => rule.rule_type === 'merge_allowed' &&
+        eventsToMerge.every((event) => ruleMatchesEvent(rule, event)));
+      const immutable = rules.some((rule) => rule.rule_type === 'must_not_change' && rule.enforcement === 'hard' &&
+        eventsToMerge.some((event) => ruleTargetsEvent(rule, event)));
+      const mergedSeconds = Math.max(15, Math.round((left.estimated_seconds + right.estimated_seconds) * 0.72));
+      if (!authorizers.length || immutable || mergedSeconds > durationTarget) continue;
+      candidates.push({index, left, right, eventsToMerge, authorizers, mergedSeconds});
+    }
+    if (!candidates.length) break;
+    candidates.sort((left, right) => left.eventsToMerge.length - right.eventsToMerge.length ||
+      left.mergedSeconds - right.mergedSeconds || left.index - right.index);
+    const candidate = candidates[0];
     const group = {
-      events: [leftEvent, rightEvent], estimated_seconds: mergedSeconds,
-      merge_group_id: makeID('merge_', [run.compiler_run_id, leftEvent.event_revision_id, rightEvent.event_revision_id]),
-      merge_rule_ids: unique(authorizers.map((rule) => rule.adaptation_rule_id)).sort(),
+      events: candidate.eventsToMerge,
+      estimated_seconds: candidate.mergedSeconds,
+      merge_group_id: makeID('merge_', [run.compiler_run_id, ...candidate.eventsToMerge.map((event) => event.event_revision_id)]),
+      merge_rule_ids: unique([
+        ...candidate.left.merge_rule_ids, ...candidate.right.merge_rule_ids,
+        ...candidate.authorizers.map((rule) => rule.adaptation_rule_id),
+      ]).sort(),
     };
-    eventUnits.splice(index, 2, group);
+    eventUnits.splice(candidate.index, 2, group);
     totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
+    buckets = allocateByDuration(eventUnits, episodeCount, durationTarget);
   }
-  if (totalSeconds > totalCapacity) block('DURATION_CAPACITY_EXCEEDED', 'Selected source events cannot fit the requested season duration under authorized merge rules.', 'adaptation_spec_version', run.adaptation_spec_version_id, {estimated_seconds: totalSeconds, capacity_seconds: totalCapacity});
-  if (eventUnits.length < episodeCount) block('TOO_FEW_EVENT_UNITS', 'The source scope has fewer independently allocatable event units than target episodes.', 'adaptation_spec_version', run.adaptation_spec_version_id, {event_units: eventUnits.length, target_episode_count: episodeCount});
+  if (totalSeconds > totalCapacity) block('DURATION_CAPACITY_EXCEEDED', `所选事件预计需要 ${totalSeconds} 秒，超过目标总容量 ${totalCapacity} 秒；请增加集数或单集时长、缩小范围，或补充明确的允许合并/省略规则。`, 'adaptation_spec_version', run.adaptation_spec_version_id, {estimated_seconds: totalSeconds, capacity_seconds: totalCapacity});
+  if (eventUnits.length < episodeCount) block('TOO_FEW_EVENT_UNITS', `可独立分配的事件单元只有 ${eventUnits.length} 个，少于目标 ${episodeCount} 集。`, 'adaptation_spec_version', run.adaptation_spec_version_id, {event_units: eventUnits.length, target_episode_count: episodeCount});
   stage('event_compression_merge', {event_unit_count: eventUnits.length, estimated_seconds: totalSeconds, merge_groups: eventUnits.filter((unit) => unit.merge_group_id).map((unit) => ({merge_group_id: unit.merge_group_id, source_event_ids: unit.events.map((event) => event.event_revision_id), rule_ids: unit.merge_rule_ids}))});
 
-  const buckets = [];
-  let cursor = 0;
-  for (let number = 1; number <= episodeCount && cursor < eventUnits.length; number += 1) {
-    const remainingUnits = eventUnits.length - cursor;
-    const remainingEpisodes = episodeCount - number + 1;
-    const take = Math.ceil(remainingUnits / remainingEpisodes);
-    buckets.push(eventUnits.slice(cursor, cursor + take));
-    cursor += take;
-  }
+  buckets ||= allocateByCount(eventUnits, episodeCount);
   stage('episode_allocation', {episode_count: buckets.length, event_counts: buckets.map((bucket) => bucket.reduce((sum, unit) => sum + unit.events.length, 0))});
 
   const eventPosition = new Map();
@@ -227,7 +289,7 @@ function compile(input) {
   episodeDurations.forEach((seconds, index) => {
     if (seconds > durationTarget) {
       durationValid = false;
-      block('EPISODE_DURATION_EXCEEDED', 'An episode exceeds the requested duration.', 'episode', String(index + 1), {estimated_seconds: seconds, target_seconds: durationTarget});
+      block('EPISODE_DURATION_EXCEEDED', `第 ${index + 1} 集预计 ${seconds} 秒，超过单集目标 ${durationTarget} 秒。`, 'episode', String(index + 1), {estimated_seconds: seconds, target_seconds: durationTarget});
     } else if (seconds < Math.max(1, Math.floor(durationTarget * 0.3))) {
       diagnostics.push(diagnostic('warning', 'EPISODE_DURATION_UNDER_TARGET', 'An episode uses less than 30% of the target duration.', 'episode', String(index + 1), {estimated_seconds: seconds, target_seconds: durationTarget}));
     }
@@ -276,7 +338,8 @@ function compile(input) {
     for (const unit of bucket) for (const event of unit.events) {
       sequence += 1;
       const transformRules = rules.filter((rule) => rule.rule_type === 'transform_required' && ruleMatchesEvent(rule, event));
-      const preserveRules = rules.filter((rule) => ['must_preserve', 'must_not_change'].includes(rule.rule_type) && ruleMatchesEvent(rule, event));
+      const preserveRules = rules.filter((rule) => ['must_preserve', 'must_not_change'].includes(rule.rule_type) &&
+        ruleTargetsEvent(rule, event));
       assignments.push({
         event_revision_id: event.event_revision_id, sequence_number: sequence,
         usage_mode: transformRules.length ? 'transform' : unit.merge_group_id ? 'merge' : 'preserve',

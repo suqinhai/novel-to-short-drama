@@ -56,14 +56,14 @@ watch(() => [props.projectId, props.episodeId, stage.value], load, { immediate: 
 
     <div v-if="error" class="resolver-error"><AlertTriangle :size="16" />{{ error }}</div>
     <template v-else-if="resolution">
-      <div class="resolver-summary" :class="{ blocked: !summary.ready }">
-        <CheckCircle2 v-if="summary.ready" :size="18" />
+      <div class="resolver-summary" :class="{ blocked: !summary.executable, compatibility: summary.compatibilityMode && !summary.ready }">
+        <CheckCircle2 v-if="summary.executable" :size="18" />
         <AlertTriangle v-else :size="18" />
-        <strong>{{ summary.ready ? '输入完整，可执行' : `执行被阻断（${summary.blocked} 项）` }}</strong>
+        <strong>{{ summary.ready ? '输入完整，可执行' : summary.compatibilityMode ? `兼容模式允许执行（${summary.blocked} 项诊断）` : `执行被阻断（${summary.blocked} 项）` }}</strong>
         <span>模式 {{ resolution.mode }} · required {{ summary.required }} · optional {{ summary.optional }} · 已解析 {{ summary.resolved }}</span>
         <code title="上下文哈希">{{ shortHash(resolution.context_hash) }}</code>
       </div>
-      <div v-if="resolution.blockers?.length" class="resolver-blockers">
+      <div v-if="resolution.blockers?.length" class="resolver-blockers" :class="{ compatibility: summary.compatibilityMode }">
         <div v-for="item in resolution.blockers" :key="`${item.kind}:${item.reason}`">
           <b>{{ effectiveInputKinds[item.kind] || item.kind }}</b>
           <span>{{ effectiveInputStateLabel(item.state) }}</span>
@@ -74,7 +74,7 @@ watch(() => [props.projectId, props.episodeId, stage.value], load, { immediate: 
         <table>
           <thead><tr><th>输入</th><th>要求</th><th>状态</th><th>ID / 版本</th><th>内容哈希</th></tr></thead>
           <tbody>
-            <tr v-for="item in resolution.items" :key="item.kind" :class="{ danger: item.blocks }">
+            <tr v-for="item in resolution.items" :key="item.kind" :class="{ danger: item.blocks && !summary.compatibilityMode, warning: item.blocks && summary.compatibilityMode }">
               <td><strong>{{ effectiveInputKinds[item.kind] || item.kind }}</strong></td>
               <td>{{ item.requirement }}</td>
               <td>{{ effectiveInputStateLabel(item.state) }}<small v-if="item.reason">{{ item.reason }}</small></td>
@@ -97,9 +97,11 @@ watch(() => [props.projectId, props.episodeId, stage.value], load, { immediate: 
 .resolver-actions select { min-width: 150px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: inherit; }
 .resolver-summary { justify-content: flex-start; padding: 11px 13px; border-radius: 9px; color: #166534; background: #f0fdf4; }
 .resolver-summary.blocked { color: #991b1b; background: #fef2f2; }
+.resolver-summary.compatibility { color: #92400e; background: #fffbeb; }
 .resolver-summary span { color: inherit; opacity: .82; }
 .resolver-summary code { margin-left: auto; }
 .resolver-error,.resolver-blockers div { display: flex; align-items: center; gap: 9px; padding: 9px 11px; color: #991b1b; background: #fef2f2; border-radius: 8px; }
+.resolver-blockers.compatibility div { color: #92400e; background: #fffbeb; }
 .resolver-blockers { display: grid; gap: 6px; }
 .resolver-blockers code { margin-left: auto; }
 .resolver-table-wrap { overflow: auto; }
@@ -107,5 +109,6 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th,td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
 td small { display: block; margin-top: 4px; color: var(--muted); }
 tr.danger td { background: #fffafa; }
+tr.warning td { background: #fffdf5; }
 .resolver-audit { color: var(--muted); }
 </style>

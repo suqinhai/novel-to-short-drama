@@ -22,6 +22,26 @@ func TestRollingProductionAdoptionAndActivationIntegration(t *testing.T) {
 	}
 	defer database.Close()
 
+	// Compiler output starts as reviewable and non-current. Adoption must
+	// publish both the native plan and its artifact projection atomically.
+	if _, err = database.writer.Exec(ctx, `INSERT INTO drama.artifacts(
+		artifact_id,artifact_type,project_id,native_entity_id,revision_number,
+		content_hash,validity_status,is_current,idempotency_key,metadata
+	)
+	SELECT 'artifact_rolling_plan','adaptation_plan',project_id,adaptation_plan_id,
+		version_number,content_hash,'needs_review',false,'fixture:rolling:plan','{}'::jsonb
+	FROM drama.adaptation_plans WHERE adaptation_plan_id='adaptation_plan_phase1_001'
+	ON CONFLICT(idempotency_key) DO UPDATE
+	SET validity_status='needs_review',is_current=false`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.writer.Exec(ctx, `UPDATE drama.artifacts
+		SET validity_status='needs_review',is_current=false
+		WHERE artifact_type='adaptation_episode_plan'
+			AND native_entity_id='adaptation_episode_plan_phase1_001'`); err != nil {
+		t.Fatal(err)
+	}
+
 	rolling, err := database.AdoptAdaptationPlan(ctx, "p_phase1_legacy", "adaptation_plan_phase1_001",
 		AdoptRollingPlanInput{MaxVideoBatch: 3, Currency: "CNY"})
 	if err != nil {
@@ -33,6 +53,17 @@ func TestRollingProductionAdoptionAndActivationIntegration(t *testing.T) {
 	run := rolling.Episodes[0]
 	if run.Status != "queued" || run.MaxVideoBatch != 3 || run.EpisodeID == "" {
 		t.Fatalf("unexpected queued episode: %#v", run)
+	}
+	var publishedArtifacts int
+	if err = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.artifacts
+		WHERE project_id='p_phase1_legacy' AND validity_status='valid' AND is_current
+			AND ((artifact_type='adaptation_plan' AND native_entity_id='adaptation_plan_phase1_001')
+				OR (artifact_type='adaptation_episode_plan'
+					AND native_entity_id='adaptation_episode_plan_phase1_001'))`).Scan(&publishedArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	if publishedArtifacts != 2 {
+		t.Fatalf("adoption did not publish plan artifact projection: got %d current artifacts", publishedArtifacts)
 	}
 
 	activated, err := database.ActivateEpisodeProductionRun(ctx, "p_phase1_legacy", run.EpisodeRunID)

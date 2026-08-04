@@ -180,7 +180,7 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 			JOIN drama.editing_template_versions template_version USING(editing_template_version_id)
 			JOIN drama.editing_templates template USING(editing_template_id)
 			WHERE binding.project_id=$1 AND (binding.episode_id IS NULL OR binding.episode_id=$2)`},
-		{&result.EffectiveInputs, `SELECT drama.resolve_effective_inputs($1,$2,'17')`},
+		{&result.EffectiveInputs, `SELECT drama.resolve_effective_inputs($1::text,$2::text,'17'::text)`},
 	}
 	for _, query := range queries {
 		if err = s.pool.QueryRow(ctx, query.sql, projectID, episodeID).Scan(query.target); err != nil {

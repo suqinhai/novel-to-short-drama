@@ -18,7 +18,7 @@ func (s *Store) ResolveEffectiveInputs(
 	stage string,
 ) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, `SELECT drama.resolve_effective_inputs($1,NULLIF($2,''),$3)`,
+	err := s.pool.QueryRow(ctx, `SELECT drama.resolve_effective_inputs($1::text,NULLIF($2::text,''),$3::text)`,
 		strings.TrimSpace(projectID), strings.TrimSpace(episodeID), strings.TrimSpace(stage)).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, effectiveinput.ErrNotFound

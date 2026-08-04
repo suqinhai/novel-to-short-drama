@@ -40,4 +40,50 @@ const incrementalResult = compile(unconfirmedIncremental);
 assert.equal(incrementalResult.publishable, false);
 assert(incrementalResult.plan.diagnostics.some((item) => item.code === 'FROZEN_INPUT_MISMATCH'));
 
-console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, published-full-IR gate, 3 fixtures, deterministic output`);
+const freeTextProtection = fixture('phase3-compiler-valid.json');
+freeTextProtection.rules.push({
+  adaptation_rule_id: 'rule_global_protection', rule_type: 'must_not_change', enforcement: 'hard',
+  target_type: 'free_text', target_id: null, priority: 100,
+  parameters: {instruction: '不得改变核心人物关系和关键因果链。'},
+});
+const freeTextProtectionResult = compile(freeTextProtection);
+assert.equal(freeTextProtectionResult.publishable, true, JSON.stringify(freeTextProtectionResult.plan.diagnostics));
+
+const targetedProtection = fixture('phase3-compiler-valid.json');
+targetedProtection.rules.push({
+  adaptation_rule_id: 'rule_event_protection', rule_type: 'must_not_change', enforcement: 'hard',
+  target_type: 'event', target_id: 'event_fixture_001', priority: 100, parameters: {},
+});
+const targetedProtectionResult = compile(targetedProtection);
+assert.equal(targetedProtectionResult.publishable, false);
+assert(!targetedProtectionResult.plan.episodes.some((episode) => episode.merged_content.some((merge) =>
+  merge.source_event_ids.includes('event_fixture_001'))));
+
+const multiEventMerge = fixture('phase3-compiler-valid.json');
+multiEventMerge.spec.episode_duration_seconds = 70;
+multiEventMerge.events.push(
+  {...multiEventMerge.events[3], event_revision_id: 'event_fixture_005', fact_revision_id: 'fact_fixture_005', source_span_id: 'span_fixture_005', narrative_order: 5},
+  {...multiEventMerge.events[3], event_revision_id: 'event_fixture_006', fact_revision_id: 'fact_fixture_006', source_span_id: 'span_fixture_006', narrative_order: 6},
+);
+multiEventMerge.relations = [];
+multiEventMerge.state_changes = [];
+multiEventMerge.foreshadow_occurrences = [];
+const multiEventMergeResult = compile(multiEventMerge);
+assert.equal(multiEventMergeResult.publishable, true, JSON.stringify(multiEventMergeResult.plan.diagnostics));
+assert(multiEventMergeResult.plan.episodes.some((episode) => episode.merged_content.some((merge) =>
+  merge.source_event_ids.length > 2)));
+
+const chapterOrdering = fixture('phase3-compiler-valid.json');
+chapterOrdering.relations = [];
+chapterOrdering.state_changes = [];
+chapterOrdering.foreshadow_occurrences = [];
+chapterOrdering.events.forEach((event) => {
+  event.chapter_ordinal = event.chapter_id === 'chapter_fixture_001' ? 2 : 1;
+});
+const chapterOrderingResult = compile(chapterOrdering);
+const orderingStage = chapterOrderingResult.stages.find((item) => item.stage === 'prerequisite_ordering');
+assert.deepEqual(orderingStage.data.ordered_event_ids, [
+  'event_fixture_003', 'event_fixture_004', 'event_fixture_001', 'event_fixture_002',
+]);
+
+console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, duration-aware merging, chapter ordering, deterministic output`);
