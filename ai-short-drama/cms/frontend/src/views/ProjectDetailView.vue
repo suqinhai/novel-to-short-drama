@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, RotateCcw, LoaderCircle, AlertCircle, SlidersHorizontal, GitCompareArrows, Coins, Gauge, LockKeyhole, Eye } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, BookOpen, Clapperboard, Image, Video, ListChecks, Layers3, GitBranch, ClipboardCheck, FileText, BookMarked, ListVideo, ScrollText, PanelsTopLeft, CircleCheckBig, Webhook, Play, LoaderCircle, AlertCircle, SlidersHorizontal, GitCompareArrows, Coins, Gauge, LockKeyhole, Eye, Code2, X } from 'lucide-vue-next'
 import { api } from '../services/api'
 import { getPipelineProgress, getPipelineStageIndex, getPipelineStageLabel, getStageUnitProgress, pipelineStages } from '../services/pipelineStage'
 import { getDisplayValueLabel } from '../services/displayLabels'
@@ -47,6 +47,17 @@ const resumeDisabledReason = computed(() => {
   return ''
 })
 const canResume = computed(() => !resumeDisabledReason.value)
+const flowSucceeded = computed(() => flowResult.value?.n8n_response?.success !== false)
+const flowResultMessage = computed(() => {
+  if (!flowResult.value) return ''
+  if (!flowSucceeded.value) {
+    return flowResult.value.n8n_response?.error?.message || '本次操作未能完成，请查看技术详情后重试。'
+  }
+  const stage = getPipelineStageLabel(flowResult.value.project.current_stage, flowResult.value.project.status)
+  if (activeWorkflowTasks.value > 0) return `请求已接收，任务正在后台执行。当前项目已更新至「${stage}」。`
+  if (flowResult.value.project.counts?.pending_reviews > 0) return `本次操作已完成，项目已进入「${stage}」，请按页面指引继续处理。`
+  return `本次操作已完成，项目已更新至「${stage}」。`
+})
 const episodeRunDisplayStatus = (run) => (
   run?.status === 'waiting_review' && project.value?.counts?.pending_reviews === 0
     ? 'ready_to_continue'
@@ -207,9 +218,17 @@ const createResultText = computed(() => JSON.stringify(createResult.value, null,
       </article>
 
       <div v-if="flowError" class="error-banner large flow-error"><AlertCircle :size="17" />{{ flowError }}<button @click="flowError = ''">关闭</button></div>
-      <article v-if="flowResult" class="flow-result-card" :class="{ failed: flowResult.n8n_response?.success === false }">
-        <div class="flow-result-head"><div class="flow-result-icon"><RotateCcw :size="20" /></div><div><span>自动化流程 · {{ getDisplayValueLabel(flowResult.action) }}</span><h3>流程调用已返回</h3></div><div class="latest-state"><span>最新状态</span><strong>{{ getPipelineStageLabel(flowResult.project.current_stage, flowResult.project.status) }}</strong><StatusBadge :status="flowResult.project.status" /></div></div>
-        <pre>{{ JSON.stringify(flowResult.n8n_response, null, 2) }}</pre>
+      <article v-if="flowResult" class="flow-result-card" :class="{ success: flowSucceeded, failed: !flowSucceeded }" :role="flowSucceeded ? 'status' : 'alert'">
+        <div class="flow-result-head">
+          <div class="flow-result-icon"><CircleCheckBig v-if="flowSucceeded" :size="22" /><AlertCircle v-else :size="22" /></div>
+          <div class="flow-result-copy"><span>自动化流程 · {{ getDisplayValueLabel(flowResult.action) }}</span><h3>{{ flowSucceeded ? '流程已成功执行' : '流程未能完成' }}</h3><p>{{ flowResultMessage }}</p></div>
+          <div class="latest-state"><span>当前节点</span><strong>{{ getPipelineStageLabel(flowResult.project.current_stage, flowResult.project.status) }}</strong><StatusBadge :status="flowResult.project.status" /></div>
+          <button class="flow-result-close" aria-label="关闭流程结果提示" @click="flowResult = null"><X :size="17" /></button>
+        </div>
+        <details class="flow-technical-details" :open="!flowSucceeded">
+          <summary><Code2 :size="15" />查看技术详情 <small>仅用于问题排查</small></summary>
+          <pre>{{ JSON.stringify(flowResult.n8n_response, null, 2) }}</pre>
+        </details>
       </article>
 
       <article v-if="isRollingProduction" class="panel padded rolling-production-panel">
