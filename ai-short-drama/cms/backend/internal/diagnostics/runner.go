@@ -50,12 +50,15 @@ type WorkflowActivationCheck struct {
 }
 
 type CredentialCheck struct {
-	Status     string `json:"status"`
-	Key        string `json:"key"`
-	Exists     bool   `json:"exists"`
-	Configured bool   `json:"configured"`
-	Message    string `json:"message"`
-	Suggestion string `json:"suggestion,omitempty"`
+	Status                 string `json:"status"`
+	Key                    string `json:"key"`
+	Exists                 bool   `json:"exists"`
+	Configured             bool   `json:"configured"`
+	CredentialFound        bool   `json:"credential_found"`
+	WorkflowReferenceCount int    `json:"workflow_reference_count"`
+	MismatchedReferences   int    `json:"mismatched_references"`
+	Message                string `json:"message"`
+	Suggestion             string `json:"suggestion,omitempty"`
 }
 
 type UnsupportedNode struct {
@@ -301,18 +304,73 @@ func (r *Runner) postgresCredential(ctx context.Context) CredentialCheck {
 	value, exists := values[check.Key]
 	check.Exists = exists
 	check.Configured = exists && configuredValue(value)
-	if check.Configured {
-		check.Status = "healthy"
-		check.Message = "n8n 容器已配置 Postgres Credential ID。"
+	if !check.Configured {
+		check.Status = "unhealthy"
+		if check.Exists {
+			check.Message = "n8n 容器存在 POSTGRES_CREDENTIAL_ID，但值为空或仍是占位符。"
+		} else {
+			check.Message = "n8n 容器缺少 POSTGRES_CREDENTIAL_ID。"
+		}
+		check.Suggestion = "先在 n8n 中创建并验证 Postgres Credential，再把其 ID 写入 POSTGRES_CREDENTIAL_ID，随后强制重建 n8n 容器。"
 		return check
 	}
-	check.Status = "unhealthy"
-	if check.Exists {
-		check.Message = "n8n 容器存在 POSTGRES_CREDENTIAL_ID，但值为空或仍是占位符。"
-	} else {
-		check.Message = "n8n 容器缺少 POSTGRES_CREDENTIAL_ID。"
+
+	postgresEnv, err := inspectContainerEnv(ctx, r.postgresContainer)
+	if err != nil {
+		check.Status = "unhealthy"
+		check.Message = "无法读取 n8n 数据库连接上下文以验证 Credential。"
+		check.Suggestion = "确认 postgres 容器运行，并允许 CMS 执行只读 docker inspect/exec。"
+		return check
 	}
-	check.Suggestion = "先在 n8n 中创建并验证 Postgres Credential，再把其 ID 写入 POSTGRES_CREDENTIAL_ID，随后强制重建 n8n 容器。"
+	user := defaultValue(postgresEnv["POSTGRES_USER"], "n8n")
+	database := defaultValue(postgresEnv["POSTGRES_DB"], "n8n")
+	query := `SELECT 'credential', id FROM credentials_entity WHERE type='postgres'
+UNION ALL
+SELECT 'reference', node #>> '{credentials,postgres,id}'
+FROM workflow_entity workflow
+CROSS JOIN LATERAL json_array_elements(workflow.nodes) node
+WHERE workflow.active AND node #> '{credentials,postgres}' IS NOT NULL;`
+	commandCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "docker", "exec", r.postgresContainer,
+		"psql", "-U", user, "-d", database, "-At", "-F", "\t", "-c", query).Output()
+	if err != nil {
+		check.Status = "unhealthy"
+		check.Message = "无法从 n8n 数据库验证 Postgres Credential 与工作流引用。"
+		check.Suggestion = "确认 credentials_entity 与 workflow_entity 可读，并检查 postgres 容器日志。"
+		return check
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		switch parts[0] {
+		case "credential":
+			if parts[1] == value {
+				check.CredentialFound = true
+			}
+		case "reference":
+			check.WorkflowReferenceCount++
+			if parts[1] != value {
+				check.MismatchedReferences++
+			}
+		}
+	}
+	if !check.CredentialFound {
+		check.Status = "unhealthy"
+		check.Message = "POSTGRES_CREDENTIAL_ID 指向的 n8n Credential 不存在。"
+		check.Suggestion = "在 n8n 中创建并验证 Postgres Credential，更新 cms-managed.env 后重建 n8n。"
+		return check
+	}
+	if check.WorkflowReferenceCount == 0 || check.MismatchedReferences > 0 {
+		check.Status = "unhealthy"
+		check.Message = fmt.Sprintf("Postgres Credential 存在，但 %d 个 active 工作流节点引用了其他或占位 Credential。", check.MismatchedReferences)
+		check.Suggestion = "用当前 POSTGRES_CREDENTIAL_ID 渲染并重新导入 workflows，然后重新发布工作流。"
+		return check
+	}
+	check.Status = "healthy"
+	check.Message = fmt.Sprintf("Postgres Credential 已验证，%d 个 active 工作流节点引用一致。", check.WorkflowReferenceCount)
 	return check
 }
 

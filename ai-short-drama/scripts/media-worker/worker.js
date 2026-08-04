@@ -159,6 +159,25 @@ function numberField(value, fallback, minimum, maximum, name, integer = false) {
   return parsed;
 }
 
+function booleanField(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === 1 || value === '1') return true;
+  if (value === 'false' || value === 0 || value === '0') return false;
+  throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'boolean field is invalid', false);
+}
+
+function assertAllowedKeys(value, allowed, operation) {
+  const unexpected = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unexpected.length) {
+    throw new WorkerError(
+      'TIMELINE_VALIDATION_FAILED',
+      `${operation} contains unsupported fields: ${unexpected.sort().join(', ')}`,
+      false,
+    );
+  }
+}
+
 function isInsideRoot(candidate) {
   const relative = path.relative(storageRoot, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -208,6 +227,33 @@ async function resolveOutputFile(value, name) {
     if (error.code !== 'ENOENT') throw error;
   }
   return resolved;
+}
+
+async function resolveMediaSource(value, name) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096 || /[\0\r\n]/.test(value)) {
+    throw new WorkerError('MEDIA_FILE_INVALID', `${name} is invalid`, false);
+  }
+  if (/^https?:\/\//i.test(value)) {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new WorkerError('MEDIA_FILE_INVALID', `${name} URL is invalid`, false);
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new WorkerError('MEDIA_FILE_INVALID', `${name} URL is not allowed`, false);
+    }
+    return parsed.toString();
+  }
+  return (await resolveExistingFile(value, name)).path;
+}
+
+async function removePartial(filePath) {
+  try {
+    await fsp.unlink(filePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
 }
 
 function storageRelative(filePath) {
@@ -355,6 +401,157 @@ async function parseProbe(filePath, options = {}) {
   } catch {
     throw new WorkerError('MEDIA_FILE_INVALID', 'ffprobe returned invalid JSON', false);
   }
+}
+
+async function generateMockVideo(request) {
+  assertAllowedKeys(request, new Set(['operation', 'task_id', 'output_path', 'duration_seconds']), 'generate_mock_video');
+  if (!config.mockMode) throw new WorkerError('MEDIA_WORKER_DISABLED', 'mock video generation requires MOCK_MODE', false);
+  const taskId = assertId(request.task_id, 'task_id');
+  const outputPath = await resolveOutputFile(request.output_path, 'output_path');
+  const duration = numberField(request.duration_seconds, 3, 0.25, 30, 'duration_seconds');
+  const partialPath = await resolveOutputFile(`${outputPath}.${crypto.randomBytes(6).toString('hex')}.partial.mp4`, 'partial output_path');
+  await removePartial(partialPath);
+  let processResult;
+  try {
+    processResult = await runProcess(config.ffmpeg, [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', `color=c=0x172033:s=1280x720:r=24:d=${duration}`,
+      '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+      '-shortest', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-movflags', '+faststart', partialPath,
+    ], { timeoutMs: Math.min(config.renderTimeoutMs, 120000), maxCapture: 1048576 });
+    await fsp.rename(partialPath, outputPath);
+  } catch (error) {
+    await removePartial(partialPath);
+    throw error;
+  }
+  const probe = await parseProbe(outputPath);
+  const actualDuration = Number(probe.format?.duration || duration);
+  return {
+    success: true,
+    operation: 'generate_mock_video',
+    stdout: JSON.stringify({
+      status: 'succeeded',
+      provider_task_id: `mock:${taskId}`,
+      video_url: `file://${outputPath}`,
+      mime_type: 'video/mp4',
+      duration_seconds: Number.isFinite(actualDuration) ? actualDuration : duration,
+    }),
+    stderr: processResult.stderr,
+    exitCode: 0,
+  };
+}
+
+async function prepareVideo(request) {
+  assertAllowedKeys(request, new Set([
+    'operation', 'source', 'target_path', 'thumbnail_path', 'mock_video', 'keep_audio',
+    'width', 'height', 'fps', 'duration_seconds',
+  ]), 'prepare_video');
+  const source = await resolveMediaSource(request.source, 'source');
+  const targetPath = await resolveOutputFile(request.target_path, 'target_path');
+  const thumbnailPath = await resolveOutputFile(request.thumbnail_path, 'thumbnail_path');
+  const mockVideo = booleanField(request.mock_video, false);
+  const keepAudio = booleanField(request.keep_audio, false);
+  const width = numberField(request.width, 1080, 16, 7680, 'width', true);
+  const height = numberField(request.height, 1920, 16, 7680, 'height', true);
+  const fps = numberField(request.fps, 24, 1, 120, 'fps');
+  const duration = numberField(request.duration_seconds, 5, 0.1, 3600, 'duration_seconds');
+  const partialPath = await resolveOutputFile(`${targetPath}.${crypto.randomBytes(6).toString('hex')}.partial.mp4`, 'partial target_path');
+  await removePartial(partialPath);
+  const baseFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=yuv420p`;
+  const transcodeArgs = mockVideo
+    ? [
+        '-y', '-v', 'error', '-loop', '1', '-i', source, '-t', String(duration),
+        '-vf', `${baseFilter},zoompan=z='min(zoom+0.0008,1.05)':d=${Math.max(1, Math.round(duration * fps))}:s=${width}x${height}:fps=${fps}`,
+        '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', partialPath,
+      ]
+    : [
+        '-y', '-v', 'error', '-i', source, '-map', '0:v:0',
+        ...(keepAudio ? ['-map', '0:a?'] : ['-an']),
+        '-vf', baseFilter, '-r', String(fps), '-c:v', 'libx264', '-preset', 'veryfast',
+        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', partialPath,
+      ];
+  try {
+    await runProcess(config.ffmpeg, transcodeArgs, { timeoutMs: config.renderTimeoutMs, maxCapture: 2097152 });
+    await fsp.rename(partialPath, targetPath);
+  } catch (error) {
+    await removePartial(partialPath);
+    throw error;
+  }
+  await runProcess(config.ffmpeg, [
+    '-y', '-v', 'error', '-ss', '0.1', '-i', targetPath, '-frames:v', '1', thumbnailPath,
+  ], { timeoutMs: Math.min(config.renderTimeoutMs, 120000), maxCapture: 1048576 });
+  const probeResult = await runProcess(config.ffprobe, [
+    '-v', 'error', '-show_entries',
+    'format=duration,size,format_name:stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate',
+    '-of', 'json', targetPath,
+  ], { timeoutMs: 60000, maxCapture: 4194304 });
+  const analysis = await runProcess(config.ffmpeg, [
+    '-hide_banner', '-nostats', '-i', targetPath,
+    '-vf', 'blackdetect=d=0.2:pix_th=0.10,freezedetect=n=-50dB:d=1', '-an', '-f', 'null', '-',
+  ], { timeoutMs: config.qcTimeoutMs, maxCapture: 4194304 });
+  return {
+    success: true,
+    operation: 'prepare_video',
+    stdout: probeResult.stdout,
+    stderr: analysis.stderr,
+    exitCode: 0,
+  };
+}
+
+async function prepareAudio(request) {
+  assertAllowedKeys(request, new Set([
+    'operation', 'source', 'target_path', 'download', 'sample_rate', 'loudness_lufs', 'true_peak_db',
+  ]), 'prepare_audio');
+  const targetPath = await resolveOutputFile(request.target_path, 'target_path');
+  const download = booleanField(request.download, false);
+  const sampleRate = numberField(request.sample_rate, 48000, 8000, 192000, 'sample_rate', true);
+  const loudness = numberField(request.loudness_lufs, -16, -70, 0, 'loudness_lufs');
+  const truePeak = numberField(request.true_peak_db, -1, -20, 0, 'true_peak_db');
+  if (download) {
+    const source = await resolveMediaSource(request.source, 'source');
+    if (!/^https?:\/\//i.test(source)) {
+      throw new WorkerError('MEDIA_FILE_INVALID', 'download source must be an http(s) URL', false);
+    }
+    const partialPath = await resolveOutputFile(`${targetPath}.${crypto.randomBytes(6).toString('hex')}.partial.wav`, 'partial target_path');
+    await removePartial(partialPath);
+    try {
+      await runProcess(config.ffmpeg, [
+        '-y', '-v', 'error', '-i', source, '-vn', '-ac', '1', '-ar', String(sampleRate),
+        '-af', `loudnorm=I=${loudness}:TP=${truePeak}:LRA=11`, partialPath,
+      ], { timeoutMs: config.renderTimeoutMs, maxCapture: 2097152 });
+      await fsp.rename(partialPath, targetPath);
+    } catch (error) {
+      await removePartial(partialPath);
+      throw error;
+    }
+  } else {
+    await resolveExistingFile(targetPath, 'target_path');
+  }
+  const probeResult = await runProcess(config.ffprobe, [
+    '-v', 'error', '-show_entries',
+    'format=duration,size,format_name:stream=codec_name,sample_rate,channels,bit_rate',
+    '-of', 'json', targetPath,
+  ], { timeoutMs: 60000, maxCapture: 4194304 });
+  const analysis = await runProcess(config.ffmpeg, [
+    '-hide_banner', '-nostats', '-i', targetPath,
+    '-af', 'ebur128=peak=true,silencedetect=noise=-50dB:d=0.3', '-f', 'null', '-',
+  ], { timeoutMs: config.qcTimeoutMs, maxCapture: 4194304 });
+  return {
+    success: true,
+    operation: 'prepare_audio',
+    stdout: probeResult.stdout,
+    stderr: analysis.stderr,
+    exitCode: 0,
+  };
+}
+
+async function runWorkflowMediaOperation(request) {
+  const operation = String(request.operation || '');
+  if (operation === 'generate_mock_video') return generateMockVideo(request);
+  if (operation === 'prepare_video') return prepareVideo(request);
+  if (operation === 'prepare_audio') return prepareAudio(request);
+  throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'media operation is unsupported', false);
 }
 
 function fraction(value) {
@@ -1436,6 +1633,13 @@ async function handleRequest(request, response) {
     if (request.method === 'GET' && url.pathname === '/health') {
       const health = await healthResponse();
       jsonResponse(response, health.healthy || !config.enabled ? 200 : 503, health.body);
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/media/process') {
+      if (!config.enabled) throw new WorkerError('MEDIA_WORKER_DISABLED', 'media worker is disabled', false);
+      const body = await readJsonBody(request);
+      const result = await runWorkflowMediaOperation(body);
+      jsonResponse(response, 200, result);
       return;
     }
     if (request.method === 'POST' && url.pathname === '/jobs/claim-or-run') {

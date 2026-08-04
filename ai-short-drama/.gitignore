@@ -12,6 +12,7 @@ storage/visual-assets/*/*
 storage/storyboard-images/*
 storage/thumbnails/*
 storage/provider-responses/*
+storage/runtime-workflows*/
 storage/shot-videos/*
 storage/voices/*
 storage/dialogue-audio/*

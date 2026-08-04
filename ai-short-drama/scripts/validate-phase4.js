@@ -83,6 +83,7 @@ for (const file of requiredWorkflows) {
     }
   }
   for (const node of workflow.nodes) {
+    assert(node.type !== 'n8n-nodes-base.executeCommand', `${file}: executeCommand must be delegated to media-worker`);
     if (node.type === 'n8n-nodes-base.code' && typeof node.parameters?.jsCode === 'string') {
       try { new Function(node.parameters.jsCode); }
       catch (error) { errors.push(`${file}: Code node ${node.name} does not parse: ${error.message}`); }
@@ -125,6 +126,7 @@ const videoAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '09a-video-p
 const ttsAdapterWorkflow = fs.readFileSync(path.join(workflowDir, '10a-tts-provider-adapter.json'), 'utf8');
 const voiceAudioWorkflow = fs.readFileSync(path.join(workflowDir, '10-voice-audio.json'), 'utf8');
 const audioPollerWorkflow = fs.readFileSync(path.join(workflowDir, '10b-audio-task-poller-process.json'), 'utf8');
+const mediaWorker = fs.readFileSync(path.join(root, 'scripts', 'media-worker', 'worker.js'), 'utf8');
 assert(videoGenerationWorkflow.includes('model,provider,prompt:videoPrompt'), '09-image-to-video.json: selected video model is not included in request payload');
 assert(videoGenerationWorkflow.includes('"shot_id": "={{$json.shot.shot_id}}"'), '09-image-to-video.json: provider dispatch is missing the top-level shot_id');
 assert(videoGenerationWorkflow.includes('Rate Limit Video Submissions'), '09-image-to-video.json: provider dispatch is missing quota-safe request pacing');
@@ -157,6 +159,13 @@ assert(voiceAudioWorkflow.includes("(SELECT failed_count>0 FROM stats)audio_fail
 assert(voiceAudioWorkflow.includes("status=CASE WHEN(SELECT audio_failed FROM flags)THEN'failed'ELSE'completed'END"), '10-voice-audio.json: failed audio aggregate must mark the workflow task failed for retry');
 assert(audioPollerWorkflow.includes("current_stage='stage_4_failed'") && audioPollerWorkflow.includes("audio poll or processing failed"), '10b-audio-task-poller-process.json: failed audio polling must mark project stage_4_failed');
 assert(videoGenerationWorkflow.includes("'audio_plan_completed','stage_4_failed'"), '09-image-to-video.json: video finalization must preserve stage_4_failed from the audio branch');
+for (const workflow of [videoAdapterWorkflow, fs.readFileSync(path.join(workflowDir, '09b-video-task-poller.json'), 'utf8'), audioPollerWorkflow]) {
+  assert(workflow.includes("'/media/process'"), 'phase 4 media workflow must call the isolated media-worker endpoint');
+}
+for (const operation of ['generate_mock_video', 'prepare_video', 'prepare_audio']) {
+  assert(mediaWorker.includes(`'${operation}'`), `media-worker: missing typed operation ${operation}`);
+}
+assert(mediaWorker.includes("url.pathname === '/media/process'"), 'media-worker: workflow media route missing');
 
 const envPath = path.join(root, '.env.example');
 const envLines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));

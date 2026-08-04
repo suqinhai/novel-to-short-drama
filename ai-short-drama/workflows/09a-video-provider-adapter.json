@@ -282,12 +282,27 @@
     },
     {
       "parameters": {
-        "command": "=set -eu; OUT='{{$json.mock_file_path}}'; mkdir -p \"$(dirname \"$OUT\")\"; if [ ! -s \"$OUT\" ]; then ffmpeg -hide_banner -loglevel error -y -f lavfi -i \"color=c=0x172033:s=1280x720:r=24:d=3\" -f lavfi -i \"anullsrc=channel_layout=stereo:sample_rate=48000\" -shortest -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -movflags +faststart \"$OUT\"; fi; printf '%s\\n' '{\"status\":\"succeeded\",\"provider_task_id\":\"mock:{{$json.task_id}}\",\"video_url\":\"file://{{$json.mock_file_path}}\",\"mime_type\":\"video/mp4\",\"duration_seconds\":3}'"
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090').replace(/\\/$/,'')+'/media/process'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {operation:'generate_mock_video',task_id:$json.task_id,output_path:$json.mock_file_path,duration_seconds:3} }}",
+        "options": {
+          "timeout": "={{(Number($env.MEDIA_RENDER_TIMEOUT_MINUTES||30)*60+10)*1000}}",
+          "response": {"response": {"responseFormat": "json"}}
+        }
       },
       "id": "09a00000-0000-4000-8000-000000000009",
       "name": "Generate Stable Mock MP4",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         300,
         -120

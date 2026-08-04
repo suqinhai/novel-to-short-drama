@@ -116,8 +116,17 @@
       "onError": "continueErrorOutput"
     },
     {
-      "parameters": {"command": "={{$json.request.media_command}}"},
-      "id": "09b-exec-media", "name": "Create Download and FFprobe MP4", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1,
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090').replace(/\\/$/,'')+'/media/process'}}",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}"}, {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {operation:'prepare_video',source:$json.request.result.videos[0].mock_video?($json.request.result.videos[0].source_image_url||$json.request.source_image_url):$json.request.result.videos[0].url,target_path:$json.request.video_target_path,thumbnail_path:$json.request.thumbnail_path,mock_video:Boolean($json.request.result.videos[0].mock_video),keep_audio:Boolean($json.request.request_payload?.expected_audio),width:$json.request.requested_width,height:$json.request.requested_height,fps:$json.request.requested_fps,duration_seconds:$json.request.requested_duration} }}",
+        "options": {"timeout": "={{(Number($env.MEDIA_RENDER_TIMEOUT_MINUTES||30)*60+10)*1000}}", "response": {"response": {"responseFormat": "json"}}}
+      },
+      "id": "09b-exec-media", "name": "Create Download and FFprobe MP4", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
       "position": [1280, 60], "onError": "continueErrorOutput"
     },
     {

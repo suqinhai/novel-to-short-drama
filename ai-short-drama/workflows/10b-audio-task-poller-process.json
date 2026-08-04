@@ -118,8 +118,17 @@
       "onError": "continueErrorOutput"
     },
     {
-      "parameters": {"command": "={{$json.request.media_command}}"},
-      "id": "10b-exec-media", "name": "Download Normalize and FFprobe Audio", "type": "n8n-nodes-base.executeCommand", "typeVersion": 1,
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.MEDIA_WORKER_URL||'http://media-worker:8090').replace(/\\/$/,'')+'/media/process'}}",
+        "sendHeaders": true,
+        "headerParameters": {"parameters": [{"name": "X-Media-Worker-Token", "value": "={{$env.MEDIA_WORKER_TOKEN||''}}"}, {"name": "Content-Type", "value": "application/json"}]},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {operation:'prepare_audio',source:$json.request.result.audio?.url,target_path:$json.request.audio_target_path,download:!($json.request.result.audio?.storage_url&&String($json.request.result.audio.storage_url).startsWith($env.MEDIA_STORAGE_PATH||'/data/storage')),sample_rate:Number($json.request.request_payload?.sample_rate||$env.TTS_DEFAULT_SAMPLE_RATE||48000),loudness_lufs:Number($env.TTS_TARGET_LOUDNESS_LUFS||-16),true_peak_db:Number($env.TTS_MAX_PEAK_DB||-1)} }}",
+        "options": {"timeout": "={{(Number($env.MEDIA_RENDER_TIMEOUT_MINUTES||30)*60+10)*1000}}", "response": {"response": {"responseFormat": "json"}}}
+      },
+      "id": "10b-exec-media", "name": "Download Normalize and FFprobe Audio", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
       "position": [1340, 60], "onError": "continueErrorOutput"
     },
     {
