@@ -14,6 +14,7 @@ export const pipelineStages = [
 ]
 
 const stageAliases = [
+  ['adaptation_planning', 'episode_planning'],
   ['created', 'novel_import'],
   ['novel_import', 'novel_import'],
   ['chunk_analysis', 'chunk_analysis'],
@@ -71,6 +72,7 @@ const completedStageCheckpoints = new Set([
 ])
 
 const exactStageLabels = {
+  adaptation_planning: '等待编译并采用改编计划',
   waiting_next_episode: '等待启动下一集',
   created: '项目已创建',
   novel_import: '小说导入',

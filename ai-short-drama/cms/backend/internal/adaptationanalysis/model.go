@@ -1,6 +1,6 @@
 package adaptationanalysis
 
-const AnalyzerVersion = "deterministic-mock-v1"
+const AnalyzerVersion = "deterministic-mock-v3"
 
 type Chapter struct {
 	ID       string
@@ -21,6 +21,8 @@ type Event struct {
 	EventType          string
 	Importance         float64
 	NarrativeOrder     float64
+	EpisodeNumber      int
+	EpisodeOrdinal     int
 }
 
 type StoryArc struct {

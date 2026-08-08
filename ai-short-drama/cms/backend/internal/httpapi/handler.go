@@ -183,7 +183,15 @@ func (h *Handler) adoptRollingPlan(c *gin.Context) {
 	case err != nil:
 		respondError(c, http.StatusInternalServerError, "ROLLING_PLAN_ADOPT_FAILED", "无法建立单集生产队列："+err.Error())
 	default:
-		c.JSON(http.StatusCreated, gin.H{"data": result})
+		analysis, analysisErr := h.store.RunAdaptationAnalysis(
+			c.Request.Context(), c.Param("projectID"), "rolling-adopt-analysis:"+c.Param("planID"),
+		)
+		if analysisErr != nil {
+			respondError(c, http.StatusInternalServerError, "ROLLING_INPUT_BOOTSTRAP_FAILED",
+				"单集队列已建立，但节奏输入准备失败："+analysisErr.Error())
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": result, "analysis": analysis})
 	}
 }
 
@@ -238,6 +246,11 @@ func (h *Handler) advanceProject(c *gin.Context) {
 		}
 		if len(rolling.Arcs) > 0 {
 			respondError(c, http.StatusUnprocessableEntity, "EPISODE_RUN_REQUIRED", "滚动生产项目必须明确选择要生成的单集")
+			return
+		}
+		if isVersionedAdaptationProject(actionContext.Config) {
+			respondError(c, http.StatusUnprocessableEntity, "ADAPTATION_PLAN_REQUIRED",
+				"请先编译并采用改编计划，再从单集队列启动生产")
 			return
 		}
 	}
@@ -376,6 +389,17 @@ func (h *Handler) advanceProject(c *gin.Context) {
 		"action": input.Action, "task_id": input.TaskID, "episode_run_id": input.EpisodeRunID, "webhook_stage": webhookStage,
 		"n8n_response": n8nResponse, "project": latestProject,
 	}})
+}
+
+func isVersionedAdaptationProject(raw json.RawMessage) bool {
+	var projectConfig map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &projectConfig) != nil {
+		return false
+	}
+	contractVersion, contractOK := projectConfig["contract_version"].(string)
+	sourceVersionID, sourceOK := projectConfig["source_version_id"].(string)
+	return contractOK && sourceOK && strings.TrimSpace(contractVersion) == "2.0" &&
+		strings.TrimSpace(sourceVersionID) != ""
 }
 
 func (h *Handler) projectFlowWebhook(currentStage string) (webhookStage, requestedStage, webhookURL string, ok bool) {

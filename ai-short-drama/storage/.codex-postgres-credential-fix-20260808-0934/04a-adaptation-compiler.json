@@ -64,7 +64,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "id": "CrdPgSd7V3x9Qa2L",
           "name": "Short Drama PostgreSQL"
         }
       }
@@ -126,7 +126,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "id": "CrdPgSd7V3x9Qa2L",
           "name": "Short Drama PostgreSQL"
         }
       }
@@ -181,7 +181,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "id": "CrdPgSd7V3x9Qa2L",
           "name": "Short Drama PostgreSQL"
         }
       },
@@ -231,7 +231,7 @@
       ],
       "credentials": {
         "postgres": {
-          "id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID",
+          "id": "CrdPgSd7V3x9Qa2L",
           "name": "Short Drama PostgreSQL"
         }
       }

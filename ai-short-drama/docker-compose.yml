@@ -48,6 +48,8 @@ services:
       - ./database/21-verify-pluggable-candidate-providers.sql:/opt/drama/21-verify-pluggable-candidate-providers.sql:ro
       - ./database/22-restore-effective-input-stage-requirements.sql:/opt/drama/22-restore-effective-input-stage-requirements.sql:ro
       - ./database/22-verify-effective-input-stage-requirements.sql:/opt/drama/22-verify-effective-input-stage-requirements.sql:ro
+      - ./database/23-versioned-production-routing.sql:/opt/drama/23-versioned-production-routing.sql:ro
+      - ./database/23-verify-versioned-production-routing.sql:/opt/drama/23-verify-versioned-production-routing.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

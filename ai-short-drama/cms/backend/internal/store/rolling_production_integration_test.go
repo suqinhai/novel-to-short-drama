@@ -65,6 +65,27 @@ func TestRollingProductionAdoptionAndActivationIntegration(t *testing.T) {
 	if publishedArtifacts != 2 {
 		t.Fatalf("adoption did not publish plan artifact projection: got %d current artifacts", publishedArtifacts)
 	}
+	var continuityEntries, charactersWithoutBible int
+	if err = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.continuity_ledger_entries
+		WHERE project_id='p_phase1_legacy' AND validation_status='valid'`).Scan(&continuityEntries); err != nil {
+		t.Fatal(err)
+	}
+	if continuityEntries != len(rolling.Episodes) {
+		t.Fatalf("expected one valid continuity seed per episode, got %d", continuityEntries)
+	}
+	if err = database.pool.QueryRow(ctx, `SELECT count(*) FROM (
+		SELECT DISTINCT jsonb_array_elements_text(outline.character_ids) character_id
+		FROM drama.episode_outlines outline WHERE outline.project_id='p_phase1_legacy'
+	) required WHERE NOT EXISTS(
+		SELECT 1 FROM drama.character_performance_bibles bible
+		WHERE bible.project_id='p_phase1_legacy' AND bible.character_id=required.character_id
+		  AND bible.status='locked'
+	)`).Scan(&charactersWithoutBible); err != nil {
+		t.Fatal(err)
+	}
+	if charactersWithoutBible != 0 {
+		t.Fatalf("%d episode characters do not have a locked performance bible", charactersWithoutBible)
+	}
 
 	activated, err := database.ActivateEpisodeProductionRun(ctx, "p_phase1_legacy", run.EpisodeRunID)
 	if err != nil {

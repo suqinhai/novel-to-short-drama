@@ -74,6 +74,14 @@ func TestAdaptationProjectAndSpecIntegration(t *testing.T) {
 	if err != nil || replay.OperationID != operation.OperationID {
 		t.Fatalf("project replay=%#v err=%v", replay, err)
 	}
+	var projectStage, projectStatus string
+	if err = database.pool.QueryRow(ctx, `SELECT current_stage,status FROM drama.projects WHERE project_id=$1`,
+		operation.TargetID).Scan(&projectStage, &projectStatus); err != nil {
+		t.Fatal(err)
+	}
+	if projectStage != "adaptation_planning" || projectStatus != "pending" {
+		t.Fatalf("new adaptation project routed to %s/%s", projectStage, projectStatus)
+	}
 	summaries, err := database.ListAdaptationSpecs(ctx, operation.TargetID)
 	if err != nil || len(summaries) != 1 || summaries[0].Status != "active" || summaries[0].IRRevisionID == nil ||
 		*summaries[0].IRRevisionID != irOperation.TargetID {

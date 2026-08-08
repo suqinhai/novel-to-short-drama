@@ -259,6 +259,61 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 		return RollingProduction{}, err
 	}
 
+	// A rolling project has no legacy story-bible authoring pass. Seed one
+	// locked, source-derived performance contract for every character selected
+	// by the approved plan so the first script can consume effective inputs
+	// without a circular dependency on script scenes that do not exist yet.
+	_, err = tx.Exec(ctx, `WITH selected_characters AS (
+		SELECT DISTINCT entity.entity_id character_id,revision.entity_revision_id,
+			revision.canonical_name,revision.attributes
+		FROM drama.adaptation_episode_plans episode
+		JOIN drama.episode_event_assignments assignment
+		  ON assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id
+		JOIN drama.event_participants participant
+		  ON participant.event_revision_id=assignment.event_revision_id
+		JOIN drama.narrative_entity_revisions revision
+		  ON revision.entity_revision_id=participant.entity_revision_id
+		JOIN drama.narrative_entities entity ON entity.entity_id=revision.entity_id
+		WHERE episode.adaptation_plan_id=$2 AND entity.entity_type='character'
+		  AND revision.validation_status<>'invalid'
+	), versioned AS (
+		SELECT selected.*,
+			COALESCE((SELECT max(existing.version)+1
+			  FROM drama.character_performance_bibles existing
+			  WHERE existing.project_id=$1 AND existing.character_id=selected.character_id
+			    AND existing.character_version=selected.entity_revision_id),1) next_version
+		FROM selected_characters selected
+	)
+	INSERT INTO drama.character_performance_bibles(
+		performance_bible_id,project_id,character_id,character_version,version,
+		speech,acting,relational_voices,appearance,locked_fields,allowed_fields,
+		change_reasons,source_refs,status,content_hash,created_by)
+	SELECT 'pb_roll_'||substr(encode(drama.digest(convert_to(
+		$1||':'||character_id||':'||entity_revision_id||':'||next_version::text,'UTF8'),'sha256'),'hex'),1,20),
+		$1,character_id,entity_revision_id,next_version,
+		jsonb_build_object('style','source-derived','canonical_name',canonical_name),
+		jsonb_build_object('baseline','source-derived','attributes',attributes),
+		'{}'::jsonb,
+		jsonb_build_object('canonical_name',canonical_name,'attributes',attributes),
+		'["identity","speech","acting","appearance"]'::jsonb,
+		'["emotion","performance_instruction"]'::jsonb,
+		jsonb_build_object('initial','Derived from the frozen Narrative IR during rolling-plan adoption'),
+		jsonb_build_object('ir_revision_id',$3::text,'adaptation_plan_id',$2,
+		  'entity_revision_id',entity_revision_id),
+		'locked',encode(drama.digest(convert_to(jsonb_build_object(
+		  'character_id',character_id,'character_version',entity_revision_id,
+		  'canonical_name',canonical_name,'attributes',attributes)::text,'UTF8'),'sha256'),'hex'),
+		'rolling-production-bootstrap'
+	FROM versioned
+	WHERE NOT EXISTS(
+		SELECT 1 FROM drama.character_performance_bibles locked
+		WHERE locked.project_id=$1 AND locked.character_id=versioned.character_id
+		  AND locked.status='locked'
+	)`, projectID, adaptationPlanID, irRevisionID)
+	if err != nil {
+		return RollingProduction{}, err
+	}
+
 	seasonID, err := newPublicID("season_roll_")
 	if err != nil {
 		return RollingProduction{}, err
@@ -368,6 +423,23 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 			episodeID, seasonID, projectID, seed.EpisodeNumber, seed.Title, seed.Logline,
 			seed.ChapterIDs, seed.OpeningHook, seed.PlanID, seed.EndingHook, seed.Duration,
 			seed.ContinuityIn, seed.ContinuityOut, irRevisionID)
+		if err != nil {
+			return RollingProduction{}, err
+		}
+		continuityID, idErr := newPublicID("continuity_roll_")
+		if idErr != nil {
+			return RollingProduction{}, idErr
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO drama.continuity_ledger_entries(
+			continuity_entry_id,project_id,episode_id,episode_number,scope,sequence_number,
+			input_state,output_state,validation_status,diagnostics,state_hash)
+		VALUES($1,$2,$3,$4,'episode',0,
+			jsonb_build_object('constraints',$5::jsonb,'source','adaptation_episode_plan'),
+			jsonb_build_object('constraints',$6::jsonb,'source','adaptation_episode_plan'),
+			'valid','[]'::jsonb,
+			encode(drama.digest(convert_to(jsonb_build_object(
+			  'input',$5::jsonb,'output',$6::jsonb)::text,'UTF8'),'sha256'),'hex'))`,
+			continuityID, projectID, episodeID, seed.EpisodeNumber, seed.ContinuityIn, seed.ContinuityOut)
 		if err != nil {
 			return RollingProduction{}, err
 		}

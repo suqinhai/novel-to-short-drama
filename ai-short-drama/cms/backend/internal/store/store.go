@@ -342,6 +342,7 @@ type FlowActionContext struct {
 	CurrentStage           string             `json:"current_stage"`
 	Status                 string             `json:"status"`
 	TestMode               bool               `json:"test_mode"`
+	Config                 json.RawMessage    `json:"config"`
 	ActiveTasks            int                `json:"active_tasks"`
 	PendingReviews         int                `json:"pending_reviews"`
 	EpisodeID              *string            `json:"episode_id,omitempty"`
@@ -1643,7 +1644,7 @@ func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID stri
 	var action FlowActionContext
 	err := s.pool.QueryRow(ctx, `SELECT p.project_id,p.novel_name,p.target_episode_count,
 		p.episode_duration_seconds,p.visual_style,p.aspect_ratio,p.target_platform,p.current_stage,
-		p.status,p.test_mode,
+		p.status,p.test_mode,COALESCE(p.config,'{}'::jsonb),
 		(SELECT COUNT(*) FROM drama.workflow_tasks w WHERE w.project_id=p.project_id AND w.status IN ('pending','running')),
 		(SELECT COUNT(*) FROM drama.review_tasks r WHERE r.project_id=p.project_id AND r.review_status='pending'),
 		(SELECT episode_id FROM drama.episode_outlines e WHERE e.project_id=p.project_id
@@ -1653,7 +1654,7 @@ func (s *Store) GetFlowActionContext(ctx context.Context, projectID, taskID stri
 		FROM drama.projects p WHERE p.project_id=$1`, projectID).Scan(
 		&action.ProjectID, &action.NovelName, &action.TargetEpisodeCount, &action.EpisodeDurationSeconds,
 		&action.VisualStyle, &action.AspectRatio, &action.TargetPlatform, &action.CurrentStage,
-		&action.Status, &action.TestMode, &action.ActiveTasks, &action.PendingReviews,
+		&action.Status, &action.TestMode, &action.Config, &action.ActiveTasks, &action.PendingReviews,
 		&action.EpisodeID, &action.OriginalInput,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

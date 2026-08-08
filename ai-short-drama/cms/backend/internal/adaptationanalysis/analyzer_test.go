@@ -98,3 +98,38 @@ func TestBeatEditOnlyReportsChangedStableBeat(t *testing.T) {
 		}
 	}
 }
+
+func TestPacingKeepsApprovedEpisodeAssignmentsAndDurationCap(t *testing.T) {
+	input := sampleInput(t)
+	input.TargetEpisodeCount = 2
+	input.EpisodeDuration = 30
+	input.Events = append(input.Events, input.Events...)
+	for index := range input.Events {
+		input.Events[index].EventRevisionID += string(rune('a' + index))
+		input.Events[index].NarrativeOrder = float64(index + 1)
+		if index < 4 {
+			input.Events[index].EpisodeNumber = 1
+			input.Events[index].EpisodeOrdinal = 4 - index
+		} else {
+			input.Events[index].EpisodeNumber = 2
+			input.Events[index].EpisodeOrdinal = 6 - index
+		}
+		input.Events[index].Summary = strings.Repeat("剧情推进", 20)
+	}
+	_, pacing, _ := Analyze(input)
+	counts := map[int]int{}
+	for _, beat := range pacing.Beats {
+		counts[beat.EpisodeNumber]++
+	}
+	if counts[1] != 4 || counts[2] != 2 {
+		t.Fatalf("approved episode assignments changed: %#v", counts)
+	}
+	for _, episode := range pacing.Episodes {
+		if episode.EstimatedDuration > input.EpisodeDuration {
+			t.Fatalf("episode %d exceeds duration cap: %#v", episode.EpisodeNumber, episode)
+		}
+	}
+	if pacing.Beats[0].EpisodeNumber != 1 || pacing.Beats[0].Key != stableBeatKey(input.Events[3]) {
+		t.Fatalf("approved episode order changed: %#v", pacing.Beats)
+	}
+}

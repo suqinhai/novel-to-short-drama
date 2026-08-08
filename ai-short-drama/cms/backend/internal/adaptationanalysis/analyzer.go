@@ -219,7 +219,17 @@ func buildPacing(input Input) PacingPlan {
 		targetDuration = 90
 	}
 	events := append([]Event(nil), input.Events...)
-	sort.SliceStable(events, func(i, j int) bool { return events[i].NarrativeOrder < events[j].NarrativeOrder })
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].EpisodeNumber > 0 && events[j].EpisodeNumber > 0 {
+			if events[i].EpisodeNumber != events[j].EpisodeNumber {
+				return events[i].EpisodeNumber < events[j].EpisodeNumber
+			}
+			if events[i].EpisodeOrdinal != events[j].EpisodeOrdinal {
+				return events[i].EpisodeOrdinal < events[j].EpisodeOrdinal
+			}
+		}
+		return events[i].NarrativeOrder < events[j].NarrativeOrder
+	})
 	if len(events) == 0 {
 		for _, chapter := range input.Chapters {
 			events = append(events, Event{
@@ -234,7 +244,10 @@ func buildPacing(input Input) PacingPlan {
 	plan := PacingPlan{AnalyzerVersion: AnalyzerVersion, Beats: []Beat{}, Issues: []PacingIssue{}}
 	ordinals := map[int]int{}
 	for i, event := range events {
-		episode := min(episodeCount, i*episodeCount/max(1, len(events))+1)
+		episode := event.EpisodeNumber
+		if episode < 1 || episode > episodeCount {
+			episode = min(episodeCount, i*episodeCount/max(1, len(events))+1)
+		}
 		ordinals[episode]++
 		summary := event.Summary
 		conflict := clamp(0.25 + event.Importance*0.55 + keywordBoost(summary, []string{"追", "伤", "阻", "争", "逃", "暗箭"}))
@@ -259,9 +272,55 @@ func buildPacing(input Input) PacingPlan {
 			EstimatedDuration: duration,
 		})
 	}
+	fitEpisodeDurations(plan.Beats, targetDuration)
 	recalculatePacing(&plan)
 	plan.Arcs = buildArcMetrics(input.StoryArcs, plan)
 	return plan
+}
+
+func fitEpisodeDurations(beats []Beat, targetDuration int) {
+	byEpisode := map[int][]int{}
+	for index := range beats {
+		byEpisode[beats[index].EpisodeNumber] = append(byEpisode[beats[index].EpisodeNumber], index)
+	}
+	for _, indexes := range byEpisode {
+		total := 0
+		for _, index := range indexes {
+			total += beats[index].EstimatedDuration
+		}
+		if total <= targetDuration || targetDuration < len(indexes)*6 {
+			continue
+		}
+		scale := float64(targetDuration) / float64(total)
+		scaledTotal := 0
+		for _, index := range indexes {
+			beats[index].EstimatedDuration = max(6, int(math.Floor(float64(beats[index].EstimatedDuration)*scale)))
+			scaledTotal += beats[index].EstimatedDuration
+		}
+		for scaledTotal > targetDuration {
+			best := -1
+			for _, index := range indexes {
+				if beats[index].EstimatedDuration > 6 && (best < 0 || beats[index].EstimatedDuration > beats[best].EstimatedDuration) {
+					best = index
+				}
+			}
+			if best < 0 {
+				break
+			}
+			beats[best].EstimatedDuration--
+			scaledTotal--
+		}
+		for scaledTotal < targetDuration {
+			best := indexes[0]
+			for _, index := range indexes[1:] {
+				if beats[index].EstimatedDuration > beats[best].EstimatedDuration {
+					best = index
+				}
+			}
+			beats[best].EstimatedDuration++
+			scaledTotal++
+		}
+	}
 }
 
 func recalculatePacing(plan *PacingPlan) {

@@ -73,6 +73,26 @@ assert.equal(multiEventMergeResult.publishable, true, JSON.stringify(multiEventM
 assert(multiEventMergeResult.plan.episodes.some((episode) => episode.merged_content.some((merge) =>
   merge.source_event_ids.length > 2)));
 
+const balancedCompression = fixture('phase3-compiler-valid.json');
+balancedCompression.run.compiler_run_id = 'compiler_fixture_balanced';
+balancedCompression.spec.episode_duration_seconds = 120;
+balancedCompression.rules = balancedCompression.rules.filter((rule) => rule.rule_type === 'merge_allowed');
+balancedCompression.events = Array.from({length: 21}, (_, index) => ({
+  ...balancedCompression.events[index < 10 ? 0 : 2],
+  event_revision_id: `event_balanced_${String(index + 1).padStart(2, '0')}`,
+  fact_revision_id: `fact_balanced_${String(index + 1).padStart(2, '0')}`,
+  source_span_id: `span_balanced_${String(index + 1).padStart(2, '0')}`,
+  narrative_order: index + 1,
+  importance: 0.5,
+}));
+balancedCompression.relations = [];
+balancedCompression.state_changes = [];
+balancedCompression.foreshadow_occurrences = [];
+const balancedCompressionResult = compile(balancedCompression);
+assert.equal(balancedCompressionResult.publishable, true, JSON.stringify(balancedCompressionResult.plan.diagnostics));
+assert.deepEqual(balancedCompressionResult.plan.episodes.map((episode) => episode.source_event_ids.length), [10, 11]);
+assert(balancedCompressionResult.plan.episodes.every((episode) => episode.estimated_duration_seconds <= 120));
+
 const chapterOrdering = fixture('phase3-compiler-valid.json');
 chapterOrdering.relations = [];
 chapterOrdering.state_changes = [];

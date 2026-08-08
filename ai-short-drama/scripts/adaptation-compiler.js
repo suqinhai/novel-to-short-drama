@@ -103,6 +103,51 @@ function allocateByCount(eventUnits, episodeCount) {
   return buckets;
 }
 
+function allocateWithBalancedMerges(eventUnits, episodeCount, durationTarget, rules, compilerRunID) {
+  if (!Number.isInteger(episodeCount) || episodeCount < 1 || eventUnits.length < episodeCount) return null;
+
+  const segment = (start, end) => {
+    const units = eventUnits.slice(start, end);
+    const events = units.flatMap((unit) => unit.events);
+    if (units.length === 1) return {...units[0], events};
+
+    const authorizers = rules.filter((rule) => rule.rule_type === 'merge_allowed' &&
+      events.every((event) => ruleMatchesEvent(rule, event)));
+    const immutable = rules.some((rule) => rule.rule_type === 'must_not_change' && rule.enforcement === 'hard' &&
+      events.some((event) => ruleTargetsEvent(rule, event)));
+    if (!authorizers.length || immutable) return null;
+
+    const estimatedSeconds = units.slice(1).reduce((seconds, unit) =>
+      Math.max(15, Math.round((seconds + unit.estimated_seconds) * 0.72)), units[0].estimated_seconds);
+    if (estimatedSeconds > durationTarget) return null;
+    return {
+      events,
+      estimated_seconds: estimatedSeconds,
+      merge_group_id: makeID('merge_', [compilerRunID, ...events.map((event) => event.event_revision_id)]),
+      merge_rule_ids: unique(authorizers.map((rule) => rule.adaptation_rule_id)).sort(),
+    };
+  };
+
+  const states = Array.from({length: episodeCount + 1}, () => Array(eventUnits.length + 1).fill(null));
+  states[0][0] = {cost: 0, groups: []};
+  for (let groupCount = 1; groupCount <= episodeCount; groupCount += 1) {
+    for (let end = groupCount; end <= eventUnits.length; end += 1) {
+      for (let start = groupCount - 1; start < end; start += 1) {
+        const previous = states[groupCount - 1][start];
+        if (!previous || eventUnits.length - end < episodeCount - groupCount) continue;
+        const unit = segment(start, end);
+        if (!unit || unit.estimated_seconds > durationTarget) continue;
+        const underfill = durationTarget - unit.estimated_seconds;
+        const cost = previous.cost + underfill * underfill;
+        const current = states[groupCount][end];
+        if (!current || cost < current.cost) states[groupCount][end] = {cost, groups: [...previous.groups, unit]};
+      }
+    }
+  }
+  const best = states[episodeCount][eventUnits.length];
+  return best ? {eventUnits: best.groups, buckets: best.groups.map((unit) => [unit])} : null;
+}
+
 function compile(input) {
   const run = input?.run || {};
   const spec = input?.spec || {};
@@ -196,7 +241,7 @@ function compile(input) {
   if (!Number.isInteger(episodeCount) || episodeCount < 1 || !Number.isInteger(durationTarget) || durationTarget < 1) {
     block('INVALID_TARGET_FORMAT', 'Episode count and duration must be positive integers.');
   }
-  const eventUnits = ordered.map((event) => ({
+  let eventUnits = ordered.map((event) => ({
     events: [event],
     estimated_seconds: Math.max(12, Math.round(18 + Number(event.importance ?? 0.5) * 42)),
     merge_group_id: null,
@@ -205,6 +250,14 @@ function compile(input) {
   const totalCapacity = Math.max(0, episodeCount * durationTarget);
   let totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
   let buckets = allocateByDuration(eventUnits, episodeCount, durationTarget);
+  if (!buckets) {
+    const balanced = allocateWithBalancedMerges(eventUnits, episodeCount, durationTarget, rules, run.compiler_run_id);
+    if (balanced) {
+      eventUnits = balanced.eventUnits;
+      buckets = balanced.buckets;
+      totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
+    }
+  }
   while (!buckets && eventUnits.length > episodeCount) {
     const candidates = [];
     for (let index = 0; index < eventUnits.length - 1; index += 1) {

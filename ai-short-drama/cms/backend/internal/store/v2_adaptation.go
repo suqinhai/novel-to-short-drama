@@ -71,7 +71,7 @@ func (s *Store) CreateAdaptationProject(ctx context.Context, key string, input C
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.projects(project_id,novel_name,target_episode_count,episode_duration_seconds,
 		visual_style,aspect_ratio,target_platform,current_stage,status,test_mode,config,display_name)
-		VALUES($1,$2,$3,$4,'narrative-ir','9:16',$5,'created','pending',false,$6,$2)`, projectID, input.DisplayName,
+		VALUES($1,$2,$3,$4,'narrative-ir','9:16',$5,'adaptation_planning','pending',false,$6,$2)`, projectID, input.DisplayName,
 		input.AdaptationSpec.TargetEpisodeCount, input.AdaptationSpec.EpisodeDurationSeconds, input.AdaptationSpec.Platform,
 		mustJSON(map[string]any{"contract_version": "2.0", "source_version_id": input.AdaptationSpec.SourceVersionID})); err != nil {
 		return Operation{}, mapPGConflict(err)

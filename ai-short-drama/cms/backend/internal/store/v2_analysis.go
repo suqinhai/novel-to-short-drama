@@ -375,6 +375,34 @@ func loadAnalysisInput(ctx context.Context, tx pgx.Tx, projectID string) (adapta
 		input.Events = append(input.Events, event)
 	}
 	eventRows.Close()
+	if adaptationPlanID != nil {
+		assignmentRows, assignmentErr := tx.Query(ctx, `SELECT assignment.event_revision_id,episode.episode_number,
+			assignment.sequence_number
+			FROM drama.adaptation_episode_plans episode
+			JOIN drama.episode_event_assignments assignment
+			  ON assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id
+			WHERE episode.adaptation_plan_id=$1`, *adaptationPlanID)
+		if assignmentErr != nil {
+			return input, assignmentErr
+		}
+		type episodePosition struct{ number, ordinal int }
+		episodeByEvent := map[string]episodePosition{}
+		for assignmentRows.Next() {
+			var eventID string
+			var position episodePosition
+			if err := assignmentRows.Scan(&eventID, &position.number, &position.ordinal); err != nil {
+				assignmentRows.Close()
+				return input, err
+			}
+			episodeByEvent[eventID] = position
+		}
+		assignmentRows.Close()
+		for index := range input.Events {
+			position := episodeByEvent[input.Events[index].EventRevisionID]
+			input.Events[index].EpisodeNumber = position.number
+			input.Events[index].EpisodeOrdinal = position.ordinal
+		}
+	}
 	arcRows, err := tx.Query(ctx, `SELECT story_arc_revision_id,title,summary,arc_type
 		FROM drama.story_arc_revisions WHERE ir_revision_id=$1 ORDER BY created_at,story_arc_revision_id`, input.IRRevisionID)
 	if err != nil {

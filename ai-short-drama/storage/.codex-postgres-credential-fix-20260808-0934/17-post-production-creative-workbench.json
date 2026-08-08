@@ -1,0 +1,316 @@
+{
+  "name": "17 口型声音剪辑与统一创作工作台",
+  "id": "wf_postprod_creative_workbench",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "timezone": "Asia/Taipei"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "project_id"
+            },
+            {
+              "name": "episode_id"
+            },
+            {
+              "name": "editing_template_version_id"
+            },
+            {
+              "name": "template_scope"
+            },
+            {
+              "name": "dialogue_timings",
+              "type": "array"
+            },
+            {
+              "name": "actor"
+            }
+          ]
+        }
+      },
+      "id": "17-trigger",
+      "name": "Phase 5 Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -900,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const clean=v=>String(v||'').trim(),i=$json;const project_id=clean(i.project_id),episode_id=clean(i.episode_id),editing_template_version_id=clean(i.editing_template_version_id||'etv_system_urban_power_v1'),template_scope=clean(i.template_scope||'episode'),actor=clean(i.actor||'phase5-workflow');if(!project_id||!episode_id)throw new Error('INVALID_INPUT: project_id and episode_id are required');if(!['project','episode'].includes(template_scope))throw new Error('INVALID_INPUT: template_scope');return [{json:{...i,project_id,episode_id,editing_template_version_id,template_scope,actor,trace_id:clean(i.trace_id||('trace_phase17_'+require('crypto').randomUUID())),generation_version:Math.max(1,Number(i.generation_version||1)),dialogue_timings:Array.isArray(i.dialogue_timings)?i.dialogue_timings:[]}}];"
+      },
+      "id": "17-normalize",
+      "name": "Normalize Versioned Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{($env.CMS_INTERNAL_URL || 'http://cms-api:8888') + '/api/v1/projects/' + encodeURIComponent($json.project_id) + '/episodes/' + encodeURIComponent($json.episode_id) + '/creative-workbench'}}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "17-load",
+      "name": "Load Unified Upstream Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH hints AS (SELECT shot_id,project_id,episode_id,shot_order,bgm_hint,sound_effect_hint,(sum((duration_seconds*1000)::bigint) OVER(ORDER BY shot_order ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))::bigint start_ms,(sum((duration_seconds*1000)::bigint) OVER(ORDER BY shot_order))::bigint end_ms FROM drama.storyboard_shots WHERE project_id=$1 AND episode_id=$2),tasks AS (SELECT shot_id,project_id,episode_id,shot_order,'bgm'::text cue_type,bgm_hint hint,start_ms,end_ms FROM hints WHERE btrim(bgm_hint)<>'' UNION ALL SELECT shot_id,project_id,episode_id,shot_order,'sound_effect',sound_effect_hint,start_ms,LEAST(end_ms,start_ms+1200) FROM hints WHERE btrim(sound_effect_hint)<>''),assets AS (INSERT INTO drama.sound_assets(sound_asset_id,project_id,asset_type,name,style_group) SELECT 'sa_'||substr(encode(drama.digest(project_id||':'||episode_id||':'||cue_type||':'||hint,'sha256'),'hex'),1,24),project_id,cue_type,hint,'storyboard-hints' FROM tasks ON CONFLICT(sound_asset_id) DO UPDATE SET name=excluded.name RETURNING *),artifacts AS (INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,idempotency_key,metadata) SELECT 'art_'||substr(encode(drama.digest(sound_asset_id||':v1','sha256'),'hex'),1,24),'sound_asset',project_id,sound_asset_id,1,encode(drama.digest(sound_asset_id||':v1','sha256'),'hex'),'phase5:sound:'||sound_asset_id,jsonb_build_object('formalized_from','storyboard_hint') FROM assets ON CONFLICT(idempotency_key) DO UPDATE SET metadata=excluded.metadata RETURNING *),versions AS (INSERT INTO drama.sound_asset_versions(sound_asset_version_id,sound_asset_id,artifact_id,version,source_kind,mood,duration_ms,license,metadata,content_hash,status,is_current) SELECT 'sav_'||substr(encode(drama.digest(a.sound_asset_id||':v1','sha256'),'hex'),1,24),a.sound_asset_id,r.artifact_id,1,'deterministic_mock',jsonb_build_array(CASE WHEN a.asset_type='bgm' THEN '剧情情绪曲线' ELSE '画面事件' END),CASE WHEN a.asset_type='bgm' THEN 180000 ELSE 3000 END,jsonb_build_object('status','cleared','usage_scope','phase5 deterministic mock'),jsonb_build_object('source','storyboard_hint'),r.content_hash,'approved',true FROM assets a JOIN artifacts r ON r.native_entity_id=a.sound_asset_id ON CONFLICT(sound_asset_id,version) DO UPDATE SET metadata=excluded.metadata RETURNING * ) INSERT INTO drama.sound_cue_versions(sound_cue_version_id,sound_cue_id,project_id,episode_id,shot_id,sound_asset_version_id,cue_type,source_hint,event_key,sequence_number,start_ms,end_ms,fade_in_ms,fade_out_ms,beat_sync,transition_config,ducking_config,version,status,is_current) SELECT 'scv_'||substr(encode(drama.digest(t.shot_id||':'||t.cue_type||':'||t.hint,'sha256'),'hex'),1,24),'sc_'||substr(encode(drama.digest(t.shot_id||':'||t.cue_type||':'||t.hint,'sha256'),'hex'),1,24),t.project_id,t.episode_id,t.shot_id,v.sound_asset_version_id,t.cue_type,t.hint,'shot:'||t.shot_id,t.shot_order,t.start_ms,t.end_ms,CASE WHEN t.cue_type='bgm' THEN 300 ELSE 0 END,CASE WHEN t.cue_type='bgm' THEN 500 ELSE 0 END,jsonb_build_object('align','pacing_beat'),jsonb_build_object('allow_key_change',t.cue_type='bgm'),CASE WHEN t.cue_type='bgm' THEN jsonb_build_object('enabled',true,'ratio',8,'attack_ms',20,'release_ms',250) ELSE '{}'::jsonb END,1,'aligned',true FROM tasks t JOIN assets a ON a.project_id=t.project_id AND a.asset_type=t.cue_type AND a.name=t.hint JOIN versions v USING(sound_asset_id) ON CONFLICT(sound_cue_id,version) DO NOTHING RETURNING sound_cue_version_id;",
+        "options": {
+          "queryReplacement": "={{[$('Normalize Versioned Request').item.json.project_id,$('Normalize Versioned Request').item.json.episode_id]}}"
+        }
+      },
+      "id": "17-sound",
+      "name": "Formalize BGM and SFX Hints",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -220,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CrdPgSd7V3x9Qa2L",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CMS_INTERNAL_URL || 'http://cms-api:8888') + '/api/v1/projects/' + encodeURIComponent($('Normalize Versioned Request').item.json.project_id) + '/episodes/' + encodeURIComponent($('Normalize Versioned Request').item.json.episode_id) + '/dialogue-timings/validate'}}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify({items:$('Normalize Versioned Request').item.json.dialogue_timings,tolerance_ms:120,persist:true,actor:$('Normalize Versioned Request').item.json.actor})}}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "17-lipsync",
+      "name": "Validate and Persist Dialogue Timing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($env.CMS_INTERNAL_URL || 'http://cms-api:8888') + '/api/v1/projects/' + encodeURIComponent($('Normalize Versioned Request').item.json.project_id) + '/change-plans'}}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{JSON.stringify({instruction:'预览剪辑模板切换；确认后创建 successor 时间线',target:{entity_type:'timeline',entity_id:$('Normalize Versioned Request').item.json.episode_id,version:$('Normalize Versioned Request').item.json.generation_version},allowed_fields:['editing_template_version_id','template_scope','override_config'],changes:[{operation:'replace',field:'editing_template_version_id',value:$('Normalize Versioned Request').item.json.editing_template_version_id},{operation:'replace',field:'template_scope',value:$('Normalize Versioned Request').item.json.template_scope},{operation:'replace',field:'override_config',value:{}}],must_preserve:['原时间线','原媒体资产','已批准版本'],locks:['character','location','composition'],requested_by:$('Normalize Versioned Request').item.json.actor})}}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "17-template",
+      "name": "Preview Template Timeline Change Plan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const n=$('Normalize Versioned Request').item.json;return [{json:{success:true,stage:'post_production_creative_workbench',project_id:n.project_id,episode_id:n.episode_id,dialogue_timing_report:$('Validate and Persist Dialogue Timing').item.json.data?.report||null,change_plan:$json.change_plan_response?.data||$json.change_plan_response,requires_user_confirmation:true,effective_input_provenance:$json.effective_input_provenance,effective_input_context:$('Enforce Effective Inputs').first().json.effective_context,incremental_only:true,history_preserved:true}}];"
+      },
+      "id": "17-result",
+      "name": "Return Phase 5 Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT drama.claim_effective_inputs($1,NULLIF($2,''),$3,$4,$5) effective_inputs;",
+        "options": {
+          "queryReplacement": "={{[$json.project_id,$json.episode_id||'','post_production',$json.trace_id,Number($json.generation_version||1)]}}"
+        }
+      },
+      "id": "17-effective-input-resolve",
+      "name": "Resolve Effective Inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -640,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CrdPgSd7V3x9Qa2L",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request=$('Normalize Versioned Request').first().json,resolution=$json.effective_inputs;if(!resolution?.allowed){const error=new Error('EFFECTIVE_INPUTS_BLOCKED: '+JSON.stringify({resolution_id:resolution?.resolution_id,status:resolution?.status,missing:resolution?.missing||[],blockers:resolution?.blockers||[]}));error.name='EFFECTIVE_INPUTS_BLOCKED';throw error;}const effective_context=resolution.context||{};return [{json:{...request,effective_inputs:resolution,effective_context,payload:{...(request.payload||{}),effective_inputs:{resolution_id:resolution.resolution_id,context_hash:resolution.context_hash,resolution_hash:resolution.resolution_hash,context:effective_context}}}}];"
+      },
+      "id": "17-effective-input-guard",
+      "name": "Enforce Effective Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT $1::jsonb change_plan_response,drama.record_effective_input_outputs($2,$3,NULLIF($4,'')) effective_input_provenance;",
+        "options": {
+          "queryReplacement": "={{[JSON.stringify($('Preview Template Timeline Change Plan').item.json),$('Enforce Effective Inputs').first().json.trace_id,'post_production',$('Preview Template Timeline Change Plan').item.json.data?.change_plan_id||$('Preview Template Timeline Change Plan').item.json.change_plan_id||'']}}"
+        }
+      },
+      "id": "17-effective-input-provenance",
+      "name": "Record Effective Input Provenance",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        380,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "CrdPgSd7V3x9Qa2L",
+          "name": "Short Drama PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Phase 5 Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Versioned Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Versioned Request": {
+      "main": [
+        [
+          {
+            "node": "Resolve Effective Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Unified Upstream Context": {
+      "main": [
+        [
+          {
+            "node": "Formalize BGM and SFX Hints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formalize BGM and SFX Hints": {
+      "main": [
+        [
+          {
+            "node": "Validate and Persist Dialogue Timing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Persist Dialogue Timing": {
+      "main": [
+        [
+          {
+            "node": "Preview Template Timeline Change Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preview Template Timeline Change Plan": {
+      "main": [
+        [
+          {
+            "node": "Record Effective Input Provenance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Enforce Effective Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Effective Inputs": {
+      "main": [
+        [
+          {
+            "node": "Load Unified Upstream Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Effective Input Provenance": {
+      "main": [
+        [
+          {
+            "node": "Return Phase 5 Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "tags": []
+}

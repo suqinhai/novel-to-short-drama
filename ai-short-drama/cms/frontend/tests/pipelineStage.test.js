@@ -11,6 +11,8 @@ test('maps stage 4 video and audio states to their visible pipeline steps', () =
 })
 
 test('maps review, render and publish states across the full pipeline', () => {
+  assert.equal(getPipelineStageIndex('adaptation_planning'), 3)
+  assert.equal(getPipelineStageLabel('adaptation_planning'), '等待编译并采用改编计划')
   assert.equal(getPipelineStageIndex('season_outline_review'), 3)
   assert.equal(getPipelineStageIndex('storyboard_review'), 5)
   assert.equal(getPipelineStageIndex('storyboard_image_review'), 7)

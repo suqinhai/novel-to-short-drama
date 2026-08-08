@@ -272,6 +272,23 @@ func TestProjectFlowRoute(t *testing.T) {
 	}
 }
 
+func TestVersionedAdaptationProjectDetection(t *testing.T) {
+	if !isVersionedAdaptationProject(json.RawMessage(`{
+		"contract_version":"2.0","source_version_id":"sv_test"
+	}`)) {
+		t.Fatal("v2 source-bound project was not detected")
+	}
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"contract_version":"2.0"}`),
+		json.RawMessage(`{"source_version_id":"sv_test"}`),
+		json.RawMessage(`not-json`),
+	} {
+		if isVersionedAdaptationProject(raw) {
+			t.Fatalf("legacy or invalid config was detected as v2: %s", raw)
+		}
+	}
+}
+
 func TestResolvePublicMediaURL(t *testing.T) {
 	value := func(input string) *string { return &input }
 	tests := []struct {
