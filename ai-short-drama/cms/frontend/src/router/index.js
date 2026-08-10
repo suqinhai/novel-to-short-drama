@@ -18,12 +18,15 @@ import PerformanceContinuityView from '../views/PerformanceContinuityView.vue'
 import CreativeWorkbenchView from '../views/CreativeWorkbenchView.vue'
 import IRMergeReviewView from '../views/IRMergeReviewView.vue'
 import SeasonPlanningWorkbenchView from '../views/SeasonPlanningWorkbenchView.vue'
+import PromptLabView from '../views/PromptLabView.vue'
+import ProfessionalExportView from '../views/ProfessionalExportView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/projects' },
     { path: '/projects/:projectId/candidates', name: 'project-candidates', component: CandidateWorkbenchView, meta: { title: '候选工作台', eyebrow: 'CANDIDATE WORKBENCH' } },
+    { path: '/projects/:projectId/exports', name: 'project-exports', component: ProfessionalExportView, meta: { title: '专业导出中心', eyebrow: 'VERSION-LOCKED DELIVERY' } },
     { path: '/projects/:projectId/local-edit', name: 'project-local-edit', component: LocalEditingWorkbenchView, meta: { title: '局部精修工作台', eyebrow: 'LOCAL EDITING' } },
     { path: '/projects/:projectId/performance-continuity', name: 'project-performance-continuity', component: PerformanceContinuityView, meta: { title: '表演与连续性', eyebrow: 'PERFORMANCE & CONTINUITY' } },
     { path: '/projects/:projectId/episodes/:episodeId/workbench', name: 'episode-creative-workbench', component: CreativeWorkbenchView, meta: { title: '统一剧本分镜创作工作台', eyebrow: 'UNIFIED CREATIVE WORKBENCH' } },
@@ -43,6 +46,7 @@ const router = createRouter({
     { path: '/media-assets', name: 'media-assets', component: MediaAssetsView, meta: { title: '媒体资产库', eyebrow: 'MEDIA LIBRARY' } },
     { path: '/diagnostics', name: 'diagnostics', component: DiagnosticsView, meta: { title: '系统诊断', eyebrow: 'SYSTEM HEALTH' } },
     { path: '/ai-config', name: 'ai-config', component: AIConfigView, meta: { title: 'AI 配置', eyebrow: 'MODEL & PROVIDER' } },
+    { path: '/prompt-lab', name: 'prompt-lab', component: PromptLabView, meta: { title: 'Prompt / 模型实验室', eyebrow: 'PROMPT & MODEL LAB' } },
   ],
 })
 

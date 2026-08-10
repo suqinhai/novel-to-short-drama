@@ -41,19 +41,25 @@ type CandidateArcTarget struct {
 }
 
 type CandidateTargets struct {
-	ProjectID string                   `json:"project_id"`
-	Arcs      []CandidateArcTarget     `json:"arcs"`
-	Episodes  []CandidateEpisodeTarget `json:"episodes"`
+	WorkID      string                   `json:"work_id"`
+	WorkTitle   string                   `json:"work_title"`
+	ProjectID   string                   `json:"project_id"`
+	ProjectName string                   `json:"project_name"`
+	Arcs        []CandidateArcTarget     `json:"arcs"`
+	Episodes    []CandidateEpisodeTarget `json:"episodes"`
 }
 
 func (s *Store) ListCandidateTargets(ctx context.Context, projectID string) (CandidateTargets, error) {
 	result := CandidateTargets{ProjectID: strings.TrimSpace(projectID), Arcs: []CandidateArcTarget{}, Episodes: []CandidateEpisodeTarget{}}
-	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drama.projects WHERE project_id=$1)`, result.ProjectID).Scan(&exists); err != nil {
-		return CandidateTargets{}, err
-	}
-	if !exists {
+	err := s.pool.QueryRow(ctx, `SELECT project.novel_name,COALESCE(work.work_id,''),COALESCE(work.title,project.novel_name)
+		FROM drama.projects project LEFT JOIN drama.project_source_bindings binding ON binding.project_id=project.project_id
+		 AND binding.binding_role='primary' AND binding.is_current LEFT JOIN drama.source_works work ON work.work_id=binding.work_id
+		WHERE project.project_id=$1`, result.ProjectID).Scan(&result.ProjectName, &result.WorkID, &result.WorkTitle)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return CandidateTargets{}, ErrNotFound
+	}
+	if err != nil {
+		return CandidateTargets{}, err
 	}
 	arcRows, err := s.pool.Query(ctx, `SELECT DISTINCT arc.story_arc_revision_id,arc.title,arc.summary
 		FROM drama.story_arc_revisions arc

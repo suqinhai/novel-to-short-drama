@@ -17,6 +17,8 @@ const form = reactive({
   entity_id: route.query.entity_id || '', version: Number(route.query.version || 1),
   requested_by: '',
 })
+const targetContext = ref(null)
+const navigation = reactive({ episode_id: '', scene_id: '', shot_id: '', target_id: '' })
 const plan = ref(null)
 const history = ref([])
 const versions = ref([])
@@ -30,6 +32,42 @@ const diffRows = computed(() => planDiffRows(plan.value?.plan))
 const rebuilds = computed(() => rebuildLabels(plan.value?.plan))
 const canConfirm = computed(() => plan.value?.status === 'validated')
 const canExecute = computed(() => plan.value?.status === 'confirmed')
+const episodes = computed(() => targetContext.value?.hierarchy?.episodes || [])
+const selectedEpisode = computed(() => episodes.value.find((item) => item.episode_id === navigation.episode_id))
+const scenes = computed(() => selectedEpisode.value?.scenes || [])
+const selectedScene = computed(() => scenes.value.find((item) => item.scene_id === navigation.scene_id))
+const shots = computed(() => selectedScene.value?.shots || [])
+const needsScene = computed(() => ['scene', 'dialogue', 'shot', 'shot_video', 'media'].includes(form.entity_type))
+const needsShot = computed(() => ['shot', 'shot_video', 'media'].includes(form.entity_type))
+const needsSpecificTarget = computed(() => ['script', 'dialogue', 'shot_video', 'timeline', 'timeline_item', 'media'].includes(form.entity_type))
+const availableTargets = computed(() => (targetContext.value?.edit_targets || []).filter((item) => {
+  if (item.entity_type !== form.entity_type) return false
+  if (navigation.episode_id && item.episode_id && item.episode_id !== navigation.episode_id) return false
+  if (needsScene.value && navigation.scene_id && item.scene_id && item.scene_id !== navigation.scene_id) return false
+  if (needsShot.value && navigation.shot_id && item.shot_id && item.shot_id !== navigation.shot_id) return false
+  return true
+}))
+
+function syncTarget() {
+  let target = null
+  if (form.entity_type === 'outline' || form.entity_type === 'episode_content') target = availableTargets.value.find((item) => item.entity_id === navigation.episode_id)
+  else if (form.entity_type === 'scene') target = availableTargets.value.find((item) => item.entity_id === navigation.scene_id)
+  else if (form.entity_type === 'shot') target = availableTargets.value.find((item) => item.entity_id === navigation.shot_id)
+  else target = availableTargets.value.find((item) => item.entity_id === navigation.target_id) || availableTargets.value[0]
+  navigation.target_id = target?.entity_id || ''
+  form.entity_id = target?.entity_id || ''
+  form.version = Number(target?.version || 1)
+}
+
+async function loadTargets() {
+  targetContext.value = await api.getCreationTargets(projectId.value)
+  const directTarget = targetContext.value.edit_targets.find((item) => item.entity_type === form.entity_type && item.entity_id === form.entity_id)
+  navigation.episode_id = directTarget?.episode_id || route.query.episode_id || episodes.value[0]?.episode_id || ''
+  navigation.scene_id = directTarget?.scene_id || selectedEpisode.value?.scenes?.[0]?.scene_id || ''
+  navigation.shot_id = directTarget?.shot_id || selectedScene.value?.shots?.[0]?.shot_id || ''
+  navigation.target_id = directTarget?.entity_id || ''
+  syncTarget()
+}
 
 async function loadHistory() {
   history.value = await api.getChangePlans(projectId.value)
@@ -49,12 +87,25 @@ async function loadBindings() {
 
 onMounted(async () => {
   try {
-    await Promise.all([loadHistory(), loadBindings()])
+    await Promise.all([loadHistory(), loadTargets()])
+    await loadBindings()
   } catch (err) {
     error.value = err.message
   }
 })
 watch(() => [form.entity_type, form.entity_id], loadBindings)
+watch(() => form.entity_type, () => { navigation.target_id = ''; syncTarget() })
+watch(() => navigation.episode_id, () => {
+  navigation.scene_id = selectedEpisode.value?.scenes?.[0]?.scene_id || ''
+  navigation.shot_id = selectedScene.value?.shots?.[0]?.shot_id || ''
+  navigation.target_id = ''; syncTarget()
+})
+watch(() => navigation.scene_id, () => {
+  navigation.shot_id = selectedScene.value?.shots?.[0]?.shot_id || ''
+  navigation.target_id = ''; syncTarget()
+})
+watch(() => navigation.shot_id, () => { navigation.target_id = ''; syncTarget() })
+watch(() => navigation.target_id, syncTarget)
 
 async function generatePlan() {
   loading.value = true
@@ -127,6 +178,8 @@ function selectHistory(item) {
   form.entity_type = item.plan.target.entity_type
   form.entity_id = item.plan.target.entity_id
   form.version = item.plan.target.version
+  const target = targetContext.value?.edit_targets.find((value) => value.entity_type === form.entity_type && value.entity_id === form.entity_id)
+  if (target) Object.assign(navigation, { episode_id: target.episode_id, scene_id: target.scene_id, shot_id: target.shot_id, target_id: target.entity_id })
 }
 
 async function restoreVersion(item) {
@@ -162,10 +215,15 @@ async function restoreVersion(item) {
         <div class="panel-head"><div><span>NATURAL LANGUAGE ASSISTANT</span><h3>描述要修改的局部内容</h3></div><ShieldCheck :size="22" /></div>
         <form class="local-edit-form" @submit.prevent="generatePlan">
           <div class="local-target-grid">
-            <label class="field"><span>目标类型</span><select v-model="form.entity_type"><option v-for="item in entityOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
-            <label class="field"><span>实体 ID</span><input v-model="form.entity_id" required placeholder="dialogue / scene / shot / video ID" /></label>
-            <label class="field"><span>目标版本</span><input v-model.number="form.version" type="number" min="1" required /></label>
+            <label class="field"><span>作品</span><select><option>{{ targetContext?.work_title || '当前作品' }}</option></select></label>
+            <label class="field"><span>项目</span><select><option>{{ targetContext?.project_name || '当前项目' }}</option></select></label>
+            <label class="field"><span>集</span><select v-model="navigation.episode_id" required><option v-for="episode in episodes" :key="episode.episode_id" :value="episode.episode_id">第 {{ episode.episode_number }} 集 · {{ episode.title }}</option></select></label>
+            <label v-if="needsScene" class="field"><span>场</span><select v-model="navigation.scene_id" required><option v-for="scene in scenes" :key="scene.scene_id" :value="scene.scene_id">场 {{ scene.scene_number }} · {{ scene.label || '未命名场景' }}</option></select></label>
+            <label v-if="needsShot" class="field"><span>镜</span><select v-model="navigation.shot_id" required><option v-for="shot in shots" :key="shot.shot_id" :value="shot.shot_id">镜 {{ shot.shot_order }} · {{ shot.description || '未填写镜头描述' }}</option></select></label>
+            <label class="field"><span>修改内容</span><select v-model="form.entity_type"><option v-for="item in entityOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
+            <label v-if="needsSpecificTarget" class="field"><span>具体目标</span><select v-model="navigation.target_id" required><option value="">请选择</option><option v-for="item in availableTargets" :key="item.entity_id" :value="item.entity_id">{{ item.label }} · v{{ item.version }}</option></select></label>
           </div>
+          <details class="local-advanced"><summary>高级信息</summary><dl><div><dt>目标类型</dt><dd><code>{{ form.entity_type }}</code></dd></div><div><dt>技术 ID</dt><dd><code>{{ form.entity_id }}</code></dd></div><div><dt>目标版本</dt><dd>v{{ form.version }}</dd></div></dl></details>
           <label class="field"><span>自然语言修改指令</span><textarea v-model="form.instruction" rows="5" required placeholder="例如：把第2场缩短20秒，但保留身份揭露。"></textarea></label>
           <label class="field"><span>操作人 <small>可选</small></span><input v-model="form.requested_by" placeholder="姓名或账号" /></label>
           <button class="button button-primary" :disabled="loading || !form.entity_id || !form.instruction.trim()">
@@ -184,10 +242,11 @@ async function restoreVersion(item) {
     </div>
 
     <article v-if="plan" class="panel change-plan-preview">
-      <div class="panel-head"><div><span>CHANGE PLAN · {{ plan.change_plan_id }}</span><h3>确认前预览</h3></div><strong class="plan-status">{{ changeStatusLabels[plan.status] || plan.status }}</strong></div>
+      <div class="panel-head"><div><span>CHANGE PLAN</span><h3>确认前预览</h3></div><strong class="plan-status">{{ changeStatusLabels[plan.status] || plan.status }}</strong></div>
+      <details class="local-advanced"><summary>高级信息</summary><dl><div><dt>Change Plan ID</dt><dd><code>{{ plan.change_plan_id }}</code></dd></div><div><dt>目标技术 ID</dt><dd><code>{{ plan.plan.target.entity_id }}</code></dd></div><div><dt>影响 artifact</dt><dd><code>{{ plan.impacts.map(item => item.artifact_id).join(', ') || '—' }}</code></dd></div><div><dt>重建任务 ID</dt><dd><code>{{ plan.rebuild_tasks.map(item => item.rebuild_task_id).join(', ') || '—' }}</code></dd></div></dl></details>
       <div class="change-plan-grid">
         <section><h4>用户意图与保持项</h4><p>{{ plan.plan.user_intent }}</p><div class="plan-chips"><span v-for="item in plan.plan.must_preserve" :key="item"><ShieldCheck :size="13" />{{ item }}</span><span v-for="item in plan.plan.locks" :key="item">锁定 {{ item }}</span></div></section>
-        <section><h4>目标与回滚</h4><dl><div><dt>目标</dt><dd>{{ plan.plan.target.entity_type }} / {{ plan.plan.target.entity_id }}</dd></div><div><dt>目标版本</dt><dd>v{{ plan.plan.target.version }}</dd></div><div><dt>回滚版本</dt><dd>v{{ plan.plan.rollback_version }}</dd></div><div><dt>语义变化</dt><dd>{{ plan.plan.semantic_change ? '是' : '否' }}</dd></div></dl></section>
+        <section><h4>目标与回滚</h4><dl><div><dt>目标</dt><dd>{{ entityOptions.find(item => item.value === plan.plan.target.entity_type)?.label || plan.plan.target.entity_type }}</dd></div><div><dt>目标版本</dt><dd>v{{ plan.plan.target.version }}</dd></div><div><dt>回滚版本</dt><dd>v{{ plan.plan.rollback_version }}</dd></div><div><dt>语义变化</dt><dd>{{ plan.plan.semantic_change ? '是' : '否' }}</dd></div></dl></section>
       </div>
 
       <section class="plan-section">
@@ -196,7 +255,7 @@ async function restoreVersion(item) {
       </section>
 
       <div class="change-plan-grid">
-        <section><h4>精确影响范围</h4><p v-if="!plan.impacts.length">artifact graph 暂无实体命中；以下计划范围仍会生成 pending 重建任务。</p><ol><li v-for="impact in plan.impacts" :key="impact.artifact_id"><code>{{ impact.artifact_type }}</code> {{ impact.native_entity_id }} <small>深度 {{ impact.propagation_depth }}</small></li><li v-for="item in plan.plan.impact.downstream" :key="`planned:${item}`"><code>{{ item }}</code> <small>计划范围</small></li></ol></section>
+        <section><h4>精确影响范围</h4><p v-if="!plan.impacts.length">artifact graph 暂无实体命中；以下计划范围仍会生成 pending 重建任务。</p><ol><li v-for="impact in plan.impacts" :key="impact.artifact_id"><code>{{ impact.artifact_type }}</code> <small>传播深度 {{ impact.propagation_depth }}</small></li><li v-for="item in plan.plan.impact.downstream" :key="`planned:${item}`"><code>{{ item }}</code> <small>计划范围</small></li></ol></section>
         <section><h4>将执行的重建</h4><div class="plan-chips"><span v-for="item in rebuilds" :key="item">{{ item }}</span><span v-if="!rebuilds.length">不触发重建</span></div><p v-for="risk in plan.plan.risks" :key="risk" class="plan-risk"><AlertTriangle :size="13" />{{ risk }}</p></section>
       </div>
       <div class="plan-validation"><ShieldCheck :size="18" /><div><strong>验证规则</strong><span v-for="rule in plan.plan.validation_rules" :key="rule">{{ rule }}</span></div></div>
@@ -209,7 +268,7 @@ async function restoreVersion(item) {
       </footer>
       <section v-if="plan.rebuild_tasks.length" class="plan-section">
         <h4>重建任务状态</h4>
-        <ol><li v-for="task in plan.rebuild_tasks" :key="task.rebuild_task_id"><code>{{ task.action }}</code> · {{ task.target_entity_type }} / {{ task.target_entity_id }} · <strong>{{ task.status }}</strong><small v-if="task.range_start_ms != null"> · {{ task.range_start_ms }}–{{ task.range_end_ms }}ms</small></li></ol>
+        <ol><li v-for="task in plan.rebuild_tasks" :key="task.rebuild_task_id"><code>{{ task.action }}</code> · {{ task.target_entity_type }} · <strong>{{ task.status }}</strong><small v-if="task.range_start_ms != null"> · {{ task.range_start_ms }}–{{ task.range_end_ms }}ms</small></li></ol>
       </section>
     </article>
 
@@ -217,7 +276,7 @@ async function restoreVersion(item) {
       <article class="panel local-version-panel">
         <div class="panel-head"><div><span>ROLLBACK SOURCES</span><h3>实体版本</h3></div><History :size="19" /></div>
         <div v-if="!versions.length" class="compact-empty">执行首次修改后将建立可回滚版本链</div>
-        <div v-for="item in versions" :key="item.entity_version_id" class="version-record"><b>v{{ item.version }}</b><span>{{ item.source_type }}</span><code>{{ item.content_hash.slice(0, 12) }}</code><strong v-if="item.is_current">current</strong><button v-else :disabled="loading" @click="restoreVersion(item)">生成回滚/重应用计划</button></div>
+        <div v-for="item in versions" :key="item.entity_version_id" class="version-record"><b>v{{ item.version }}</b><span>{{ item.source_type }}</span><strong v-if="item.is_current">current</strong><button v-else :disabled="loading" @click="restoreVersion(item)">生成回滚/重应用计划</button></div>
       </article>
       <article class="panel local-comment-panel">
         <div class="panel-head"><div><span>BOUND COMMENTS</span><h3>实体 / 时间码评论</h3></div><MessageSquareText :size="19" /></div>
@@ -230,3 +289,7 @@ async function restoreVersion(item) {
     </div>
   </section>
 </template>
+
+<style scoped>
+.local-advanced{margin:10px 0;color:#586678}.local-advanced dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.local-advanced dl div{display:grid;grid-template-columns:110px 1fr}.local-advanced code{overflow-wrap:anywhere}.local-target-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+</style>

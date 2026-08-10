@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { api } from '../services/api'
 import { createIdempotencyKey, narrativeApi } from '../services/narrativeApi'
 import {
   buildCandidateRequest, buildCompositionParts, componentLabels, filterCandidates,
@@ -10,6 +11,7 @@ import {
 const route = useRoute()
 const projectId = computed(() => route.params.projectId)
 const targets = ref({ project_id: '', arcs: [], episodes: [] })
+const aiConfig = ref(null)
 const sets = ref([])
 const activeSet = ref(null)
 const busy = ref(false)
@@ -46,11 +48,36 @@ const generatorOptions = computed(() => {
 })
 const targetReady = computed(() => Boolean(resolveTargetId(form)))
 const estimatedCost = computed(() => activeSet.value ? `${Number(activeSet.value.estimated_cost || 0).toFixed(4)} ${activeSet.value.currency}` : '—')
+const fieldValue = (key) => {
+  const field = aiConfig.value?.fields?.find((item) => item.key === key)
+  return field?.has_managed_override ? field.managed_value : field?.current_value || ''
+}
+const configuredGeneratorLabel = computed(() => form.target_type === 'image' ? '项目默认图片模型' : form.target_type === 'video' ? '项目默认视频模型' : '项目默认文本模型')
+
+function applyConfiguredModels() {
+  const key = form.target_type === 'image' ? 'IMAGE_MODEL' : form.target_type === 'video' ? 'VIDEO_MODEL'
+    : form.target_type === 'script' ? 'SCRIPT_WRITING_MODEL' : form.target_type === 'storyboard' ? 'STORYBOARD_MODEL' : 'EPISODE_PLANNING_MODEL'
+  form.generator_model = fieldValue(key)
+  form.reviewer_model = fieldValue('QC_TEXT_MODEL')
+}
+
+function targetDisplay(item) {
+  if (item.target_type === 'story_arc') return targets.value.arcs.find((arc) => arc.story_arc_revision_id === item.target_id)?.title || '故事弧'
+  for (const episode of targets.value.episodes) {
+    if (episode.episode_id === item.target_id) return `第 ${episode.episode_number} 集 · ${episode.title}`
+    for (const scene of episode.scenes || []) {
+      if (scene.scene_id === item.target_id) return `第 ${episode.episode_number} 集 · 场 ${scene.scene_number}`
+      const shot = (scene.shots || []).find((value) => value.shot_id === item.target_id)
+      if (shot) return `第 ${episode.episode_number} 集 · 镜 ${shot.shot_order}`
+    }
+  }
+  return targetLabels[item.target_type] || '创作目标'
+}
 
 watch(() => form.target_type, (value) => {
   form.component_types = [...(targetComponents[value] || [])]
   form.generator_provider = value === 'image' ? 'image_http' : value === 'video' ? 'video_http' : 'text_http'
-  form.generator_model = ''
+  applyConfiguredModels()
 })
 
 watch(() => form.episode_id, () => {
@@ -59,8 +86,6 @@ watch(() => form.episode_id, () => {
 watch(() => form.scene_id, () => {
   form.shot_id = shots.value[0]?.shot_id || ''
 })
-watch(() => form.generator_provider, () => { form.generator_model = '' })
-watch(() => form.reviewer_provider, () => { form.reviewer_model = '' })
 
 function initializeTargets() {
   form.story_arc_id ||= targets.value.arcs?.[0]?.story_arc_revision_id || ''
@@ -77,10 +102,12 @@ function resetComposition() {
 async function load(selectId = '') {
   error.value = ''
   try {
-    const [targetResponse, setResponse] = await Promise.all([
-      narrativeApi.listCandidateTargets(projectId.value), narrativeApi.listCandidateSets(projectId.value),
+    const [targetResponse, setResponse, configResponse] = await Promise.all([
+      narrativeApi.listCandidateTargets(projectId.value), narrativeApi.listCandidateSets(projectId.value), api.getAIConfig(),
     ])
     targets.value = targetResponse.data || { project_id: projectId.value, arcs: [], episodes: [] }
+    aiConfig.value = configResponse
+    applyConfiguredModels()
     initializeTargets()
     sets.value = setResponse.data || []
     const id = selectId || activeSet.value?.candidate_set_id || sets.value[0]?.candidate_set_id
@@ -202,23 +229,25 @@ onMounted(load)
       <div class="panel-title"><div><h3>生成候选</h3><p>生成失败会原样报错，不会自动回退到 Mock。</p></div><button class="button button-primary" :disabled="busy || !targetReady">{{ busy ? '处理中…' : '生成并独立评审' }}</button></div>
 
       <div class="target-path">
-        <label><span>项目</span><select disabled><option>{{ targets.project_id || projectId }}</option></select></label>
+        <label><span>作品</span><select><option>{{ targets.work_title || '当前作品' }}</option></select></label>
+        <label><span>项目</span><select><option>{{ targets.project_name || '当前项目' }}</option></select></label>
         <label><span>候选类型</span><select v-model="form.target_type"><option v-for="(label, key) in targetLabels" :key="key" :value="key">{{ label }}</option></select></label>
         <label v-if="form.target_type === 'story_arc'"><span>故事弧</span><select v-model="form.story_arc_id" required><option value="">请选择故事弧</option><option v-for="arc in targets.arcs" :key="arc.story_arc_revision_id" :value="arc.story_arc_revision_id">{{ arc.title }}</option></select></label>
         <template v-else>
           <label><span>集</span><select v-model="form.episode_id" required><option value="">请选择集</option><option v-for="episode in targets.episodes" :key="episode.episode_id" :value="episode.episode_id">第 {{ episode.episode_number }} 集 · {{ episode.title }}</option></select></label>
-          <label v-if="needsScene"><span>场</span><select v-model="form.scene_id" required><option value="">请选择场</option><option v-for="scene in scenes" :key="scene.scene_id" :value="scene.scene_id">场 {{ scene.scene_number }} · {{ scene.label || scene.scene_id }}</option></select></label>
-          <label v-if="needsShot"><span>镜</span><select v-model="form.shot_id" required><option value="">请选择镜头</option><option v-for="shot in shots" :key="shot.shot_id" :value="shot.shot_id">镜 {{ shot.shot_order }} · {{ shot.description || shot.shot_id }}</option></select></label>
+          <label v-if="needsScene"><span>场</span><select v-model="form.scene_id" required><option value="">请选择场</option><option v-for="scene in scenes" :key="scene.scene_id" :value="scene.scene_id">场 {{ scene.scene_number }} · {{ scene.label || '未命名场景' }}</option></select></label>
+          <label v-if="needsShot"><span>镜</span><select v-model="form.shot_id" required><option value="">请选择镜头</option><option v-for="shot in shots" :key="shot.shot_id" :value="shot.shot_id">镜 {{ shot.shot_order }} · {{ shot.description || '未填写镜头描述' }}</option></select></label>
         </template>
       </div>
 
       <div class="provider-grid">
         <label><span>生成 Provider</span><select v-model="form.generator_provider"><option v-for="option in generatorOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-        <label><span>生成模型</span><input v-model="form.generator_model" required placeholder="填写真实模型 ID" /></label>
+        <label><span>生成模型</span><select v-model="form.generator_model" required><option :value="form.generator_model">{{ configuredGeneratorLabel }}</option></select></label>
         <label><span>评审 Provider</span><select v-model="form.reviewer_provider"><option value="reviewer_http">真实独立 Reviewer</option></select></label>
-        <label><span>评分模型</span><input v-model="form.reviewer_model" required placeholder="必须与生成模型分离" /></label>
+        <label><span>评分模型</span><select v-model="form.reviewer_model" required><option :value="form.reviewer_model">项目默认独立评审模型</option></select></label>
         <label class="blind-toggle"><input v-model="form.blind_review" type="checkbox" /><span>盲评：比较时隐藏模型与供应商</span></label>
       </div>
+      <details class="advanced-info"><summary>高级信息</summary><dl><div><dt>作品 ID</dt><dd><code>{{ targets.work_id }}</code></dd></div><div><dt>项目 ID</dt><dd><code>{{ projectId }}</code></dd></div><div><dt>生成路由</dt><dd><code>{{ form.generator_provider }} / {{ form.generator_model }}</code></dd></div><div><dt>评审路由</dt><dd><code>{{ form.reviewer_provider }} / {{ form.reviewer_model }}</code></dd></div></dl></details>
 
       <div class="form-grid">
         <label><span>候选数量</span><input v-model.number="form.candidate_count" type="number" min="2" max="12" required /></label>
@@ -235,7 +264,7 @@ onMounted(load)
     </form>
 
     <section v-if="sets.length" class="panel toolbar">
-      <label>候选批次 <select :value="activeSet?.candidate_set_id" @change="changeSet"><option v-for="item in sets" :key="item.candidate_set_id" :value="item.candidate_set_id">{{ targetLabels[item.target_type] || item.target_type }} · {{ item.target_id }} · {{ item.candidate_count }} 个</option></select></label>
+      <label>候选批次 <select :value="activeSet?.candidate_set_id" @change="changeSet"><option v-for="item in sets" :key="item.candidate_set_id" :value="item.candidate_set_id">{{ targetDisplay(item) }} · {{ item.candidate_count }} 个</option></select></label>
       <label>最低分 <input v-model.number="filters.minimumScore" type="number" min="0" max="100" /></label>
       <label><input v-model="filters.favoriteOnly" type="checkbox" />仅收藏</label>
       <label><input v-model="filters.showEliminated" type="checkbox" />显示淘汰</label>
@@ -243,10 +272,9 @@ onMounted(load)
     </section>
 
     <section v-if="activeSet" class="set-provenance panel">
-      <span>冻结输入 <code>{{ activeSet.frozen_input_hash }}</code></span>
-      <span>Resolver <code>{{ activeSet.frozen_resolution_id }}</code></span>
       <span v-if="activeSet.blind_review">盲评开启：供应商和模型已隐藏</span>
       <span v-else>{{ activeSet.generator_provider }} / {{ activeSet.generator_model }} → {{ activeSet.reviewer_provider }} / {{ activeSet.reviewer_model }}</span>
+      <details class="advanced-info"><summary>高级信息</summary><p>冻结输入 <code>{{ activeSet.frozen_input_hash }}</code></p><p>Resolver <code>{{ activeSet.frozen_resolution_id }}</code></p><p>候选批次 <code>{{ activeSet.candidate_set_id }}</code></p></details>
     </section>
 
     <section v-if="activeSet" class="comparison-grid">
@@ -289,5 +317,5 @@ onMounted(load)
 </template>
 
 <style scoped>
-.candidate-page{display:grid;gap:18px}.page-head,.panel-title,.toolbar,.candidate-card header,.candidate-card footer{display:flex;justify-content:space-between;align-items:center;gap:12px}.panel,.candidate-card{background:var(--surface,#fff);border:1px solid var(--border,#dce2e8);border-radius:12px;padding:18px}.target-path,.provider-grid,.form-grid,.text-grid,.composition-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:14px}.target-path{padding:14px;border-radius:10px;background:#f5f7fb}.generation-form label,.composition label{display:grid;gap:6px}.generation-form input,.generation-form select,.generation-form textarea,.toolbar input,.toolbar select,.composition select,.time-comment input,.time-comment select{padding:9px;border:1px solid #ccd4dd;border-radius:7px}.text-grid textarea{min-height:95px}.blind-toggle{align-content:center;grid-template-columns:auto 1fr!important}.component-options,.score-row,.candidate-card footer,.validation div,.set-provenance{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.component-options label,.score-row span,.validation span,.set-provenance span{background:#edf2f7;border-radius:999px;padding:5px 9px}.comparison-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:14px}.candidate-card header>strong{font-size:30px;color:#315cbb}.candidate-card.eliminated{opacity:.55}.component,.evidence section{border-top:1px solid #e7ebef;padding-top:10px}.component p,.duration,.reasons,.evidence p{color:#5d6875}.candidate-card pre{max-height:230px;overflow:auto;white-space:pre-wrap}.candidate-card video,.image-preview img{width:100%;border-radius:8px}.evidence code,.set-provenance code{overflow-wrap:anywhere;color:#415a96}.evidence q{display:block;margin-top:4px;color:#68758a}.time-comment{display:grid;grid-template-columns:180px 130px 1fr auto;gap:8px}.validation .pass{background:#daf2e2;color:#23653a}.notice{background:#e8f6ed;padding:12px;border-radius:8px}@media(max-width:720px){.page-head,.panel-title,.toolbar{align-items:stretch;display:grid}.time-comment{grid-template-columns:1fr}.comparison-grid{grid-template-columns:1fr}}
+.candidate-page{display:grid;gap:18px}.page-head,.panel-title,.toolbar,.candidate-card header,.candidate-card footer{display:flex;justify-content:space-between;align-items:center;gap:12px}.panel,.candidate-card{background:var(--surface,#fff);border:1px solid var(--border,#dce2e8);border-radius:12px;padding:18px}.target-path,.provider-grid,.form-grid,.text-grid,.composition-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:14px}.target-path{padding:14px;border-radius:10px;background:#f5f7fb}.generation-form label,.composition label{display:grid;gap:6px}.generation-form input,.generation-form select,.generation-form textarea,.toolbar input,.toolbar select,.composition select,.time-comment input,.time-comment select{padding:9px;border:1px solid #ccd4dd;border-radius:7px}.text-grid textarea{min-height:95px}.blind-toggle{align-content:center;grid-template-columns:auto 1fr!important}.component-options,.score-row,.candidate-card footer,.validation div,.set-provenance{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.component-options label,.score-row span,.validation span,.set-provenance span{background:#edf2f7;border-radius:999px;padding:5px 9px}.comparison-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:14px}.candidate-card header>strong{font-size:30px;color:#315cbb}.candidate-card.eliminated{opacity:.55}.component,.evidence section{border-top:1px solid #e7ebef;padding-top:10px}.component p,.duration,.reasons,.evidence p{color:#5d6875}.candidate-card pre{max-height:230px;overflow:auto;white-space:pre-wrap}.candidate-card video,.image-preview img{width:100%;border-radius:8px}.evidence code,.set-provenance code{overflow-wrap:anywhere;color:#415a96}.evidence q{display:block;margin-top:4px;color:#68758a}.time-comment{display:grid;grid-template-columns:180px 130px 1fr auto;gap:8px}.validation .pass{background:#daf2e2;color:#23653a}.notice{background:#e8f6ed;padding:12px;border-radius:8px}.advanced-info{grid-column:1/-1;margin-top:10px;color:#5b6879}.advanced-info dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.advanced-info dl div{display:grid;grid-template-columns:80px 1fr}.advanced-info code{overflow-wrap:anywhere}@media(max-width:720px){.page-head,.panel-title,.toolbar{align-items:stretch;display:grid}.time-comment{grid-template-columns:1fr}.comparison-grid{grid-template-columns:1fr}}
 </style>

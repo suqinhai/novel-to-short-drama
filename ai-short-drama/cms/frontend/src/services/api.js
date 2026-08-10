@@ -238,4 +238,67 @@ export const api = {
       body: JSON.stringify(payload),
     })
   },
+  getCreationTargets(projectId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/creation-targets`)
+  },
+  getPromptTemplates(category = '') {
+    return request(`/prompt-lab/templates?${new URLSearchParams({ category })}`)
+  },
+  createPromptTemplate(payload) {
+    return request('/prompt-lab/templates', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  createPromptVersion(templateId, payload) {
+    return request(`/prompt-lab/templates/${encodeURIComponent(templateId)}/versions`, { method: 'POST', body: JSON.stringify(payload) })
+  },
+  previewPromptVersion(versionId, variables) {
+    return request(`/prompt-lab/versions/${encodeURIComponent(versionId)}/preview`, { method: 'POST', body: JSON.stringify({ variables }) })
+  },
+  approvePromptVersion(versionId, actor) {
+    return request(`/prompt-lab/versions/${encodeURIComponent(versionId)}/approve`, { method: 'POST', body: JSON.stringify({ actor }) })
+  },
+  promotePromptVersion(versionId, actor) {
+    return request(`/prompt-lab/versions/${encodeURIComponent(versionId)}/promote`, { method: 'POST', body: JSON.stringify({ actor }) })
+  },
+  getPromptFixtures(category = '') {
+    return request(`/prompt-lab/fixtures?${new URLSearchParams({ category })}`)
+  },
+  createPromptFixture(payload) {
+    return request('/prompt-lab/fixtures', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  getPromptTestSuites(category = '') {
+    return request(`/prompt-lab/test-suites?${new URLSearchParams({ category })}`)
+  },
+  createPromptTestSuite(payload) {
+    return request('/prompt-lab/test-suites', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  getPromptExperiments(category = '') {
+    return request(`/prompt-lab/experiments?${new URLSearchParams({ category })}`)
+  },
+  createPromptExperiment(payload) {
+    return request('/prompt-lab/experiments', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  getPromptExperiment(experimentId, blind = false) {
+    return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}${blind ? '/blind' : ''}`)
+  },
+  submitPromptExperimentResult(experimentId, payload) {
+    return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}/results`, { method: 'POST', body: JSON.stringify(payload) })
+  },
+  submitPromptBlindEvaluation(experimentId, payload) {
+    return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}/blind-evaluations`, { method: 'POST', body: JSON.stringify(payload) })
+  },
+  getGenerationProvenance(projectId, episodeId = '') {
+    return request(`/projects/${encodeURIComponent(projectId)}/generation-provenance?${new URLSearchParams({ episode_id: episodeId })}`)
+  },
+  getProfessionalExportOptions(projectId, episodeId = '') {
+    return request(`/projects/${encodeURIComponent(projectId)}/export-options?${new URLSearchParams({ episode_id: episodeId })}`)
+  },
+  getProfessionalExports(projectId, episodeId = '') {
+    return request(`/projects/${encodeURIComponent(projectId)}/professional-exports?${new URLSearchParams({ episode_id: episodeId })}`)
+  },
+  createProfessionalExport(projectId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/professional-exports`, { method: 'POST', body: JSON.stringify(payload) })
+  },
+  professionalExportDownloadUrl(projectId, exportId) {
+    return `${API_BASE}/projects/${encodeURIComponent(projectId)}/professional-exports/${encodeURIComponent(exportId)}/download`
+  },
 }

@@ -38,6 +38,11 @@ var preservedBusinessTables = map[string]struct{}{
 	"artifact_types":                     {},
 	"effective_input_stage_requirements": {},
 	"migration_audit":                    {},
+	"prompt_fixtures":                    {},
+	"prompt_production_bindings":         {},
+	"prompt_templates":                   {},
+	"prompt_test_suites":                 {},
+	"prompt_versions":                    {},
 	"schema_migrations":                  {},
 }
 

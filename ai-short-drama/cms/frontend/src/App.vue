@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck, Images, LibraryBig, BookOpenCheck } from 'lucide-vue-next'
+import { Clapperboard, FolderKanban, Activity, Bot, Menu, X, Bell, CircleUserRound, ClipboardCheck, Images, LibraryBig, BookOpenCheck, FlaskConical } from 'lucide-vue-next'
 
 const route = useRoute()
 const sidebarOpen = ref(false)
@@ -12,6 +12,7 @@ const navigation = [
   { label: '审核中心', to: '/reviews', icon: ClipboardCheck, matches: ['/reviews'] },
   { label: '媒体资产库', to: '/media-assets', icon: Images, matches: ['/media-assets'] },
   { label: 'AI 配置', to: '/ai-config', icon: Bot, matches: ['/ai-config'] },
+  { label: 'Prompt / 模型实验室', to: '/prompt-lab', icon: FlaskConical, matches: ['/prompt-lab'] },
   { label: '系统诊断', to: '/diagnostics', icon: Activity, matches: ['/diagnostics'] },
 ]
 

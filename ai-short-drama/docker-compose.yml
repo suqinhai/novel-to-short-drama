@@ -60,6 +60,7 @@ services:
       - ./database/27-lightweight-nle.sql:/opt/drama/27-lightweight-nle.sql:ro
       - ./database/27-verify-lightweight-nle.sql:/opt/drama/27-verify-lightweight-nle.sql:ro
       - ./database/28-cross-layer-quality-gate.sql:/opt/drama/28-cross-layer-quality-gate.sql:ro
+      - ./database/29-prompt-lab-professional-export.sql:/opt/drama/29-prompt-lab-professional-export.sql:ro
       - ./database/28-verify-cross-layer-quality-gate.sql:/opt/drama/28-verify-cross-layer-quality-gate.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

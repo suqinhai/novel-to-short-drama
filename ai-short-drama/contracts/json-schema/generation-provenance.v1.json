@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/schemas/generation-provenance.v1.json",
+  "title": "Generated artifact provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_id", "artifact_type", "artifact_id", "artifact_version", "prompt_version_id", "provider", "model", "parameters", "seed", "input_artifact_hash", "output_artifact_hash", "source_artifacts"],
+  "properties": {
+    "project_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": "string"},
+    "artifact_type": {"type": "string", "minLength": 1},
+    "artifact_id": {"type": "string", "minLength": 1},
+    "artifact_version": {"type": "integer", "minimum": 1},
+    "prompt_version_id": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "parameters": {"type": "object"},
+    "seed": {"type": "integer"},
+    "input_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "output_artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_artifacts": {"type": "array", "items": {"type": "object"}}
+  }
+}

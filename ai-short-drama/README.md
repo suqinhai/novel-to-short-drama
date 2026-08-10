@@ -1,5 +1,15 @@
 # 小说改编 AI 短剧自动化系统（第一至五阶段）
 
+## Prompt / 模型实验室与专业导出
+
+CMS 新增 `/prompt-lab` 实验室和项目级 `/projects/{projectId}/exports` 专业导出中心。Prompt 按九类创作阶段管理，正文不可原地覆盖，只有明确批准的版本才可晋升 `production current`；冻结 fixture/test suite 可对多个 Prompt 与模型做统一输入比较、自动指标和匿名盲评。生成产物可通过统一 provenance 接口记录 Prompt 版本、模型、参数、seed、输入/输出哈希和上游产物。
+
+专业导出会先冻结作品、项目、单集及全部具体版本，再生成单一 ZIP。支持 DOCX/Fountain、分集大纲、镜头表/联系表、SRT/ASS、EDL/XML、音频 stems、图片/视频提示词、制作圣经和 Source/IR/Spec/人工修改溯源报告；数据库拒绝 `current`、`latest`、`draft` 等浮动选择及未批准或跨项目版本。实现和验收命令见 [Phase 29 架构说明](docs/architecture/phase-29-prompt-lab-professional-export.md)。
+
+```powershell
+node scripts/validate-phase29.js
+```
+
 ## 第五阶段扩展：口型、声音、类型化剪辑与统一创作工作台
 
 本轮第五阶段以迁移 `17-post-production-creative-workbench.sql` 为边界，在既有 Narrative IR、Adaptation Spec、诊断/节奏、候选、局部修改、表演圣经、连续性、视觉 QC、媒体资产和剪辑时间线上增量扩展，不复制前四阶段数据。统一工作台入口为 `/projects/{projectId}/episodes/{episodeId}/workbench`，可在同一页面完成剧本与节拍、分镜、口型与声音、剪辑时间线、连续性/QC、候选与版本处理。

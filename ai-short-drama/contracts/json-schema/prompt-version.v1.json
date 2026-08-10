@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/schemas/prompt-version.v1.json",
+  "title": "Immutable prompt version",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["prompt_template_id", "system_template", "user_template", "variable_schema", "default_variables", "model_defaults", "change_note"],
+  "properties": {
+    "prompt_template_id": {"type": "string", "minLength": 1},
+    "system_template": {"type": "string"},
+    "user_template": {"type": "string", "minLength": 1},
+    "variable_schema": {"type": "object"},
+    "default_variables": {"type": "object"},
+    "model_defaults": {"type": "object"},
+    "change_note": {"type": "string", "minLength": 1},
+    "created_by": {"type": "string"}
+  }
+}
