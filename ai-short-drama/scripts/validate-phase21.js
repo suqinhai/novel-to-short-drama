@@ -12,6 +12,7 @@ const frozen = read('cms/backend/internal/store/candidate_inputs.go')
 const ui = read('cms/frontend/src/views/CandidateWorkbenchView.vue')
 const service = read('cms/frontend/src/services/candidateWorkbench.js')
 const migration = read('database/21-pluggable-candidate-providers.sql')
+const closureMigration = read('database/24-authoritative-production-inputs.sql')
 
 for (const contract of ['type CandidateProvider interface', 'type CandidateReviewer interface']) {
   assert(model.includes(contract), `missing ${contract}`)
@@ -28,6 +29,17 @@ assert(frozen.includes('ResolveEffectiveInputs'), 'candidate generation must fre
 assert(store.includes('candidate_frozen_effective_input'), 'frozen input dependency lineage is missing')
 assert(store.includes('request_hash=$3'), 'frozen input + seed replay lookup is missing')
 assert(providers.includes('return CandidateDraft{}, err') && !providers.includes('NewDeterministicMockProvider().Generate'), 'real provider failure must not fall back to mock')
+assert(providers.includes('CANDIDATE_ENABLE_DETERMINISTIC_MOCK'), 'mock provider must require an explicit test opt-in')
+assert(providers.includes('os.Getenv("CANDIDATE_REVIEW_API_BASE_URL")') &&
+  !providers.includes('envFirst("CANDIDATE_REVIEW_API_BASE_URL", "LITELLM_BASE_URL")'),
+  'reviewer endpoint must be configured independently from the generator gateway')
+assert(!service.includes("|| 'deterministic_mock'"), 'frontend service must not default to deterministic mock')
+assert(closureMigration.includes('candidate_execution_records'), 'generation/evaluation execution audit is missing')
+for (const marker of ['GenerateAndReviewAudited', 'ExecutionRecord', 'started_at', 'completed_at',
+  'failure_reason', 'retry_count', 'attempt', 'blind']) {
+  assert((model + store + closureMigration).includes(marker), `candidate execution audit missing ${marker}`)
+}
+assert(closureMigration.includes('ALTER COLUMN generator_provider DROP DEFAULT'), 'production provider database default is still present')
 assert(store.includes("'needs_review',false"), 'unselected candidate artifacts must remain downstream-ineligible')
 assert(store.includes('artifact_current_bindings'), 'confirmed selection must become effective input')
 assert(ui.includes('项目') && ui.includes('集') && ui.includes('场') && ui.includes('镜'), 'hierarchical target selector is missing')

@@ -194,6 +194,58 @@ func TestIRMergePublishesAtomicFullSnapshotAndPreservesUTF8Spans(t *testing.T) {
 	if err != nil || proposal.Status != "ready" || proposal.UnresolvedCount != 0 {
 		t.Fatalf("resolved proposal not ready: %#v err=%v", proposal, err)
 	}
+	var automaticallyResolved int
+	if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.ir_merge_proposal_items
+		WHERE ir_merge_proposal_id=$1 AND resolution_status='resolved'
+		  AND NOT canonicalization_required`, proposal.IRMergeProposalID).Scan(&automaticallyResolved); err != nil || automaticallyResolved == 0 {
+		t.Fatalf("non-conflicting changes were not automatically mergeable: count=%d err=%v", automaticallyResolved, err)
+	}
+
+	// A proposal is bound to the exact current full IR used by its preview.
+	if _, err := database.writer.Exec(ctx, `UPDATE drama.narrative_ir_revisions SET is_current=false
+		WHERE ir_revision_id=$1`, baseRun.TargetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.PublishIRMergeProposal(ctx, proposal.IRMergeProposalID,
+		"phase20-stale-base-"+suffix, PublishIRMergeInput{Confirmed: true}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale full IR base must reject publication, got %v", err)
+	}
+	if _, err := database.writer.Exec(ctx, `UPDATE drama.narrative_ir_revisions SET is_current=true
+		WHERE ir_revision_id=$1`, baseRun.TargetID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force a failure after the publication transaction has begun. Every staging
+	// row and operation must roll back, leaving the old current full IR intact.
+	if _, err := database.writer.Exec(ctx, `CREATE OR REPLACE FUNCTION drama.phase20_forced_merge_failure()
+		RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		  IF NEW.revision_scope='full' AND NEW.idempotency_key LIKE 'phase20-fault-%' THEN
+		    RAISE EXCEPTION 'forced merge publication failure';
+		  END IF;
+		  RETURN NEW;
+		END $$;
+		DROP TRIGGER IF EXISTS trg_phase20_forced_merge_failure ON drama.narrative_ir_revisions;
+		CREATE TRIGGER trg_phase20_forced_merge_failure BEFORE INSERT ON drama.narrative_ir_revisions
+		FOR EACH ROW EXECUTE FUNCTION drama.phase20_forced_merge_failure()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.PublishIRMergeProposal(ctx, proposal.IRMergeProposalID,
+		"phase20-fault-"+suffix, PublishIRMergeInput{Confirmed: true}); err == nil {
+		t.Fatal("forced merge publication failure unexpectedly succeeded")
+	}
+	if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.narrative_ir_revisions
+		WHERE merge_proposal_id=$1`, proposal.IRMergeProposalID).Scan(&partialCount); err != nil || partialCount != 0 {
+		t.Fatalf("transaction failure left partial full IR rows: count=%d err=%v", partialCount, err)
+	}
+	var proposalStatus string
+	if err := database.pool.QueryRow(ctx, `SELECT status FROM drama.ir_merge_proposals
+		WHERE ir_merge_proposal_id=$1`, proposal.IRMergeProposalID).Scan(&proposalStatus); err != nil || proposalStatus != "ready" {
+		t.Fatalf("transaction failure changed proposal state: status=%s err=%v", proposalStatus, err)
+	}
+	if _, err := database.writer.Exec(ctx, `DROP TRIGGER trg_phase20_forced_merge_failure ON drama.narrative_ir_revisions;
+		DROP FUNCTION drama.phase20_forced_merge_failure()`); err != nil {
+		t.Fatal(err)
+	}
 	result, err := database.PublishIRMergeProposal(ctx, proposal.IRMergeProposalID, "phase20-publish-merge-"+suffix,
 		PublishIRMergeInput{Confirmed: true, PublishedBy: "tester"})
 	if err != nil {
@@ -270,6 +322,10 @@ func TestIRMergePublishesAtomicFullSnapshotAndPreservesUTF8Spans(t *testing.T) {
 		t.Fatalf("impact must create only a selectable regeneration proposal: proposals=%d requests=%d",
 			regenerationProposalCount, regenerationRequestCount)
 	}
+	t.Logf("IR merge evidence work=%s base_full_ir=%s incremental_ir=%s proposal=%s merged_full_ir=%s source_change_set=%s impacts=%v stale=%s/%s unrelated=%s relocation_only=%s rebuild_proposals=%d automatic_rebuilds=%d",
+		work.WorkID, baseRun.TargetID, incrementalID, proposal.IRMergeProposalID, result.FullIRRevisionID,
+		result.SourceChangeSetID, result.ImpactOperationIDs, changedStatus, downstreamStatus,
+		unrelatedStatus, relocatedStatus, regenerationProposalCount, regenerationRequestCount)
 }
 
 func seedMergeTestIR(ctx context.Context, database *Store, workID, sourceVersionID, irID string,
@@ -277,9 +333,15 @@ func seedMergeTestIR(ctx context.Context, database *Store, workID, sourceVersion
 	if len(chapters) == 0 {
 		return errors.New("chapters are required")
 	}
-	chapterContent := "林夏看见门。🙂"
-	if revised {
-		chapterContent = "序🙂林夏推开门。终"
+	var chapterContent string
+	if err := database.pool.QueryRow(ctx, `SELECT revision.content
+		FROM drama.source_version_chapters membership
+		JOIN drama.chapter_revisions revision
+		  ON revision.chapter_revision_id=membership.chapter_revision_id
+		WHERE membership.source_version_id=$1 AND membership.chapter_id=$2
+		  AND membership.chapter_revision_id=$3`, sourceVersionID, chapters[0].ChapterID,
+		chapters[0].ChapterRevisionID).Scan(&chapterContent); err != nil {
+		return err
 	}
 	entityEvidence := "林夏"
 	entityByte := len([]byte(chapterContent[:stringsIndex(chapterContent, entityEvidence)]))
@@ -291,7 +353,9 @@ func seedMergeTestIR(ctx context.Context, database *Store, workID, sourceVersion
 		entitySpanID, workID, sourceVersionID, chapters[0].ChapterID, chapters[0].ChapterRevisionID,
 		entityByte, entityByte+len(entityEvidence), entityCodepoint, entityCodepoint+utf8.RuneCountInString(entityEvidence),
 		hashText(entityEvidence), entityEvidence, "seed:"+entitySpanID); err != nil {
-		return err
+		return fmt.Errorf("insert entity source span content=%q byte=%d:%d codepoint=%d:%d: %w", chapterContent,
+			entityByte, entityByte+len(entityEvidence), entityCodepoint,
+			entityCodepoint+utf8.RuneCountInString(entityEvidence), err)
 	}
 	eventEvidence := chapterContent
 	eventSpanID := "span_event_" + irID
@@ -300,7 +364,8 @@ func seedMergeTestIR(ctx context.Context, database *Store, workID, sourceVersion
 		end_paragraph,excerpt_hash,evidence_text,idempotency_key) VALUES($1,$2,$3,$4,$5,0,$6,0,$7,1,1,$8,$9,$10)`,
 		eventSpanID, workID, sourceVersionID, chapters[0].ChapterID, chapters[0].ChapterRevisionID,
 		len(eventEvidence), utf8.RuneCountInString(eventEvidence), hashText(eventEvidence), eventEvidence, "seed:"+eventSpanID); err != nil {
-		return err
+		return fmt.Errorf("insert event source span content=%q bytes=%d codepoints=%d: %w", chapterContent,
+			len(eventEvidence), utf8.RuneCountInString(eventEvidence), err)
 	}
 	if _, err := database.writer.Exec(ctx, `INSERT INTO drama.narrative_entities(entity_id,work_id,entity_type,stable_key)
 		VALUES($1,$2,'character',$3) ON CONFLICT(entity_id) DO NOTHING`, entityID, workID, "entity:"+entityID); err != nil {

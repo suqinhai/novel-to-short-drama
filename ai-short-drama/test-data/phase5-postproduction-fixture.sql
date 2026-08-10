@@ -124,38 +124,41 @@ INSERT INTO drama.candidate_sets(
   candidate_set_id,project_id,target_type,target_id,base_artifact_id,quality_score_report_id,
   candidate_count,component_types,difference_directions,must_preserve,allowed_changes,
   model,prompt_version,random_seed,generation_parameters,estimated_cost,currency,
-  generator_version,idempotency_key,request_hash
+  generator_version,idempotency_key,request_hash,
+  generator_provider,generator_model,reviewer_provider,reviewer_model,blind_review
 ) VALUES(
   'candidate_set_phase5','p_phase1_legacy','episode','ep_phase1_legacy_001',
   'artifact_phase1_episode_plan_001','quality_phase5_v1',2,
   '["opening","dialogue","ending"]','["suspense-forward","performance-forward"]',
   '["source facts","character state","ending threat"]','["dialogue density","reaction timing"]',
   'deterministic-mock-v1','candidate-prompt-v1',20260730,'{"temperature":0}',0,'CNY',
-  'candidate-generator-v1','phase5:candidate:set',repeat('9',64)
+  'candidate-generator-v1','phase5:candidate:set',repeat('9',64),
+  'deterministic_mock','deterministic-generator-v2',
+  'deterministic_mock','deterministic-reviewer-v2',true
 );
 INSERT INTO drama.candidates(
   candidate_id,candidate_set_id,artifact_id,ordinal,label,difference_direction,derived_reason,
-  content,structured_diff,content_hash,model,prompt_version,random_seed,generation_parameters
+  content,structured_diff,content_hash,model,prompt_version,random_seed,generation_parameters,provider
 ) VALUES
   ('candidate_phase5_1','candidate_set_phase5','artifact_phase5_candidate_1',1,
    '悬念前置版','suspense-forward','前三秒强化异常',
    '{"opening":"门自动打开","dialogue":"门不是风吹开的。","ending":"脚步逼近"}',
    '[{"path":"/opening","after":"门自动打开"}]',repeat('9',64),
-   'deterministic-mock-v1','candidate-prompt-v1',20260730,'{"temperature":0}'),
+   'deterministic-mock-v1','candidate-prompt-v1',20260730,'{"temperature":0}','deterministic_mock'),
   ('candidate_phase5_2','candidate_set_phase5','artifact_phase5_candidate_2',2,
    '表演留白版','performance-forward','增加角色反应停顿',
    '{"opening":"林夏停在门前","dialogue":"门……是从里面开的。","ending":"脚步逼近"}',
    '[{"path":"/dialogue","after":"门……是从里面开的。"}]',repeat('a',64),
-   'deterministic-mock-v1','candidate-prompt-v1',20260731,'{"temperature":0}');
+   'deterministic-mock-v1','candidate-prompt-v1',20260731,'{"temperature":0}','deterministic_mock');
 INSERT INTO drama.candidate_scores(
   candidate_score_id,candidate_id,source_quality_score_report_id,total_score,fidelity,hook,
   pacing,continuity,filmability,estimated_duration_seconds,modification_risk,
-  recommendation_reasons,deduction_reasons,scorer_version
+  recommendation_reasons,deduction_reasons,scorer_version,reviewer_provider,reviewer_model
 ) VALUES
   ('candidate_score_phase5_1','candidate_phase5_1','quality_phase5_v1',92,94,96,90,91,89,8,12,
-   '["钩子强且忠实"]','["对白略密"]','candidate-scorer-v1'),
+   '["钩子强且忠实"]','["对白略密"]','candidate-scorer-v1','deterministic_mock','deterministic-reviewer-v2'),
   ('candidate_score_phase5_2','candidate_phase5_2','quality_phase5_v1',87,91,84,86,94,88,8,10,
-   '["表演空间充足"]','["开场钩子稍弱"]','candidate-scorer-v1');
+   '["表演空间充足"]','["开场钩子稍弱"]','candidate-scorer-v1','deterministic_mock','deterministic-reviewer-v2');
 INSERT INTO drama.candidate_selections(
   candidate_selection_id,candidate_set_id,selected_candidate_id,artifact_id,selection_type,
   content,validation_summary,confirmed_by,idempotency_key
@@ -172,8 +175,8 @@ INSERT INTO drama.episode_scripts(
   source_outline_version,status,performance_bible_refs
 ) VALUES(
   'script_phase5_post','p_phase1_legacy','season_phase1_legacy','ep_phase1_legacy_001',2,
-  '门后的线索','门自动打开','[]','林夏发现钥匙','脚步声逼近',8,24,1,'completed',
-  '{"char_lin":"pb_phase5_lin_v1"}'
+  '门后的线索','门自动打开','[]','林夏发现钥匙','脚步声逼近',8,24,1,'approved',
+  '{"char_lin":"pb_phase5_lin_v1","char_zhou":"pb_phase5_zhou_v1"}'
 );
 
 INSERT INTO drama.script_scenes(
@@ -201,7 +204,7 @@ INSERT INTO drama.storyboards(
   estimated_duration_seconds,status,performance_bible_refs
 ) VALUES(
   'storyboard_phase5_post','p_phase1_legacy','ep_phase1_legacy_001','script_phase5_post',
-  1,2,8,'approved','{"char_lin":"pb_phase5_lin_v1"}'
+  1,2,8,'approved','{"char_lin":"pb_phase5_lin_v1","char_zhou":"pb_phase5_zhou_v1"}'
 );
 
 INSERT INTO drama.storyboard_shots(
@@ -223,7 +226,35 @@ INSERT INTO drama.storyboard_shots(
    '["char_zhou"]','location_door','周野看向林夏手中的钥匙','怀疑','["dlg_phase5_2"]',
    '钥匙在你手里？','','冷月光','紧张','远处脚步逼近','低频悬疑脉冲','cut',
    '写实旧宅门厅','周野反应特写','脸部漂移','{"axis":"zhou-right"}',
-   '{"source_event_ids":["event_revision_phase1_002"]}','approved',1);
+    '{"source_event_ids":["event_revision_phase1_002"]}','approved',1);
+
+-- Stage 08 consumes an explicitly approved visual style and locked profiles
+-- from the Resolver snapshot. Keep these as real persisted test inputs so the
+-- seven-stage E2E never relies on a workflow default or a mock fallback.
+INSERT INTO drama.visual_styles(
+  style_id,project_id,name,style_type,description,positive_prompt,negative_prompt,
+  aspect_ratio,resolution_width,resolution_height,version,status
+) VALUES(
+  'style_phase5_v1','p_phase1_legacy','Restrained suspense','project',
+  'Cold realistic suspense with stable character identity',
+  'cinematic realistic cold moonlight restrained performance',
+  'identity drift, distorted anatomy, modern furniture','9:16',1080,1920,1,'approved'
+);
+INSERT INTO drama.character_visual_profiles(
+  profile_id,project_id,character_id,version,canonical_name,gender,apparent_age,
+  base_prompt,negative_prompt,source_story_bible_version,status,review_status,lock_status
+) VALUES
+  ('profile_phase18_lin','p_phase1_legacy','char_lin',1,'Lin','female','28',
+   'realistic restrained investigator','identity drift',1,'ready','approved','locked'),
+  ('profile_phase18_zhou','p_phase1_legacy','char_zhou',1,'Zhou','male','31',
+   'realistic guarded witness','identity drift',1,'ready','approved','locked');
+INSERT INTO drama.location_visual_profiles(
+  profile_id,project_id,location_id,version,canonical_name,environment_type,
+  base_prompt,negative_prompt,source_story_bible_version,status,review_status,lock_status
+) VALUES(
+  'profile_phase18_door','p_phase1_legacy','location_door',1,'Old house entrance','interior',
+  'old wooden door under cold moonlight','modern furniture',1,'ready','approved','locked'
+);
 
 -- Storyboard hints are represented as formal, licensed and versioned sound
 -- assets. A complete alternate style group is available for whole-episode
@@ -428,6 +459,13 @@ INSERT INTO drama.character_performance_bibles(
   '["speech.pitch","appearance.age","appearance.hair"]','["acting.emotion"]',
   '{"v1":"phase5 mock"}','{"source_span_ids":["span_legacy_full_ch_phase1_legacy_001"],"fact_revision_ids":["fact_revision_phase1_state_001"]}',
   'locked',repeat('e',64),'phase5-fixture'
+),(
+  'pb_phase5_zhou_v1','p_phase1_legacy','char_zhou','character-v1',1,
+  '{"pace":"measured","pitch":"low","pauses":"questioning"}','{"habit":"checks exits","taboo":"comic delivery"}',
+  '{"char_lin":"restrained concern"}','{"age":31,"hair":"short","body":"steady"}',
+  '["speech.pitch","appearance.age","appearance.hair"]','["acting.emotion"]',
+  '{"v1":"phase5 mock"}','{"source_span_ids":["span_legacy_full_ch_phase1_legacy_001"],"fact_revision_ids":["fact_revision_phase1_state_001"]}',
+  'locked',repeat('d',64),'phase5-fixture'
 );
 
 INSERT INTO drama.continuity_ledger_entries(
@@ -615,7 +653,7 @@ INSERT INTO drama.creative_workspace_versions(
   'workspace_phase5_v1','p_phase1_legacy','ep_phase1_legacy_001',1,'script_phase5_post',
   'storyboard_phase5_post','pacing_phase5_v1','selection_phase5_1','timeline_phase5_v1',
   '{"source_version_id":"sv_legacy_novel_phase1_legacy","ir_revision_id":"ir_phase1_001","adaptation_spec_version_id":"adaptation_spec_version_phase1_001","prompt_version":"phase5-mock-v1","model_version":"deterministic-mock-v1"}',
-  '{"char_lin":"pb_phase5_lin_v1"}','["continuity_phase5_1","continuity_phase5_2"]',
+  '{"char_lin":"pb_phase5_lin_v1","char_zhou":"pb_phase5_zhou_v1"}','["continuity_phase5_1","continuity_phase5_2"]',
   '["quality_phase5_v1","qc_phase5_v1"]','{"scene_order":["scene_phase5_post"],"active_tab":"script"}',
   'approved',true,'full mock chain assembled','phase5-fixture'
 );

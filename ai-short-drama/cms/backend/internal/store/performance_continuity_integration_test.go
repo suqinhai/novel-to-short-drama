@@ -15,6 +15,7 @@ func TestPerformanceContinuityPhase4Integration(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("PHASE4_DATABASE_URL is not set")
 	}
+	t.Setenv("MOCK_MODE", "true")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	database, err := New(ctx, databaseURL)

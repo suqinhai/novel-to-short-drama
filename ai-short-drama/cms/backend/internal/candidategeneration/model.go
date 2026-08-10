@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -55,7 +56,8 @@ type Request struct {
 	DifferenceDirections []string `json:"difference_directions"`
 	MustPreserve         []string `json:"must_preserve"`
 	AllowedChanges       []string `json:"allowed_changes"`
-	// Model remains accepted for the v1 deterministic_mock request shape.
+	// Model is retained only for decoding old records. New requests must name
+	// both the generator and the independent reviewer explicitly.
 	Model                string          `json:"model,omitempty"`
 	GeneratorProvider    string          `json:"generator_provider,omitempty"`
 	GeneratorModel       string          `json:"generator_model,omitempty"`
@@ -152,6 +154,23 @@ type ReviewInput struct {
 	HideGenerator       bool
 }
 
+// ExecutionRecord is an append-only audit fact emitted by the orchestration
+// layer. It records generation and evaluation independently, including failed
+// and invalid provider responses for which no candidate may be persisted.
+type ExecutionRecord struct {
+	ExecutionType string    `json:"execution_type"`
+	Ordinal       int       `json:"ordinal"`
+	Status        string    `json:"status"`
+	StartedAt     time.Time `json:"started_at"`
+	CompletedAt   time.Time `json:"completed_at"`
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	FailureReason string    `json:"failure_reason,omitempty"`
+	RetryCount    int       `json:"retry_count"`
+	Attempt       int       `json:"attempt"`
+	Blind         bool      `json:"blind"`
+}
+
 // CandidateProvider is implemented independently by text, image and video generators.
 // A provider must either return a real candidate or an error; fallback is an orchestration decision
 // and this package deliberately never substitutes deterministic_mock.
@@ -207,29 +226,51 @@ func (r *Registry) RegisterReviewer(reviewer CandidateReviewer) error {
 }
 
 func (r *Registry) GenerateAndReview(ctx context.Context, request Request) ([]Candidate, error) {
+	candidates, _, err := r.GenerateAndReviewAudited(ctx, request)
+	return candidates, err
+}
+
+func (r *Registry) GenerateAndReviewAudited(ctx context.Context, request Request) ([]Candidate, []ExecutionRecord, error) {
 	normalizeRequest(&request)
 	if err := ValidateRequest(request); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	provider := r.providers[request.GeneratorProvider]
 	if provider == nil || (provider.MediaKind() != "any" && provider.MediaKind() != targetMediaKind(request.TargetType)) {
-		return nil, fmt.Errorf("%w: generator %q does not support %s", ErrProviderUnavailable, request.GeneratorProvider, request.TargetType)
+		now := time.Now().UTC()
+		reason := fmt.Sprintf("generator %q does not support %s", request.GeneratorProvider, request.TargetType)
+		return nil, []ExecutionRecord{{ExecutionType: "generation", Ordinal: 1, Status: "failed",
+				StartedAt: now, CompletedAt: now, Provider: request.GeneratorProvider,
+				Model: request.GeneratorModel, FailureReason: reason, Attempt: 1}},
+			fmt.Errorf("%w: %s", ErrProviderUnavailable, reason)
 	}
 	reviewer := r.reviewers[request.ReviewerProvider]
 	if reviewer == nil {
-		return nil, fmt.Errorf("%w: reviewer %q", ErrProviderUnavailable, request.ReviewerProvider)
+		now := time.Now().UTC()
+		reason := fmt.Sprintf("reviewer %q is unavailable", request.ReviewerProvider)
+		return nil, []ExecutionRecord{{ExecutionType: "evaluation", Ordinal: 1, Status: "failed",
+				StartedAt: now, CompletedAt: now, Provider: request.ReviewerProvider,
+				Model: request.ReviewerModel, FailureReason: reason, Attempt: 1, Blind: request.BlindReview}},
+			fmt.Errorf("%w: %s", ErrProviderUnavailable, reason)
 	}
 	candidates := make([]Candidate, 0, request.CandidateCount)
+	executions := make([]ExecutionRecord, 0, request.CandidateCount*2)
 	contentHashes := map[string]bool{}
 	for index := 0; index < request.CandidateCount; index++ {
 		direction := request.DifferenceDirections[index%len(request.DifferenceDirections)]
 		seed := request.RandomSeed + int64(index)
+		generation := ExecutionRecord{ExecutionType: "generation", Ordinal: index + 1, Status: "running",
+			StartedAt: time.Now().UTC(), Provider: provider.Name(), Model: request.GeneratorModel, Attempt: 1}
 		draft, err := provider.Generate(ctx, GenerationInput{Request: request, Ordinal: index + 1, DifferenceDirection: direction, Seed: seed})
 		if err != nil {
-			return nil, fmt.Errorf("%w: generator %s candidate %d: %v", ErrProviderFailed, provider.Name(), index+1, err)
+			generation.Status, generation.CompletedAt, generation.FailureReason = "failed", time.Now().UTC(), err.Error()
+			executions = append(executions, generation)
+			return nil, executions, fmt.Errorf("%w: generator %s candidate %d: %v", ErrProviderFailed, provider.Name(), index+1, err)
 		}
 		if err := validateDraft(request, draft); err != nil {
-			return nil, fmt.Errorf("%w: candidate %d: %v", ErrInvalidProviderData, index+1, err)
+			generation.Status, generation.CompletedAt, generation.FailureReason = "invalid", time.Now().UTC(), err.Error()
+			executions = append(executions, generation)
+			return nil, executions, fmt.Errorf("%w: candidate %d: %v", ErrInvalidProviderData, index+1, err)
 		}
 		substantive := map[string]any{"components": draft.Components}
 		if media, ok := draft.Content["media"]; ok {
@@ -239,18 +280,30 @@ func (r *Registry) GenerateAndReview(ctx context.Context, request Request) ([]Ca
 		digest := sha256.Sum256(canonical)
 		hash := hex.EncodeToString(digest[:])
 		if contentHashes[hash] {
-			return nil, fmt.Errorf("%w: difference direction %q produced duplicate content", ErrInvalidProviderData, direction)
+			generation.Status, generation.CompletedAt, generation.FailureReason = "invalid", time.Now().UTC(), "duplicate substantive content"
+			executions = append(executions, generation)
+			return nil, executions, fmt.Errorf("%w: difference direction %q produced duplicate content", ErrInvalidProviderData, direction)
 		}
 		contentHashes[hash] = true
+		generation.Status, generation.CompletedAt = "succeeded", time.Now().UTC()
+		executions = append(executions, generation)
+		evaluation := ExecutionRecord{ExecutionType: "evaluation", Ordinal: index + 1, Status: "running",
+			StartedAt: time.Now().UTC(), Provider: reviewer.Name(), Model: request.ReviewerModel, Attempt: 1, Blind: request.BlindReview}
 		score, err := reviewer.Review(ctx, ReviewInput{Request: request, Ordinal: index + 1,
 			DifferenceDirection: direction, Candidate: draft, HideGenerator: request.BlindReview})
 		if err != nil {
-			return nil, fmt.Errorf("%w: reviewer %s candidate %d: %v", ErrProviderFailed, reviewer.Name(), index+1, err)
+			evaluation.Status, evaluation.CompletedAt, evaluation.FailureReason = "failed", time.Now().UTC(), err.Error()
+			executions = append(executions, evaluation)
+			return nil, executions, fmt.Errorf("%w: reviewer %s candidate %d: %v", ErrProviderFailed, reviewer.Name(), index+1, err)
 		}
 		score.ReviewerProvider, score.ReviewerModel = reviewer.Name(), request.ReviewerModel
 		if err := ValidateScore(score); err != nil {
-			return nil, fmt.Errorf("%w: candidate %d score: %v", ErrInvalidProviderData, index+1, err)
+			evaluation.Status, evaluation.CompletedAt, evaluation.FailureReason = "invalid", time.Now().UTC(), err.Error()
+			executions = append(executions, evaluation)
+			return nil, executions, fmt.Errorf("%w: candidate %d score: %v", ErrInvalidProviderData, index+1, err)
 		}
+		evaluation.Status, evaluation.CompletedAt = "succeeded", time.Now().UTC()
+		executions = append(executions, evaluation)
 		candidates = append(candidates, Candidate{
 			Ordinal: index + 1, Label: fmt.Sprintf("候选 %c", 'A'+rune(index)), DifferenceDirection: direction,
 			Components: draft.Components, Content: draft.Content, Score: score, Provider: provider.Name(),
@@ -264,35 +317,10 @@ func (r *Registry) GenerateAndReview(ctx context.Context, request Request) ([]Ca
 		}
 		return candidates[i].Score.TotalScore > candidates[j].Score.TotalScore
 	})
-	return candidates, nil
-}
-
-// Generate is retained as a deterministic test helper. Production Store code uses an injected
-// registry built from the configured real providers.
-func Generate(request Request) ([]Candidate, error) {
-	registry := NewRegistry([]CandidateProvider{NewDeterministicMockProvider()}, []CandidateReviewer{NewDeterministicMockReviewer()})
-	return registry.GenerateAndReview(context.Background(), request)
+	return candidates, executions, nil
 }
 
 func normalizeRequest(request *Request) {
-	if request.Model == "deterministic_mock" || (request.Model == "" && request.GeneratorProvider == "") {
-		if request.GeneratorProvider == "" {
-			request.GeneratorProvider = "deterministic_mock"
-		}
-	}
-	if request.GeneratorModel == "" {
-		if request.GeneratorProvider == "deterministic_mock" {
-			request.GeneratorModel = "deterministic-generator-v2"
-		} else {
-			request.GeneratorModel = request.Model
-		}
-	}
-	if request.ReviewerProvider == "" {
-		request.ReviewerProvider = "deterministic_mock"
-	}
-	if request.ReviewerModel == "" && request.ReviewerProvider == "deterministic_mock" {
-		request.ReviewerModel = "deterministic-reviewer-v2"
-	}
 	if request.PromptVersion == "" {
 		request.PromptVersion = PromptVersion
 	}

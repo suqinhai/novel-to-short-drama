@@ -13,7 +13,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto=require('crypto');const project_id=String($json.project_id||'').trim();if(!project_id)throw new Error('project_id is required');const idempotency_key=String($json.idempotency_key||`diagnosis:${project_id}:${crypto.randomUUID()}`).slice(0,255);return [{json:{project_id,idempotency_key,mode:'deterministic_mock'}}];"
+        "jsCode": "const crypto=require('crypto');const project_id=String($json.project_id||'').trim();if(!project_id)throw new Error('project_id is required');const idempotency_key=String($json.idempotency_key||`diagnosis:${project_id}:${crypto.randomUUID()}`).slice(0,255);return [{json:{project_id,idempotency_key,mode:'rules_v1'}}];"
       },
       "id": "04b-validate",
       "name": "Validate Deterministic Command",
@@ -30,7 +30,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{JSON.stringify({mode:'deterministic_mock'})}}",
+        "body": "={{JSON.stringify({mode:'rules_v1'})}}",
         "options": {}
       },
       "id": "04b-run",

@@ -25,6 +25,7 @@ const error = ref('')
 const specsNotice = ref('')
 const success = ref('')
 const operation = ref(null)
+const pendingSpecPlan = ref(null)
 const compilerOperation = ref(null)
 const adaptationPlan = ref(null)
 const compilerPlanPanel = ref(null)
@@ -201,14 +202,52 @@ async function submit() {
     const payload = projectId.value ? spec : { display_name: form.display_name.trim(), adaptation_spec: spec }
     const signature = JSON.stringify(payload)
     if (pendingSubmit?.signature !== signature) pendingSubmit = { signature, key: createIdempotencyKey(projectId.value ? 'adaptation-spec' : 'adaptation-project') }
-    const response = projectId.value
-      ? await narrativeApi.createAdaptationSpec(projectId.value, payload, pendingSubmit.key)
-      : await narrativeApi.createAdaptationProject(payload, pendingSubmit.key)
+    if (projectId.value) {
+      const current = specs.value.find((item) => item.status === 'active') || specs.value[0]
+      if (!current) throw new Error('没有可作为修改基线的 Adaptation Spec。')
+      pendingSpecPlan.value = await api.createChangePlan(projectId.value, {
+        instruction: '更新 Adaptation Spec；先预览差异和影响，确认后创建不可变 successor 版本',
+        target: { entity_type: 'adaptation_spec', entity_id: current.adaptation_spec_version_id, version: current.version_number },
+        must_preserve: ['source_version_id', 'ir_revision_id', 'source_binding_id'],
+        changes: [
+          { operation: 'replace', field: 'platform', value: spec.platform },
+          { operation: 'replace', field: 'audience_profile', value: spec.audience_profile },
+          { operation: 'replace', field: 'target_episode_count', value: spec.target_episode_count },
+          { operation: 'replace', field: 'episode_duration_seconds', value: spec.episode_duration_seconds },
+          { operation: 'replace', field: 'scope_mode', value: spec.scope.mode },
+          { operation: 'replace', field: 'chapter_ids', value: spec.scope.chapter_ids },
+          { operation: 'replace', field: 'story_arc_revision_ids', value: spec.scope.story_arc_revision_ids },
+          { operation: 'replace', field: 'rules', value: spec.rules },
+        ],
+      })
+      pendingSubmit = null
+      success.value = '差异、影响和重建范围预览已生成；正式内容尚未修改。'
+      return
+    }
+    const response = await narrativeApi.createAdaptationProject(payload, pendingSubmit.key)
     pendingSubmit = null
     operation.value = response.data
-    success.value = projectId.value ? '改编规格命令已提交。' : '改编项目创建命令已提交。'
+    success.value = '改编项目创建命令已提交。'
   } catch (err) {
     error.value = err.isConflict ? `${err.message} 请检查是否重复提交或项目状态已变化。` : err.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function applySpecPlan() {
+  if (!pendingSpecPlan.value) return
+  submitting.value = true
+  error.value = ''
+  try {
+    const id = pendingSpecPlan.value.change_plan_id
+    await api.confirmChangePlan(projectId.value, id, { actor: 'cms-user' })
+    await api.executeChangePlan(projectId.value, id)
+    pendingSpecPlan.value = null
+    await loadSpecs()
+    success.value = 'Adaptation Spec successor 版本已原子切换；精确 stale 与 pending rebuild 已记录。'
+  } catch (err) {
+    error.value = err.message
   } finally {
     submitting.value = false
   }
@@ -315,6 +354,11 @@ onMounted(load)
     <template v-else>
       <div v-if="error" class="error-banner large"><AlertTriangle :size="17" />{{ error }}<button @click="error = ''">关闭</button></div>
       <div v-if="success" class="success-banner"><CheckCircle2 :size="17" />{{ success }}</div>
+      <article v-if="pendingSpecPlan" class="panel padded change-preview">
+        <div class="section-title"><div><span>CHANGE PLAN</span><h3>差异与影响预览</h3></div></div>
+        <pre>{{ JSON.stringify({ changes: pendingSpecPlan.plan?.expected_changes, impacts: pendingSpecPlan.impacts, rebuild_tasks: pendingSpecPlan.plan?.rebuild_tasks, risks: pendingSpecPlan.plan?.risks }, null, 2) }}</pre>
+        <div class="actions"><button type="button" class="button button-secondary" @click="pendingSpecPlan=null">取消</button><button type="button" class="button button-primary" :disabled="submitting" @click="applySpecPlan">确认并应用不可变新版本</button></div>
+      </article>
       <OperationTracker :operation="operation" @terminal="handleSpecTerminal" />
       <OperationTracker :operation="compilerOperation" review-action-label="查看审核内容" @terminal="handleCompilerTerminal" @review="scrollToPlan" />
 

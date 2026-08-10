@@ -2,6 +2,13 @@ BEGIN;
 SET search_path TO drama, public;
 
 -- Compatibility-only extensions: preserve every phase-1 value and column.
+SELECT to_regclass('drama.schema_migrations') IS NULL AS phase02_ledger_missing \gset
+\if :phase02_ledger_missing
+\set phase02_refresh_constraints true
+\else
+SELECT NOT EXISTS(SELECT 1 FROM drama.schema_migrations WHERE version='23') AS phase02_refresh_constraints \gset
+\endif
+\if :phase02_refresh_constraints
 ALTER TABLE drama.projects DROP CONSTRAINT IF EXISTS projects_current_stage_check;
 ALTER TABLE drama.projects ADD CONSTRAINT projects_current_stage_check CHECK (current_stage IN (
   'created','novel_import','chunk_analysis','story_bible','review',
@@ -16,6 +23,9 @@ ALTER TABLE drama.workflow_tasks DROP CONSTRAINT IF EXISTS workflow_tasks_workfl
 ALTER TABLE drama.workflow_tasks ADD CONSTRAINT workflow_tasks_workflow_stage_check CHECK (workflow_stage IN (
   'orchestrator','novel_import','chunk_analysis','story_bible','episode_planning','episode_script','storyboard_design','review'
 ));
+\else
+\echo 'migration 02 preserves constraints owned by migration 23'
+\endif
 ALTER TABLE drama.review_tasks ADD COLUMN IF NOT EXISTS revision_instruction TEXT;
 ALTER TABLE drama.review_tasks ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
@@ -169,4 +179,3 @@ DO $$ DECLARE t TEXT; BEGIN
   END LOOP;
 END $$;
 COMMIT;
-

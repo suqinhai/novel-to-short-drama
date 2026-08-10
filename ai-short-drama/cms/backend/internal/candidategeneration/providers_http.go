@@ -174,12 +174,20 @@ func NewRegistryFromEnvironment() *Registry {
 		apiKey: envFirst("CANDIDATE_IMAGE_API_KEY", "IMAGE_API_KEY"), defaultModel: envFirst("CANDIDATE_IMAGE_MODEL", "IMAGE_MODEL"), client: client}}
 	videoProvider := &httpCandidateProvider{config: httpProviderConfig{name: "video_http", kind: "video", endpoint: videoEndpoint,
 		apiKey: envFirst("CANDIDATE_VIDEO_API_KEY", "VIDEO_API_KEY"), defaultModel: envFirst("CANDIDATE_VIDEO_MODEL", "VIDEO_MODEL"), client: client}}
-	reviewerProvider := &httpCandidateProvider{config: httpProviderConfig{name: "reviewer_http", kind: "text", endpoint: completionEndpoint(envFirst("CANDIDATE_REVIEW_API_BASE_URL", "LITELLM_BASE_URL")),
-		apiKey: envFirst("CANDIDATE_REVIEW_API_KEY", "LITELLM_API_KEY"), defaultModel: envFirst("CANDIDATE_REVIEW_MODEL", "QC_TEXT_MODEL"), client: client}}
-	return NewRegistry(
-		[]CandidateProvider{NewDeterministicMockProvider(), textProvider, imageProvider, videoProvider},
-		[]CandidateReviewer{NewDeterministicMockReviewer(), &httpCandidateReviewer{provider: reviewerProvider}},
-	)
+	// Review credentials, endpoint and model are intentionally not inherited
+	// from the generation gateway. Production must configure an independent
+	// reviewer explicitly; an omitted reviewer fails closed.
+	reviewerProvider := &httpCandidateProvider{config: httpProviderConfig{name: "reviewer_http", kind: "text", endpoint: completionEndpoint(os.Getenv("CANDIDATE_REVIEW_API_BASE_URL")),
+		apiKey: strings.TrimSpace(os.Getenv("CANDIDATE_REVIEW_API_KEY")), defaultModel: strings.TrimSpace(os.Getenv("CANDIDATE_REVIEW_MODEL")), client: client}}
+	providers := []CandidateProvider{textProvider, imageProvider, videoProvider}
+	reviewers := []CandidateReviewer{&httpCandidateReviewer{provider: reviewerProvider}}
+	// The deterministic provider is a test fixture, never a production fallback.
+	// Tests that need it must opt in explicitly in their environment.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CANDIDATE_ENABLE_DETERMINISTIC_MOCK")), "true") {
+		providers = append(providers, NewDeterministicMockProvider())
+		reviewers = append(reviewers, NewDeterministicMockReviewer())
+	}
+	return NewRegistry(providers, reviewers)
 }
 
 func generationPrompt(input GenerationInput) string {

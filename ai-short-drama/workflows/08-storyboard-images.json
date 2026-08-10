@@ -147,16 +147,13 @@
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT sh.*,b.storyboard_id,b.version storyboard_version,st.style_id,st.positive_prompt style_prompt,st.negative_prompt style_negative,st.aspect_ratio,st.resolution_width,st.resolution_height,coalesce((SELECT jsonb_agg(jsonb_build_object('character_id',p.character_id,'profile_id',p.profile_id,'base_prompt',p.base_prompt,'negative_prompt',p.negative_prompt,'asset_id',a.asset_id,'reference_url',a.storage_url,'costume_id',co.costume_id,'costume_prompt',co.costume_prompt))FROM drama.character_visual_profiles p LEFT JOIN LATERAL(SELECT * FROM drama.generated_assets WHERE profile_id=p.profile_id AND selected_as_primary AND review_status='approved'AND status='succeeded'LIMIT 1)a ON true LEFT JOIN LATERAL(SELECT * FROM drama.character_costumes WHERE profile_id=p.profile_id AND lock_status='locked'AND review_status='approved'ORDER BY version DESC LIMIT 1)co ON true WHERE p.project_id=sh.project_id AND p.lock_status='locked'AND p.review_status='approved'AND p.character_id IN(SELECT jsonb_array_elements_text(sh.character_ids))),'[]')characters,(SELECT jsonb_build_object('location_id',p.location_id,'profile_id',p.profile_id,'base_prompt',p.base_prompt,'negative_prompt',p.negative_prompt,'asset_id',a.asset_id,'reference_url',a.storage_url)FROM drama.location_visual_profiles p LEFT JOIN LATERAL(SELECT * FROM drama.generated_assets WHERE profile_id=p.profile_id AND selected_as_primary AND review_status='approved'AND status='succeeded'LIMIT 1)a ON true WHERE p.project_id=sh.project_id AND p.location_id=sh.location_id AND p.lock_status='locked'AND p.review_status='approved'ORDER BY p.version DESC LIMIT 1)location FROM drama.storyboards b JOIN drama.storyboard_shots sh ON sh.storyboard_id=b.storyboard_id JOIN drama.episode_scripts es ON es.script_id=b.script_id JOIN LATERAL(SELECT * FROM drama.visual_styles WHERE project_id=b.project_id AND status IN('approved','locked')ORDER BY version DESC LIMIT 1)st ON true WHERE b.project_id=$1 AND b.episode_id=$2 AND b.status='approved'AND es.status='approved'AND sh.status IN('approved','ready')AND($3::text IS NULL OR sh.shot_id=$3)AND NOT EXISTS(SELECT 1 FROM drama.storyboard_images i WHERE i.shot_id=sh.shot_id AND i.review_status='approved'AND i.is_current)ORDER BY sh.shot_order LIMIT $4;",
-        "options": {
-          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id,$json.test_mode?Number($env.TEST_MAX_IMAGE_SHOTS||10):1000]}}"
-        }
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json,snapshot=r.effective_context?.production_snapshot;if(!snapshot||snapshot.state!=='resolved'||!snapshot.payload)throw new Error('EFFECTIVE_INPUT_SNAPSHOT_REQUIRED: resolver did not freeze a resolved production snapshot');const p=snapshot.payload;const style=(p.visual_styles||[])[0];if(!p.storyboard?.storyboard_id||!style)throw new Error('STORYBOARD_NOT_APPROVED: resolver snapshot has no storyboard/style');const profiles=p.visual_profiles||[],costumes=p.costumes||[],assets=p.generated_assets||[],images=p.images||[],selected=p.candidate_selections||[];let shots=(p.shots||[]).filter(s=>!r.shot_id||s.shot_id===r.shot_id).filter(s=>r.shot_id||!images.some(i=>i.shot_id===s.shot_id&&i.status==='succeeded'&&i.review_status==='approved'&&i.is_current));if(r.test_mode)shots=shots.slice(0,Number($env.TEST_MAX_IMAGE_SHOTS||10));const assetFor=profileId=>assets.find(a=>a.profile_id===profileId);const rows=shots.map(s=>{const characters=(s.character_ids||[]).map(character_id=>{const profile=profiles.find(x=>x.kind==='character'&&x.entity_id===character_id),asset=profile&&assetFor(profile.profile_id),costume=profile&&costumes.find(x=>x.profile_id===profile.profile_id);return{character_id,profile_id:profile?.profile_id||null,base_prompt:profile?.base_prompt||null,negative_prompt:profile?.negative_prompt||null,asset_id:asset?.asset_id||null,reference_url:asset?.storage_url||asset?.asset_url||null,costume_id:costume?.costume_id||null,costume_prompt:costume?.costume_prompt||null}});const profile=profiles.find(x=>x.kind==='location'&&x.entity_id===s.location_id),asset=profile&&assetFor(profile.profile_id),location=profile?{location_id:s.location_id,profile_id:profile.profile_id,base_prompt:profile.base_prompt,negative_prompt:profile.negative_prompt,asset_id:asset?.asset_id||null,reference_url:asset?.storage_url||asset?.asset_url||null}:null;return{...s,storyboard_id:p.storyboard.storyboard_id,storyboard_version:p.storyboard.version,style_id:style.style_id,style_prompt:style.positive_prompt,style_negative:style.negative_prompt,aspect_ratio:style.aspect_ratio,resolution_width:style.resolution_width,resolution_height:style.resolution_height,characters,location,candidate_selections:selected.filter(x=>x.target_id===s.shot_id||x.target_id===r.episode_id),lifecycle_inputs:p.lifecycle_inputs||{},entity_version_overlays:p.entity_version_overlays||{},effective_snapshot_binding_id:snapshot.binding_id,effective_snapshot_version_id:snapshot.version_id,effective_snapshot_hash:snapshot.content_hash,effective_snapshot_provenance:snapshot.provenance||[]}});return rows.map(json=>({json}));"
       },
       "id": "08-context",
-      "name": "Load Approved Shots and Locked Assets",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
+      "name": "Expand Resolver Shot Asset Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         -200,
         40
@@ -208,8 +205,8 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "provider": "={{$env.IMAGE_PROVIDER||'mock'}}",
-            "model": "={{$env.IMAGE_MODEL||'mock-image-model'}}",
+            "provider": "={{$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?'mock':$env.IMAGE_PROVIDER}}",
+            "model": "={{$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?($env.TEST_IMAGE_MODEL||'mock-image-model'):$env.IMAGE_MODEL}}",
             "task_type": "text_to_image",
             "project_id": "={{$json.project_id}}",
             "entity_type": "storyboard_shot",
@@ -224,9 +221,10 @@
             "seed": null,
             "count": 1,
             "generation_version": "={{$json.generation_version}}",
-            "idempotency_key": "={{[$json.project_id,'storyboard_shot',$json.shot.shot_id,'storyboard_frame',$json.generation_version,$env.IMAGE_PROVIDER||'mock',$env.IMAGE_MODEL||'mock-image-model'].join(':')}}",
+            "idempotency_key": "={{[$json.project_id,'storyboard_shot',$json.shot.shot_id,'storyboard_frame',$json.generation_version,$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?'mock':$env.IMAGE_PROVIDER,$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?($env.TEST_IMAGE_MODEL||'mock-image-model'):$env.IMAGE_MODEL].join(':')}}",
             "trace_id": "={{$json.trace_id}}",
-            "payload": "={{ {...$json.payload,episode_id:$json.episode_id,shot_id:$json.shot.shot_id,action:$json.action} }}"
+            "payload": "={{ {...$json.payload,episode_id:$json.episode_id,shot_id:$json.shot.shot_id,action:$json.action} }}",
+            "test_mode": "={{$json.test_mode===true}}"
           },
           "matchingColumns": [],
           "schema": []
@@ -530,25 +528,7 @@
       "main": [
         [
           {
-            "node": "Load Approved Shots and Locked Assets",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Approved Shots and Locked Assets": {
-      "main": [
-        [
-          {
-            "node": "Validate Locks and Build Final Prompts",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Failure Response",
+            "node": "Expand Resolver Shot Asset Snapshot",
             "type": "main",
             "index": 0
           }
@@ -741,6 +721,24 @@
         [
           {
             "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Resolver Shot Asset Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Validate Locks and Build Final Prompts",
             "type": "main",
             "index": 0
           }

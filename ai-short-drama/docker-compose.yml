@@ -28,6 +28,7 @@ services:
       - ./database/09-phase5-contract-corrections.sql:/opt/drama/09-phase5-contract-corrections.sql:ro
       - ./database/09-verify-phase5-contract-corrections.sql:/opt/drama/09-verify-phase5-contract-corrections.sql:ro
       - ./database/09-rollback-phase5-contract-corrections.sql:/opt/drama/09-rollback-phase5-contract-corrections.sql:ro
+      - ./database/10-backfill-singular-script-dialogues.sql:/opt/drama/10-backfill-singular-script-dialogues.sql:ro
       - ./database/11-pgcrypto-runtime-prerequisite.sql:/opt/drama/11-pgcrypto-runtime-prerequisite.sql:ro
       - ./database/12-rolling-episode-production.sql:/opt/drama/12-rolling-episode-production.sql:ro
       - ./database/13-adaptation-diagnostics-pacing-quality.sql:/opt/drama/13-adaptation-diagnostics-pacing-quality.sql:ro
@@ -50,6 +51,8 @@ services:
       - ./database/22-verify-effective-input-stage-requirements.sql:/opt/drama/22-verify-effective-input-stage-requirements.sql:ro
       - ./database/23-versioned-production-routing.sql:/opt/drama/23-versioned-production-routing.sql:ro
       - ./database/23-verify-versioned-production-routing.sql:/opt/drama/23-verify-versioned-production-routing.sql:ro
+      - ./database/24-authoritative-production-inputs.sql:/opt/drama/24-authoritative-production-inputs.sql:ro
+      - ./database/24-verify-authoritative-production-inputs.sql:/opt/drama/24-verify-authoritative-production-inputs.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -242,8 +245,8 @@ services:
       ALLOW_PARTIAL_SOURCE: ${ALLOW_PARTIAL_SOURCE:-false}
       VISUAL_PROMPT_MODEL: ${VISUAL_PROMPT_MODEL:-glm-5.2}
       IMAGE_QC_MODEL: ${IMAGE_QC_MODEL:-}
-      IMAGE_PROVIDER: ${IMAGE_PROVIDER:-mock}
-      IMAGE_MODEL: ${IMAGE_MODEL:-mock-image-model}
+      IMAGE_PROVIDER: ${IMAGE_PROVIDER:-generic_openai_images}
+      IMAGE_MODEL: ${IMAGE_MODEL:-}
       IMAGE_API_BASE_URL: ${IMAGE_API_BASE_URL:-}
       IMAGE_API_KEY: ${IMAGE_API_KEY:-}
       IMAGE_PROVIDER_MODE: ${IMAGE_PROVIDER_MODE:-sync}
@@ -267,8 +270,8 @@ services:
       AUTO_QC_ENABLED: ${AUTO_QC_ENABLED:-true}
       VIDEO_PROMPT_MODEL: ${VIDEO_PROMPT_MODEL:-glm-5.2}
       VIDEO_QC_MODEL: ${VIDEO_QC_MODEL:-}
-      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
-      VIDEO_MODEL: ${VIDEO_MODEL:-mock-image-to-video}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-generic_async_video}
+      VIDEO_MODEL: ${VIDEO_MODEL:-}
       VIDEO_API_BASE_URL: ${VIDEO_API_BASE_URL:-}
       VIDEO_API_KEY: ${VIDEO_API_KEY:-}
       VIDEO_USE_GENERATED_AUDIO: ${VIDEO_USE_GENERATED_AUDIO:-false}
@@ -287,8 +290,8 @@ services:
       VIDEO_DEFAULT_FPS: ${VIDEO_DEFAULT_FPS:-24}
       VIDEO_DURATION_TOLERANCE_PERCENT: ${VIDEO_DURATION_TOLERANCE_PERCENT:-20}
       TEST_MAX_VIDEO_SHOTS: ${TEST_MAX_VIDEO_SHOTS:-10}
-      TTS_PROVIDER: ${TTS_PROVIDER:-mock}
-      TTS_MODEL: ${TTS_MODEL:-mock-tts}
+      TTS_PROVIDER: ${TTS_PROVIDER:-generic_sync_tts}
+      TTS_MODEL: ${TTS_MODEL:-}
       TTS_API_BASE_URL: ${TTS_API_BASE_URL:-}
       TTS_API_KEY: ${TTS_API_KEY:-}
       TTS_PROVIDER_MODE: ${TTS_PROVIDER_MODE:-sync}
@@ -321,7 +324,8 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
-      MOCK_MODE: ${MOCK_MODE:-true}
+      MOCK_MODE: ${MOCK_MODE:-false}
+      CANDIDATE_ENABLE_DETERMINISTIC_MOCK: ${CANDIDATE_ENABLE_DETERMINISTIC_MOCK:-false}
       MEDIA_WORKER_ENABLED: ${MEDIA_WORKER_ENABLED:-true}
       MEDIA_WORKER_URL: ${MEDIA_WORKER_URL:-http://media-worker:8090}
       MEDIA_WORKER_TOKEN: ${MEDIA_WORKER_TOKEN:-}
@@ -452,7 +456,7 @@ services:
       QC_MAX_BLACK_SECONDS: ${QC_MAX_BLACK_SECONDS:-1}
       QC_MAX_SILENCE_SECONDS: ${QC_MAX_SILENCE_SECONDS:-2}
       QC_AUDIO_VIDEO_DRIFT_MS: ${QC_AUDIO_VIDEO_DRIFT_MS:-200}
-      MOCK_MODE: ${MOCK_MODE:-true}
+      MOCK_MODE: ${MOCK_MODE:-false}
     volumes:
       - ./storage:/data/storage
     depends_on:

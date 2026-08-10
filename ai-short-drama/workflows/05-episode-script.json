@@ -147,16 +147,12 @@
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT e.*,s.status season_status,p.episode_duration_seconds,b.characters,b.locations,b.key_events,(SELECT continuity_out FROM drama.episode_outlines WHERE season_id=e.season_id AND episode_number=e.episode_number-1 AND status='approved' ORDER BY version DESC LIMIT 1)previous_continuity,(SELECT continuity_in FROM drama.episode_outlines WHERE season_id=e.season_id AND episode_number=e.episode_number+1 ORDER BY version DESC LIMIT 1)next_setup,(SELECT coalesce(jsonb_agg(jsonb_build_object('chunk_id',c.chunk_id,'summary',c.analysis_result->>'summary')),'[]') FROM drama.novel_chunks c WHERE c.chunk_id IN(SELECT jsonb_array_elements_text(e.source_chunk_ids)))source_chunks,(SELECT es.scenes FROM drama.episode_scripts es WHERE es.episode_id=e.episode_id ORDER BY es.version DESC LIMIT 1)existing_scenes FROM drama.episode_outlines e JOIN drama.seasons s ON s.season_id=e.season_id JOIN drama.projects p ON p.project_id=e.project_id JOIN LATERAL(SELECT * FROM drama.story_bibles WHERE story_bible_id=s.story_bible_id)b ON true WHERE e.project_id=$1 AND e.episode_id=$2 AND e.status='approved' ORDER BY e.version DESC LIMIT 1;",
-        "options": {
-          "queryReplacement": "={{[$json.project_id,$json.episode_id]}}"
-        }
+        "jsCode": "const r=$input.first().json,snapshot=r.effective_context?.production_snapshot;if(!snapshot||snapshot.state!=='resolved'||!snapshot.payload)throw new Error('EFFECTIVE_INPUT_SNAPSHOT_REQUIRED: resolver did not freeze a resolved production snapshot');const p=snapshot.payload;const bible=(p.story_bibles||[])[0]||{};if(!p.outline?.episode_id)throw new Error('EPISODE_OUTLINE_NOT_APPROVED: resolver snapshot has no outline');return[{json:{...p.outline,season_status:'approved',episode_duration_seconds:p.project?.episode_duration_seconds,characters:bible.characters||[],locations:bible.locations||[],key_events:bible.key_events||[],existing_scenes:p.scenes||[],candidate_selections:p.candidate_selections||[],lifecycle_inputs:p.lifecycle_inputs||{},entity_version_overlays:p.entity_version_overlays||{},effective_snapshot_binding_id:snapshot.binding_id,effective_snapshot_version_id:snapshot.version_id,effective_snapshot_hash:snapshot.content_hash,effective_snapshot_provenance:snapshot.provenance||[]}}];"
       },
       "id": "05-context",
-      "name": "Load Approved Outline Context",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
+      "name": "Expand Resolver Outline Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         -160,
         40
@@ -191,7 +187,7 @@
           },
           "conditions": [
             {
-              "leftValue": "={{$json.test_mode||$env.MOCK_MODE==='true'}}",
+              "leftValue": "={{$json.test_mode===true&&$env.MOCK_MODE==='true'}}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -508,25 +504,7 @@
       "main": [
         [
           {
-            "node": "Load Approved Outline Context",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Approved Outline Context": {
-      "main": [
-        [
-          {
-            "node": "Enforce Approved Outline",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Failure Response",
+            "node": "Expand Resolver Outline Snapshot",
             "type": "main",
             "index": 0
           }
@@ -715,6 +693,24 @@
         [
           {
             "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Resolver Outline Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Enforce Approved Outline",
             "type": "main",
             "index": 0
           }

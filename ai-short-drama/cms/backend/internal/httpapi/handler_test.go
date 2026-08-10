@@ -57,6 +57,20 @@ func TestCORSAllowsFrozenV2MutationHeaders(t *testing.T) {
 	}
 }
 
+func TestVisualQCFixtureIsUnavailableOutsideExplicitMockEnvironment(t *testing.T) {
+	t.Setenv("MOCK_MODE", "false")
+	router := New(nil, config.Config{}).Router()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/v1/projects/project_test/visual-qc/run-fixture",
+		strings.NewReader(`{"episode_id":"episode_test","fixture_id":"fixture_test","frames":[{}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "TEST_FIXTURE_DISABLED") {
+		t.Fatalf("production visual QC fixture gate failed: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestEffectiveInputReadOnlyRouteValidatesStageAndAvailability(t *testing.T) {
 	router := New(nil, config.Config{}).Router()
 
@@ -108,6 +122,29 @@ func TestDirectFormalContentMutationRoutesAreUnavailable(t *testing.T) {
 			t.Fatalf("direct timeline mutation is not explicitly disabled at %s: %d %s",
 				endpoint, recorder.Code, recorder.Body.String())
 		}
+	}
+
+	for _, endpoint := range []string{
+		"/api/v1/projects/p1/performance-bibles",
+		"/api/v1/performance-bibles/pb1/lock",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{}`)))
+		if recorder.Code != http.StatusGone ||
+			!strings.Contains(recorder.Body.String(), "DIRECT_CONTENT_MUTATION_DISABLED") {
+			t.Fatalf("direct performance mutation is not explicitly disabled at %s: %d %s",
+				endpoint, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	timing := httptest.NewRecorder()
+	router.ServeHTTP(timing, httptest.NewRequest(http.MethodPost,
+		"/api/v1/projects/p1/episodes/ep1/dialogue-timings/validate",
+		strings.NewReader(`{"items":[{"dialogue_id":"d1","start_ms":0,"end_ms":1000,"audio_duration_ms":1000,"target_lip_start_ms":1,"target_lip_end_ms":1000}],"persist":true}`)))
+	if timing.Code != http.StatusGone ||
+		!strings.Contains(timing.Body.String(), "DIRECT_TIMELINE_MUTATION_DISABLED") {
+		t.Fatalf("dialogue timing persistence is not explicitly disabled: %d %s",
+			timing.Code, timing.Body.String())
 	}
 }
 

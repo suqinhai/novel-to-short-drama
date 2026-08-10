@@ -218,8 +218,8 @@ func (h *sourceV2Handler) runAdaptationAnalysis(c *gin.Context) {
 	if !decodeStrictJSON(c, &request) {
 		return
 	}
-	if request.Mode != "" && request.Mode != "deterministic_mock" {
-		v2InputError(c, "PAID_MODEL_DISABLED", "当前阶段只允许 deterministic_mock")
+	if request.Mode != "rules_v1" {
+		v2InputError(c, "ANALYSIS_MODE_REQUIRED", "mode must explicitly select rules_v1")
 		return
 	}
 	operation, err := h.service.RunAdaptationAnalysis(c.Request.Context(), c.Param("projectID"), key)
@@ -249,25 +249,10 @@ func (h *sourceV2Handler) getLatestPacing(c *gin.Context) {
 }
 
 func (h *sourceV2Handler) editPacing(c *gin.Context) {
-	key, ok := requireIdempotencyKey(c)
-	if !ok {
-		return
-	}
-	var request store.EditPacingInput
-	if !decodeStrictJSON(c, &request) {
-		return
-	}
-	if len(request.Edits) == 0 {
-		v2InputError(c, "VALIDATION_FAILED", "edits 不能为空")
-		return
-	}
-	operation, err := h.service.EditPacing(c.Request.Context(), c.Param("projectID"),
-		c.Param("pacingPlanID"), key, request)
-	if err != nil {
-		v2Error(c, err)
-		return
-	}
-	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+	c.JSON(http.StatusGone, gin.H{"errors": []gin.H{{
+		"code":    "DIRECT_CONTENT_MUTATION_DISABLED",
+		"message": "pacing edits require change plan preview, confirmation, and execution",
+	}}})
 }
 
 func (h *sourceV2Handler) rescoreQuality(c *gin.Context) {
@@ -1296,25 +1281,10 @@ func (h *sourceV2Handler) listAdaptationSpecs(c *gin.Context) {
 }
 
 func (h *sourceV2Handler) createAdaptationSpec(c *gin.Context) {
-	key, ok := requireIdempotencyKey(c)
-	if !ok {
-		return
-	}
-	var request adaptationSpecRequest
-	if !decodeStrictJSON(c, &request) {
-		return
-	}
-	spec, err := validateAdaptationSpecRequest(request)
-	if err != nil {
-		v2InputError(c, "INVALID_ADAPTATION_SPEC", err.Error())
-		return
-	}
-	operation, err := h.service.CreateAdaptationSpecVersion(c.Request.Context(), c.Param("projectID"), key, spec)
-	if err != nil {
-		v2Error(c, err)
-		return
-	}
-	v2Response(c, http.StatusAccepted, operation.TraceID, operation, nil)
+	c.JSON(http.StatusGone, gin.H{"errors": []gin.H{{
+		"code":    "DIRECT_CONTENT_MUTATION_DISABLED",
+		"message": "adaptation spec edits require change plan preview, confirmation, and execution",
+	}}})
 }
 
 func validateAdaptationSpecRequest(request adaptationSpecRequest) (store.AdaptationSpecInput, error) {

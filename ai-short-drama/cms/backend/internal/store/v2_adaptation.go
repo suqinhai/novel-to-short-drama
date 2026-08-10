@@ -95,9 +95,17 @@ func (s *Store) CreateAdaptationProject(ctx context.Context, key string, input C
 }
 
 func (s *Store) ListAdaptationSpecs(ctx context.Context, projectID string) ([]AdaptationSpecSummary, error) {
-	rows, err := s.pool.Query(ctx, `SELECT v.adaptation_spec_id,v.adaptation_spec_version_id,v.version_number,v.status,
+	rows, err := s.pool.Query(ctx, `SELECT v.adaptation_spec_id,v.adaptation_spec_version_id,
+		COALESCE(current_version.version,v.version_number),v.status,
 		v.source_version_id,v.ir_revision_id,v.resource_revision
-		FROM drama.adaptation_spec_versions v WHERE v.project_id=$1 ORDER BY v.version_number DESC,v.created_at DESC`, projectID)
+		FROM drama.adaptation_spec_versions v
+		LEFT JOIN drama.entity_versions current_version
+		  ON current_version.project_id=v.project_id
+		 AND current_version.entity_type='adaptation_spec'
+		 AND current_version.entity_id=v.adaptation_spec_version_id
+		 AND current_version.is_current
+		WHERE v.project_id=$1
+		ORDER BY COALESCE(current_version.version,v.version_number) DESC,v.created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
 	}

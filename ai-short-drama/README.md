@@ -641,3 +641,13 @@ SELECT publication_task_id,status,poll_count,retry_count,next_poll_at,platform_w
 备份必须形成同一恢复点：`pg_dump -Fc short_drama`、n8n 数据库/`N8N_ENCRYPTION_KEY`、`storage/`（含 manifests、masters、subtitles、covers、packages、logs）和不含秘密的配置版本。媒体与数据库不同步时停止 worker/发布任务，依据任务 ID 和 content hash 对账后恢复，禁止用通配删除“修复”。
 
 常见阶段五错误：`MEDIA_ASSETS_INCOMPLETE` 查 details ID；`MEDIA_PATH_NOT_ALLOWED` 查容器实际挂载；`FFMPEG_NOT_AVAILABLE` / `FFPROBE_NOT_AVAILABLE` 重建 worker；`RENDER_TIMEOUT` 查资源和 log path；`QC_BLOCKING_ISSUES` 修复或记录人工 override；`FINAL_REVIEW_REQUIRED` / `PUBLICATION_METADATA_NOT_APPROVED` 完成人工门禁；`REAL_PUBLISH_DISABLED` 保持 manual 或显式完成授权；`PUBLISH_RATE_LIMITED` 等待 `next_poll_at`；`DUPLICATE_PUBLICATION` 返回已有任务而不是重传。
+# 生产输入与版本化修复说明（迁移 24）
+
+当前生产链的唯一输入入口是 Effective Input Resolver。05–10 和 17 只消费
+Resolver 固化的 `production_snapshot`；legacy 项目也不能绕过 missing、stale、
+needs-review 或 blocked 门禁。所有正式内容修改统一走 change plan、差异/影响
+预览、显式确认、不可变 successor、原子 current 切换、精确 stale 与 pending
+rebuild。候选生成与独立盲评在生产环境必须显式配置真实 Provider；
+`deterministic_mock` 仅在验收进程显式开启。详见
+[生产闭环修复说明](docs/architecture/authoritative-production-closure.md) 与
+[Effective Input Resolver](docs/architecture/effective-input-resolver.md)。

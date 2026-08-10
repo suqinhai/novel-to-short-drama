@@ -92,6 +92,11 @@ VALUES('story_arc_event_phase4_001','story_arc_revision_phase4_001','event_revis
 
 UPDATE drama.episode_outlines SET source_chapter_ids='["sch_legacy_ch_phase1_legacy_001"]'
 WHERE episode_id='ep_phase1_legacy_001';
+-- This acceptance file can run after the complete post-production fixture.
+-- Temporarily supersede its approved script so this scenario can prove that
+-- impact analysis never overwrites an independently reviewed script.
+UPDATE drama.episode_scripts SET status='completed'
+WHERE episode_id='ep_phase1_legacy_001' AND status='approved';
 INSERT INTO drama.episode_scripts(script_id,project_id,season_id,episode_id,version,title,estimated_duration_seconds,
   source_outline_version,status)
 VALUES('script_phase4_approved','p_phase1_legacy','season_phase1_legacy','ep_phase1_legacy_001',1,
@@ -148,6 +153,13 @@ BEGIN
     RAISE EXCEPTION 'reviewed domain artifacts were overwritten';
   END IF;
 END $$;
+
+-- Restore the complete fixture as the single approved production input for
+-- the downstream Resolver and candidate-provider acceptance tests.
+UPDATE drama.episode_scripts SET status='completed'
+WHERE script_id='script_phase4_approved';
+UPDATE drama.episode_scripts SET status='approved'
+WHERE script_id='script_phase5_post';
 
 SELECT 'PASS' result,
   (SELECT count(*) FROM drama.source_change_items) changed_items,

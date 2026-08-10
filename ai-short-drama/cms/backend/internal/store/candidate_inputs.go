@@ -161,7 +161,7 @@ func (s *Store) ListCandidateTargets(ctx context.Context, projectID string) (Can
 }
 
 func (s *Store) freezeCandidateInputs(ctx context.Context, projectID string, request candidategeneration.Request) (candidategeneration.FrozenInput, error) {
-	episodeID, targetContext, err := s.candidateTargetContext(ctx, projectID, request.TargetType, request.TargetID)
+	episodeID, err := s.candidateTargetEpisode(ctx, projectID, request.TargetType, request.TargetID)
 	if err != nil {
 		return candidategeneration.FrozenInput{}, err
 	}
@@ -171,12 +171,61 @@ func (s *Store) freezeCandidateInputs(ctx context.Context, projectID string, req
 		return candidategeneration.FrozenInput{}, err
 	}
 	var envelope struct {
-		ResolutionID   string `json:"resolution_id"`
-		ContextHash    string `json:"context_hash"`
-		ResolutionHash string `json:"resolution_hash"`
+		ResolutionID   string          `json:"resolution_id"`
+		ContextHash    string          `json:"context_hash"`
+		ResolutionHash string          `json:"resolution_hash"`
+		Status         string          `json:"status"`
+		Ready          bool            `json:"ready"`
+		Blockers       json.RawMessage `json:"blockers"`
+		Context        struct {
+			ProductionSnapshot json.RawMessage `json:"production_snapshot"`
+		} `json:"context"`
 	}
 	if err := json.Unmarshal(resolution, &envelope); err != nil || envelope.ResolutionID == "" || envelope.ContextHash == "" {
 		return candidategeneration.FrozenInput{}, fmt.Errorf("invalid effective input resolution")
+	}
+	// A stale or unconfirmed candidate selection must block every production
+	// consumer, but it cannot lock the candidate regeneration entry point that
+	// repairs that exact state. No other Resolver blocker is bypassed here.
+	candidateRemediation := false
+	if !envelope.Ready || envelope.Status != "ready" {
+		var blockers []struct {
+			Kind  string `json:"kind"`
+			State string `json:"state"`
+		}
+		if json.Unmarshal(envelope.Blockers, &blockers) == nil && len(blockers) > 0 {
+			candidateRemediation = true
+			for _, blocker := range blockers {
+				if blocker.Kind != "candidate_selection" || (blocker.State != "stale" && blocker.State != "needs_review") {
+					candidateRemediation = false
+					break
+				}
+			}
+		}
+	}
+	if ((!envelope.Ready || envelope.Status != "ready") && !candidateRemediation) || len(envelope.Context.ProductionSnapshot) == 0 {
+		return candidategeneration.FrozenInput{}, fmt.Errorf("%w: effective input resolver status=%s ready=%t blockers=%s", ErrConflict, envelope.Status, envelope.Ready, envelope.Blockers)
+	}
+	var snapshotEnvelope struct {
+		State     string          `json:"state"`
+		VersionID string          `json:"version_id"`
+		BindingID string          `json:"binding_id"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(envelope.Context.ProductionSnapshot, &snapshotEnvelope); err != nil ||
+		snapshotEnvelope.State != "resolved" || snapshotEnvelope.VersionID == "" ||
+		snapshotEnvelope.BindingID == "" || len(snapshotEnvelope.Payload) == 0 {
+		return candidategeneration.FrozenInput{}, fmt.Errorf("%w: production snapshot is not a resolved immutable binding", ErrConflict)
+	}
+	targetContext, err := json.Marshal(map[string]any{
+		"source_kind":         "effective_input_snapshot",
+		"target_type":         request.TargetType,
+		"target_id":           request.TargetID,
+		"resolution_id":       envelope.ResolutionID,
+		"production_snapshot": json.RawMessage(envelope.Context.ProductionSnapshot),
+	})
+	if err != nil {
+		return candidategeneration.FrozenInput{}, err
 	}
 	frozen := candidategeneration.FrozenInput{SchemaVersion: "candidate-frozen-input.v1", ResolutionID: envelope.ResolutionID,
 		ContextHash: envelope.ContextHash, ResolutionHash: envelope.ResolutionHash, Stage: stage, EpisodeID: episodeID,
@@ -205,58 +254,45 @@ func candidateResolutionStage(targetType string) string {
 	}
 }
 
-func (s *Store) candidateTargetContext(ctx context.Context, projectID, targetType, targetID string) (string, json.RawMessage, error) {
+// candidateTargetEpisode only resolves target identity. All production content is
+// subsequently obtained from the Effective Input Resolver's immutable snapshot.
+func (s *Store) candidateTargetEpisode(ctx context.Context, projectID, targetType, targetID string) (string, error) {
 	var episodeID string
-	var raw json.RawMessage
 	var err error
 	switch targetType {
 	case "story_arc":
-		err = s.pool.QueryRow(ctx, `SELECT '',jsonb_build_object(
-			'source_kind','narrative_ir','story_arc_revision_id',arc.story_arc_revision_id,
-			'ir_revision_id',arc.ir_revision_id,'chapter_id',arc.chapter_id,'title',arc.title,
-			'summary',arc.summary,'arc_type',arc.arc_type,'source_span_id',arc.primary_source_span_id)
+		err = s.pool.QueryRow(ctx, `SELECT ''
 			FROM drama.story_arc_revisions arc
 			JOIN drama.narrative_ir_revisions ir USING(ir_revision_id)
 			JOIN drama.project_source_bindings binding
 			  ON binding.work_id=ir.work_id AND binding.source_version_id=ir.source_version_id
-			WHERE arc.story_arc_revision_id=$1 AND binding.project_id=$2 AND binding.is_current`, targetID, projectID).Scan(&episodeID, &raw)
+			WHERE arc.story_arc_revision_id=$1 AND binding.project_id=$2 AND binding.is_current`, targetID, projectID).Scan(&episodeID)
 	case "episode":
-		err = s.pool.QueryRow(ctx, `SELECT outline.episode_id,jsonb_build_object(
-			'source_kind','script','episode',to_jsonb(outline),
-			'script',COALESCE((SELECT to_jsonb(script) FROM drama.episode_scripts script
-			  WHERE script.project_id=outline.project_id AND script.episode_id=outline.episode_id ORDER BY version DESC LIMIT 1),'null'::jsonb))
-			FROM drama.episode_outlines outline WHERE outline.episode_id=$1 AND outline.project_id=$2`, targetID, projectID).Scan(&episodeID, &raw)
+		err = s.pool.QueryRow(ctx, `SELECT outline.episode_id
+			FROM drama.episode_outlines outline WHERE outline.episode_id=$1 AND outline.project_id=$2`, targetID, projectID).Scan(&episodeID)
 	case "scene":
-		err = s.pool.QueryRow(ctx, `SELECT scene.episode_id,jsonb_build_object(
-			'source_kind','script','script_id',scene.script_id,'scene',to_jsonb(scene),
-			'dialogues',COALESCE((SELECT jsonb_agg(to_jsonb(dialogue) ORDER BY sequence_number)
-			  FROM drama.dialogues dialogue WHERE dialogue.scene_id=scene.scene_id),'[]'::jsonb))
-			FROM drama.script_scenes scene WHERE scene.scene_id=$1 AND scene.project_id=$2`, targetID, projectID).Scan(&episodeID, &raw)
+		err = s.pool.QueryRow(ctx, `SELECT scene.episode_id
+			FROM drama.script_scenes scene WHERE scene.scene_id=$1 AND scene.project_id=$2`, targetID, projectID).Scan(&episodeID)
 	case "storyboard":
 		// The UI selects a shot for storyboard refinement. A storyboard id remains accepted for API compatibility.
-		err = s.pool.QueryRow(ctx, `SELECT board.episode_id,jsonb_build_object(
-			'source_kind','storyboard','storyboard_id',board.storyboard_id,
-			'target',CASE WHEN shot.shot_id IS NULL THEN to_jsonb(board) ELSE to_jsonb(shot) END)
+		err = s.pool.QueryRow(ctx, `SELECT board.episode_id
 			FROM drama.storyboards board LEFT JOIN drama.storyboard_shots shot
 			  ON shot.storyboard_id=board.storyboard_id AND shot.shot_id=$1
 			WHERE board.project_id=$2 AND (board.storyboard_id=$1 OR shot.shot_id=$1)
-			ORDER BY board.version DESC LIMIT 1`, targetID, projectID).Scan(&episodeID, &raw)
+			ORDER BY board.version DESC LIMIT 1`, targetID, projectID).Scan(&episodeID)
 	case "image", "video":
-		err = s.pool.QueryRow(ctx, `SELECT shot.episode_id,jsonb_build_object(
-			'source_kind','storyboard','storyboard_id',shot.storyboard_id,'shot',to_jsonb(shot),
-			'current_images',COALESCE((SELECT jsonb_agg(to_jsonb(image) ORDER BY image.generation_version DESC)
-			  FROM drama.storyboard_images image WHERE image.shot_id=shot.shot_id AND image.is_current),'[]'::jsonb))
-			FROM drama.storyboard_shots shot WHERE shot.shot_id=$1 AND shot.project_id=$2`, targetID, projectID).Scan(&episodeID, &raw)
+		err = s.pool.QueryRow(ctx, `SELECT shot.episode_id
+			FROM drama.storyboard_shots shot WHERE shot.shot_id=$1 AND shot.project_id=$2`, targetID, projectID).Scan(&episodeID)
 	default:
-		return "", nil, ErrConflict
+		return "", ErrConflict
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, ErrNotFound
+		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	return episodeID, raw, nil
+	return episodeID, nil
 }
 
 func frozenArtifactIDs(resolution json.RawMessage) []string {

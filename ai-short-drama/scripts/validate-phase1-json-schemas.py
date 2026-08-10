@@ -42,9 +42,11 @@ def assert_invalid(validator: Draft202012Validator, value: dict, label: str) -> 
 
 def main() -> None:
     validators: dict[str, Draft202012Validator] = {}
+    schema_files = sorted(SCHEMA_DIR.glob("*.json"))
+    for path in schema_files:
+        Draft202012Validator.check_schema(load_json(path))
     for schema_file, fixture_base in PAIRS:
         schema = load_json(SCHEMA_DIR / schema_file)
-        Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
         validators[schema_file] = validator
 
@@ -74,7 +76,7 @@ def main() -> None:
     attribute_rule["rules"][0]["parameters"] = {}
     assert_invalid(spec_validator, attribute_rule, "attribute rule without owner/path")
 
-    print("PASS Phase 1 Draft 2020-12 schemas, formats, fixtures and focused negatives")
+    print(f"PASS all {len(schema_files)} Draft 2020-12 schemas; 14 valid/invalid fixture pairs, formats and focused negatives")
 
 
 if __name__ == "__main__":

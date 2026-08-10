@@ -7,6 +7,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8')
 const assert = (condition, message) => { if (!condition) throw new Error(message) }
 
 const migration = read('database/18-effective-input-resolver.sql')
+const closureMigration = read('database/24-authoritative-production-inputs.sql')
 for (const marker of [
   'resolve_effective_inputs', 'claim_effective_inputs', 'record_effective_input_outputs',
   'artifact_input_consumptions', 'input_resolution_mode', "'effective'", "'legacy'",
@@ -16,6 +17,15 @@ for (const marker of [
 ]) assert(migration.includes(marker), `resolver migration missing ${marker}`)
 assert(!/ORDER BY\s+[^;\n]*created_at\s+DESC\s+LIMIT\s+1/i.test(migration),
   'resolver must not guess current by latest creation time')
+for (const marker of [
+  'effective-input-resolver.v2', 'resolve_production_snapshot', 'production_snapshot',
+  'entity_version_bindings', 'candidate_selection_bindings',
+  "input_resolution_mode='effective'", "'compatibility_mode',false",
+  "'source_type'", "'source_id'", "'version_id'", "'binding_id'",
+  "'resolved_at'", "'selection_reason'", 'entity_version_overlays',
+]) assert(closureMigration.includes(marker), `authoritative resolver closure missing ${marker}`)
+assert(!closureMigration.includes('allow_generation := compatibility'),
+  'legacy compatibility must never bypass resolver blockers')
 
 for (const file of [
   '05-episode-script.json', '06-storyboard-design.json', '07-visual-assets.json',
@@ -28,6 +38,24 @@ for (const file of [
   assert(text.includes('EFFECTIVE_INPUTS_BLOCKED'), `${file} silently degrades blocked inputs`)
   assert(text.includes('record_effective_input_outputs'), `${file} missing consumed-input provenance`)
   assert(text.includes('effective_inputs'), `${file} missing effective generation context`)
+}
+const snapshotLoaders = {
+  '05-episode-script.json': 'Expand Resolver Outline Snapshot',
+  '06-storyboard-design.json': 'Expand Resolver Script Snapshot',
+  '07-visual-assets.json': 'Expand Resolver Bible Snapshot',
+  '08-storyboard-images.json': 'Expand Resolver Shot Asset Snapshot',
+  '09-image-to-video.json': 'Expand Resolver Video Snapshot',
+  '10-voice-audio.json': 'Expand Resolver Dialogue Snapshot',
+  '17-post-production-creative-workbench.json': 'Load Unified Upstream Context',
+}
+for (const [file, nodeName] of Object.entries(snapshotLoaders)) {
+  const workflow = JSON.parse(read(`workflows/${file}`))
+  const loader = workflow.nodes.find((node) => node.name === nodeName)
+  assert(loader?.type === 'n8n-nodes-base.code', `${file} authoritative loader must be a snapshot-only Code node`)
+  const code = loader?.parameters?.jsCode || ''
+  assert(code.includes('production_snapshot') && code.includes('entity_version_overlays'),
+    `${file} does not consume frozen current entity versions from production_snapshot`)
+  assert(code.includes('EFFECTIVE_INPUT_SNAPSHOT_REQUIRED'), `${file} silently tolerates a missing snapshot`)
 }
 const workflowConsumption = {
   '05-episode-script.json': ['effective_inputs:$json.effective_context'],

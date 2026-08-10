@@ -75,6 +75,10 @@
             {
               "name": "payload",
               "type": "object"
+            },
+            {
+              "name": "test_mode",
+              "type": "boolean"
             }
           ]
         }
@@ -90,7 +94,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},provider=i.provider||$env.IMAGE_PROVIDER||'mock',model=i.model||$env.IMAGE_MODEL||'mock-image-model';if(!i.project_id||!i.entity_type||!i.entity_id||!i.asset_type||!i.prompt)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE: required request fields missing');if(!['mock','generic_openai_images','generic_async_image'].includes(provider))throw new Error('UNSUPPORTED_IMAGE_PROVIDER: '+provider);const version=Number(i.generation_version||1),key=i.idempotency_key||[i.project_id,i.entity_type,i.entity_id,i.asset_type,version,provider,model].join(':');return [{json:{...i,payload:p,provider,model,generation_version:version,width:Number(i.width||$env.IMAGE_DEFAULT_WIDTH||1024),height:Number(i.height||$env.IMAGE_DEFAULT_HEIGHT||1792),count:Math.max(1,Math.min(Number(i.count||1),4)),trace_id:i.trace_id||`trace_image_${crypto.randomUUID()}`,idempotency_key:key,task_id:`imgtask_${crypto.createHash('sha1').update(key).digest('hex').slice(0,20)}`,started_ms:Date.now()}}];"
+        "jsCode": "const crypto=require('crypto'),i=$json,p=i.payload||{},testMode=(i.test_mode===true||p.test_mode===true)&&String($env.MOCK_MODE||'false')==='true',provider=String(i.provider||(testMode?'mock':'')).trim(),model=String(i.model||(testMode?'mock-image-model':'')).trim();if(!provider)throw new Error('IMAGE_PROVIDER_REQUIRED');if(!model)throw new Error('IMAGE_MODEL_REQUIRED');if(provider==='mock'&&!testMode)throw new Error('MOCK_PROVIDER_FORBIDDEN: mock is test-only');if(!i.project_id||!i.entity_type||!i.entity_id||!i.asset_type||!i.prompt)throw new Error('IMAGE_PROVIDER_INVALID_RESPONSE: required request fields missing');if(!['mock','generic_openai_images','generic_async_image'].includes(provider))throw new Error('UNSUPPORTED_IMAGE_PROVIDER: '+provider);const version=Number(i.generation_version||1),key=i.idempotency_key||[i.project_id,i.entity_type,i.entity_id,i.asset_type,version,provider,model].join(':');return [{json:{...i,payload:p,provider,model,generation_version:version,width:Number(i.width||$env.IMAGE_DEFAULT_WIDTH||1024),height:Number(i.height||$env.IMAGE_DEFAULT_HEIGHT||1792),count:Math.max(1,Math.min(Number(i.count||1),4)),trace_id:i.trace_id||`trace_image_${crypto.randomUUID()}`,idempotency_key:key,task_id:`imgtask_${crypto.createHash('sha1').update(key).digest('hex').slice(0,20)}`,started_ms:Date.now()}}];"
       },
       "id": "07a-normalize",
       "name": "Normalize Provider Request",

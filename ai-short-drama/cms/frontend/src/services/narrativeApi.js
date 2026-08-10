@@ -182,9 +182,6 @@ export const narrativeApi = {
   listAdaptationSpecs(projectId) {
     return request(`/adaptation-projects/${id(projectId)}/specs`)
   },
-  createAdaptationSpec(projectId, payload, idempotencyKey) {
-    return command(`/adaptation-projects/${id(projectId)}/specs`, { body: payload, idempotencyKey })
-  },
   startCompilerRun(projectId, payload, idempotencyKey) {
     return command(`/adaptation-projects/${id(projectId)}/compiler-runs`, { body: payload, idempotencyKey })
   },
@@ -196,7 +193,7 @@ export const narrativeApi = {
   },
   runAdaptationAnalysis(projectId, idempotencyKey) {
     return command(`/adaptation-projects/${id(projectId)}/diagnostic-runs`, {
-      body: { mode: 'deterministic_mock' }, idempotencyKey,
+      body: { mode: 'rules_v1' }, idempotencyKey,
     })
   },
   getLatestDiagnostic(projectId) {
@@ -204,11 +201,6 @@ export const narrativeApi = {
   },
   getLatestPacing(projectId) {
     return request(`/adaptation-projects/${id(projectId)}/pacing/latest`)
-  },
-  editPacing(projectId, pacingPlanId, edits, idempotencyKey) {
-    return command(`/adaptation-projects/${id(projectId)}/pacing-plans/${id(pacingPlanId)}/beats`, {
-      method: 'PATCH', body: { edits }, idempotencyKey,
-    })
   },
   rescoreQuality(projectId, scope, scopeSelector, idempotencyKey) {
     return command(`/adaptation-projects/${id(projectId)}/quality-score-runs`, {

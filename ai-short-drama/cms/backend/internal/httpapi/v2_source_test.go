@@ -347,7 +347,7 @@ func TestCreateAdaptationProjectValidatesAndDispatchesFrozenSpec(t *testing.T) {
 	}
 }
 
-func TestAdaptationSpecAllowsStoreToResolveCurrentPublishedFullIR(t *testing.T) {
+func TestAdaptationSpecDirectVersionWriteIsDisabled(t *testing.T) {
 	fake := &fakeSourceV2{}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-projects/project_test/specs", bytes.NewBufferString(`{
@@ -358,12 +358,10 @@ func TestAdaptationSpecAllowsStoreToResolveCurrentPublishedFullIR(t *testing.T) 
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "adaptation-spec-key")
 	newSourceV2TestRouter(fake).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted || fake.adaptationSpecCalls != 1 {
-		t.Fatalf("spec without explicit IR must reach store resolution: status=%d calls=%d body=%s",
+	if recorder.Code != http.StatusGone || fake.adaptationSpecCalls != 0 ||
+		!bytes.Contains(recorder.Body.Bytes(), []byte(`DIRECT_CONTENT_MUTATION_DISABLED`)) {
+		t.Fatalf("direct spec write was not closed: status=%d calls=%d body=%s",
 			recorder.Code, fake.adaptationSpecCalls, recorder.Body.String())
-	}
-	if fake.lastAdaptationSpec.IRRevisionID != "" {
-		t.Fatalf("handler must preserve omitted IR for transactional store resolution: %#v", fake.lastAdaptationSpec)
 	}
 }
 
@@ -409,12 +407,12 @@ func TestImpactPreviewAndExplicitRegenerationDecision(t *testing.T) {
 	}
 }
 
-func TestAdaptationAnalysisEndpointsAndDeterministicModeGuard(t *testing.T) {
+func TestAdaptationAnalysisEndpointsAndExplicitRulesMode(t *testing.T) {
 	router := newSourceV2TestRouter(&fakeSourceV2{})
 	run := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/v2/adaptation-projects/project_test/diagnostic-runs",
-		bytes.NewBufferString(`{"mode":"deterministic_mock"}`))
+		bytes.NewBufferString(`{"mode":"rules_v1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "diagnostic-run-test")
 	router.ServeHTTP(run, request)
@@ -439,12 +437,12 @@ func TestAdaptationAnalysisEndpointsAndDeterministicModeGuard(t *testing.T) {
 	paidRequest.Header.Set("Content-Type", "application/json")
 	paidRequest.Header.Set("Idempotency-Key", "paid-model-rejected")
 	router.ServeHTTP(paid, paidRequest)
-	if paid.Code != http.StatusBadRequest || !bytes.Contains(paid.Body.Bytes(), []byte(`PAID_MODEL_DISABLED`)) {
+	if paid.Code != http.StatusBadRequest || !bytes.Contains(paid.Body.Bytes(), []byte(`ANALYSIS_MODE_REQUIRED`)) {
 		t.Fatalf("paid model guard failed: status=%d body=%s", paid.Code, paid.Body.String())
 	}
 }
 
-func TestPacingEditRequiresEditsAndIdempotencyKey(t *testing.T) {
+func TestPacingDirectEditIsClosedAndQualityStillRequiresIdempotencyKey(t *testing.T) {
 	router := newSourceV2TestRouter(&fakeSourceV2{})
 	empty := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPatch,
@@ -453,8 +451,9 @@ func TestPacingEditRequiresEditsAndIdempotencyKey(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "empty-pacing-edit")
 	router.ServeHTTP(empty, request)
-	if empty.Code != http.StatusBadRequest {
-		t.Fatalf("empty edits status=%d body=%s", empty.Code, empty.Body.String())
+	if empty.Code != http.StatusGone ||
+		!bytes.Contains(empty.Body.Bytes(), []byte(`DIRECT_CONTENT_MUTATION_DISABLED`)) {
+		t.Fatalf("direct pacing edit remains available: status=%d body=%s", empty.Code, empty.Body.String())
 	}
 	missingKey := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost,
@@ -473,7 +472,7 @@ func TestCandidateGenerationSelectionAndCompositionContracts(t *testing.T) {
 	generate := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/v2/adaptation-projects/project_test/candidate-sets",
-		bytes.NewBufferString(`{"target_type":"episode","target_id":"episode_test","component_types":["opening","climax","ending_hook"],"candidate_count":3,"difference_directions":["强钩子","紧凑","低成本"],"must_preserve":[],"allowed_changes":[],"model":"deterministic_mock","random_seed":42,"generation_parameters":{}}`))
+		bytes.NewBufferString(`{"target_type":"episode","target_id":"episode_test","component_types":["opening","climax","ending_hook"],"candidate_count":3,"difference_directions":["强钩子","紧凑","低成本"],"must_preserve":[],"allowed_changes":[],"generator_provider":"text_http","generator_model":"generator-model","reviewer_provider":"reviewer_http","reviewer_model":"reviewer-model","blind_review":true,"random_seed":42,"generation_parameters":{}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", "candidate-generate-test")
 	router.ServeHTTP(generate, request)

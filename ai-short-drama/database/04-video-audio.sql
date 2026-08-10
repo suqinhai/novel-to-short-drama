@@ -3,6 +3,13 @@ SET search_path TO drama, public;
 
 -- Phase 4 is additive. Keep every phase 1-3 value while admitting the new
 -- orchestration checkpoints and worker stages.
+SELECT to_regclass('drama.schema_migrations') IS NULL AS phase04_ledger_missing \gset
+\if :phase04_ledger_missing
+\set phase04_refresh_constraints true
+\else
+SELECT NOT EXISTS(SELECT 1 FROM drama.schema_migrations WHERE version='23') AS phase04_refresh_constraints \gset
+\endif
+\if :phase04_refresh_constraints
 ALTER TABLE drama.projects DROP CONSTRAINT IF EXISTS projects_current_stage_check;
 ALTER TABLE drama.projects ADD CONSTRAINT projects_current_stage_check CHECK (current_stage IN (
   'created','novel_import','chunk_analysis','story_bible','review',
@@ -39,6 +46,9 @@ ALTER TABLE drama.workflow_tasks DROP CONSTRAINT IF EXISTS workflow_tasks_status
 ALTER TABLE drama.workflow_tasks ADD CONSTRAINT workflow_tasks_status_check CHECK (status IN (
   'pending','running','completed','failed','skipped','cancelled'
 ));
+\else
+\echo 'migration 04 preserves constraints owned by migration 23'
+\endif
 
 CREATE TABLE IF NOT EXISTS drama.video_generation_tasks (
   id BIGSERIAL PRIMARY KEY,

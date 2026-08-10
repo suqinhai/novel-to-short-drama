@@ -5,6 +5,17 @@ import {
   targetComponents, validationRuleLabels,
 } from '../src/services/candidateWorkbench.js'
 
+test('missing providers stay missing instead of silently becoming deterministic mock', () => {
+  const request = buildCandidateRequest({
+    target_type: 'episode', episode_id: 'ep_1', component_types: ['opening'],
+    candidate_count: 2, difference_directions: 'different', must_preserve: '', allowed_changes: '',
+    generator_provider: '', generator_model: '', reviewer_provider: '', reviewer_model: '',
+  })
+  assert.equal(request.generator_provider, '')
+  assert.equal(request.reviewer_provider, '')
+  assert.doesNotMatch(JSON.stringify(request), /deterministic_mock/)
+})
+
 test('builds a replayable request from selector IDs and separate models', () => {
   const request = buildCandidateRequest({
     target_type: 'episode', episode_id: 'episode_1', component_types: targetComponents.episode,

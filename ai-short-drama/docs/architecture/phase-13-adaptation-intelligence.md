@@ -46,3 +46,7 @@ flowchart LR
 ## 下一阶段接口预留
 
 后续可在不改变本阶段契约的前提下增加异步付费分析 provider、按 artifact 的真实剧本/分镜评分、多人节拍冲突合并和诊断 Spec proposal 的服务端审批流。当前阶段没有启用这些能力，也不会自动启动后续生产。
+> Current closure: diagnosis uses the explicit local rules mode `rules_v1`,
+> not a provider mock. Formal Spec and pacing edits now use change-plan preview,
+> confirmation, and immutable successor versions; direct mutation routes are
+> disabled. The remainder documents the migration-13 historical baseline.

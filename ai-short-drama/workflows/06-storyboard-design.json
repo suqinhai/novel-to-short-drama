@@ -147,16 +147,13 @@
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT es.script_id,es.episode_id,es.season_id,es.version script_version,es.estimated_duration_seconds,es.title,sc.scene_id,sc.scene_number,sc.location_id,sc.location_name,sc.character_ids,sc.actions,sc.scene_purpose,sc.emotional_change,coalesce(jsonb_agg(jsonb_build_object('dialogue_id',d.dialogue_id,'sequence_number',d.sequence_number,'dialogue_type',d.dialogue_type,'character_id',d.character_id,'speaker_name',d.speaker_name,'text',d.text,'emotion',d.emotion) ORDER BY d.sequence_number)FILTER(WHERE d.dialogue_id IS NOT NULL),'[]')dialogues,b.characters,b.locations,(SELECT to_jsonb(old) FROM drama.storyboard_shots old WHERE old.shot_id=$3 AND old.project_id=$1)existing_shot FROM drama.episode_scripts es JOIN drama.script_scenes sc ON sc.script_id=es.script_id LEFT JOIN drama.dialogues d ON d.scene_id=sc.scene_id JOIN drama.seasons sn ON sn.season_id=es.season_id JOIN drama.story_bibles b ON b.story_bible_id=sn.story_bible_id WHERE es.project_id=$1 AND es.episode_id=$2 AND es.status='approved' GROUP BY es.script_id,es.episode_id,es.season_id,es.version,es.estimated_duration_seconds,es.title,sc.scene_id,sc.scene_number,sc.location_id,sc.location_name,sc.character_ids,sc.actions,sc.scene_purpose,sc.emotional_change,b.characters,b.locations ORDER BY sc.scene_number;",
-        "options": {
-          "queryReplacement": "={{[$json.project_id,$json.episode_id,$json.shot_id]}}"
-        }
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json,snapshot=r.effective_context?.production_snapshot;if(!snapshot||snapshot.state!=='resolved'||!snapshot.payload)throw new Error('EFFECTIVE_INPUT_SNAPSHOT_REQUIRED: resolver did not freeze a resolved production snapshot');const p=snapshot.payload;if(!p.script?.script_id)throw new Error('EPISODE_SCRIPT_NOT_APPROVED: resolver snapshot has no script');const bible=(p.story_bibles||[])[0]||{},allDialogues=p.dialogues||[],requested=r.shot_id||null,existing=(p.shots||[]).find(x=>x.shot_id===requested)||null,selected=p.candidate_selections||[];const rows=(p.scenes||[]).map(scene=>({...p.script,...scene,script_version:p.script.version,dialogues:allDialogues.filter(d=>d.scene_id===scene.scene_id),characters:bible.characters||[],locations:bible.locations||[],existing_shot:existing,candidate_selections:selected.filter(x=>x.target_id===scene.scene_id||x.target_id===r.episode_id),lifecycle_inputs:p.lifecycle_inputs||{},entity_version_overlays:p.entity_version_overlays||{},effective_snapshot_binding_id:snapshot.binding_id,effective_snapshot_version_id:snapshot.version_id,effective_snapshot_hash:snapshot.content_hash,effective_snapshot_provenance:snapshot.provenance||[]}));if(!rows.length)throw new Error('EPISODE_SCRIPT_NOT_APPROVED: resolver snapshot has no scenes');return rows.map(json=>({json}));"
       },
       "id": "06-context",
-      "name": "Load Approved Script Scenes Dialogues",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
+      "name": "Expand Resolver Script Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         -160,
         40
@@ -192,7 +189,7 @@
           },
           "conditions": [
             {
-              "leftValue": "={{$json.test_mode||$env.MOCK_MODE==='true'}}",
+              "leftValue": "={{$json.test_mode===true&&$env.MOCK_MODE==='true'}}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -509,25 +506,7 @@
       "main": [
         [
           {
-            "node": "Load Approved Script Scenes Dialogues",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Approved Script Scenes Dialogues": {
-      "main": [
-        [
-          {
-            "node": "Enforce Approved Script",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Failure Response",
+            "node": "Expand Resolver Script Snapshot",
             "type": "main",
             "index": 0
           }
@@ -716,6 +695,24 @@
         [
           {
             "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Resolver Script Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Enforce Approved Script",
             "type": "main",
             "index": 0
           }

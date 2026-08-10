@@ -30,11 +30,12 @@ func mockRequest() Request {
 
 func TestDeterministicMockProducesThreeDistinctReplayableBodies(t *testing.T) {
 	request := mockRequest()
-	first, err := Generate(request)
+	registry := NewRegistry([]CandidateProvider{NewDeterministicMockProvider()}, []CandidateReviewer{NewDeterministicMockReviewer()})
+	first, err := registry.GenerateAndReview(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Generate(request)
+	second, err := registry.GenerateAndReview(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +60,19 @@ func TestGeneratorAndReviewerCannotBeSameModel(t *testing.T) {
 	request.ReviewerModel = request.GeneratorModel
 	if err := ValidateRequest(request); err == nil {
 		t.Fatal("same provider/model must not generate and score its own candidate")
+	}
+}
+
+func TestMissingProvidersNeverNormalizeToDeterministicMock(t *testing.T) {
+	request := mockRequest()
+	request.Model, request.GeneratorProvider, request.GeneratorModel = "", "", ""
+	request.ReviewerProvider, request.ReviewerModel = "", ""
+	NormalizeRequest(&request)
+	if request.GeneratorProvider != "" || request.ReviewerProvider != "" {
+		t.Fatalf("missing production providers silently became mocks: %+v", request)
+	}
+	if err := ValidateRequest(request); err == nil {
+		t.Fatal("missing explicit generator and reviewer must be rejected")
 	}
 }
 

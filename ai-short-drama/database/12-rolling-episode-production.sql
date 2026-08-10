@@ -2,6 +2,8 @@
 
 BEGIN;
 
+SELECT NOT EXISTS(SELECT 1 FROM drama.schema_migrations WHERE version='23') AS phase12_refresh_constraints \gset
+\if :phase12_refresh_constraints
 ALTER TABLE drama.projects DROP CONSTRAINT IF EXISTS projects_current_stage_check;
 ALTER TABLE drama.projects ADD CONSTRAINT projects_current_stage_check CHECK (current_stage IN (
   'created','novel_import','chunk_analysis','story_bible','review',
@@ -29,6 +31,9 @@ ALTER TABLE drama.projects ADD CONSTRAINT projects_status_check CHECK (status IN
   'waiting_publication_metadata_review','publication_metadata_approved','publishing','publication_submitted',
   'stage_5_completed','published','stage_5_failed','waiting_next_episode'
 ));
+\else
+\echo 'migration 12 preserves constraints owned by migration 23'
+\endif
 
 CREATE TABLE IF NOT EXISTS drama.story_arc_runs (
   id BIGSERIAL PRIMARY KEY,

@@ -147,16 +147,12 @@
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT p.project_id,p.visual_style,p.aspect_ratio,p.test_mode,sb.story_bible_id,sb.version story_bible_version,sb.characters,sb.locations,sb.key_events FROM drama.projects p LEFT JOIN LATERAL(SELECT * FROM drama.story_bibles WHERE project_id=p.project_id AND status='approved'ORDER BY version DESC LIMIT 1)sb ON true WHERE p.project_id=$1;",
-        "options": {
-          "queryReplacement": "={{[$json.project_id]}}"
-        }
+        "jsCode": "const r=$input.first().json,snapshot=r.effective_context?.production_snapshot;if(!snapshot||snapshot.state!=='resolved'||!snapshot.payload)throw new Error('EFFECTIVE_INPUT_SNAPSHOT_REQUIRED: resolver did not freeze a resolved production snapshot');const p=snapshot.payload;const bible=(p.story_bibles||[])[0];if(!bible)throw new Error('STORY_BIBLE_NOT_APPROVED: resolver snapshot has no approved story bible');return[{json:{...p.project,project_id:r.project_id,story_bible_id:bible.story_bible_id,story_bible_version:bible.version,characters:bible.characters||[],locations:bible.locations||[],key_events:bible.key_events||[],candidate_selections:p.candidate_selections||[],lifecycle_inputs:p.lifecycle_inputs||{},entity_version_overlays:p.entity_version_overlays||{},effective_snapshot_binding_id:snapshot.binding_id,effective_snapshot_version_id:snapshot.version_id,effective_snapshot_hash:snapshot.content_hash,effective_snapshot_provenance:snapshot.provenance||[]}}];"
       },
       "id": "07-context",
-      "name": "Load Approved Bible",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
+      "name": "Expand Resolver Bible Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         -200,
         40
@@ -244,8 +240,8 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "provider": "={{$env.IMAGE_PROVIDER||'mock'}}",
-            "model": "={{$env.IMAGE_MODEL||'mock-image-model'}}",
+            "provider": "={{$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?'mock':$env.IMAGE_PROVIDER}}",
+            "model": "={{$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?($env.TEST_IMAGE_MODEL||'mock-image-model'):$env.IMAGE_MODEL}}",
             "task_type": "={{$json.reference_image_urls?.length?'image_to_image':'text_to_image'}}",
             "project_id": "={{$json.project_id}}",
             "entity_type": "={{$json.entity_type}}",
@@ -260,7 +256,8 @@
             "seed": null,
             "count": 1,
             "generation_version": "={{$json.generation_version}}",
-            "idempotency_key": "={{[$json.project_id,$json.entity_type,$json.entity_id,$json.asset_type,$json.generation_version,$env.IMAGE_PROVIDER||'mock',$env.IMAGE_MODEL||'mock-image-model'].join(':')}}",
+            "idempotency_key": "={{[$json.project_id,$json.entity_type,$json.entity_id,$json.asset_type,$json.generation_version,$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?'mock':$env.IMAGE_PROVIDER,$json.test_mode===true&&String($env.MOCK_MODE||'false').toLowerCase()==='true'?($env.TEST_IMAGE_MODEL||'mock-image-model'):$env.IMAGE_MODEL].join(':')}}",
+            "test_mode": "={{$json.test_mode===true}}",
             "trace_id": "={{$json.trace_id}}",
             "payload": "={{ {...$json.payload,action:$json.action} }}"
           },
@@ -565,25 +562,7 @@
       "main": [
         [
           {
-            "node": "Load Approved Bible",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Approved Bible": {
-      "main": [
-        [
-          {
-            "node": "Build Stable Visual Profiles",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Failure Response",
+            "node": "Expand Resolver Bible Snapshot",
             "type": "main",
             "index": 0
           }
@@ -798,6 +777,24 @@
         [
           {
             "node": "Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Resolver Bible Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Build Stable Visual Profiles",
             "type": "main",
             "index": 0
           }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"short-drama-cms/backend/internal/candidategeneration"
 )
@@ -209,8 +210,11 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 	if engine == nil {
 		engine = candidategeneration.NewRegistryFromEnvironment()
 	}
-	generated, err := engine.GenerateAndReview(ctx, input.Request)
+	generated, executions, err := engine.GenerateAndReviewAudited(ctx, input.Request)
 	if err != nil {
+		if auditErr := persistCandidateExecutions(ctx, s.writer, projectID, "", requestHash, key, executions, nil); auditErr != nil {
+			return CandidateSet{}, false, fmt.Errorf("persist failed candidate audit: %w (provider error: %v)", auditErr, err)
+		}
 		return CandidateSet{}, false, fmt.Errorf("%w: %v", ErrCandidateProvider, err)
 	}
 	tx, err := s.writer.Begin(ctx)
@@ -269,6 +273,7 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 		}
 	}
 	candidateSetID, _ := newPublicID("candset_")
+	candidateIDsByOrdinal := make(map[int]string, len(generated))
 	estimatedCost := estimateCandidateCost(input.TargetType, input.CandidateCount, len(input.ComponentTypes))
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.candidate_sets(
 		candidate_set_id,project_id,target_type,target_id,base_artifact_id,quality_score_report_id,
@@ -289,6 +294,7 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 	}
 	for index, candidate := range generated {
 		candidateID, _ := newPublicID("cand_")
+		candidateIDsByOrdinal[candidate.Ordinal] = candidateID
 		artifactID, _ := newPublicID("artifact_")
 		contentHash, _ := hashJSON(candidate.Content)
 		if _, err := tx.Exec(ctx, `INSERT INTO drama.artifacts(
@@ -341,6 +347,10 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 			}
 		}
 	}
+	if err := persistCandidateExecutions(ctx, tx, projectID, candidateSetID, requestHash, key,
+		executions, candidateIDsByOrdinal); err != nil {
+		return CandidateSet{}, false, err
+	}
 	result, err := getCandidateSetTx(ctx, tx, projectID, candidateSetID)
 	if err != nil {
 		return CandidateSet{}, false, err
@@ -349,6 +359,53 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 		return CandidateSet{}, false, mapPGConflict(err)
 	}
 	return result, true, nil
+}
+
+type candidateExecutionWriter interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func persistCandidateExecutions(
+	ctx context.Context, writer candidateExecutionWriter, projectID, candidateSetID,
+	requestHash, requestKey string, executions []candidategeneration.ExecutionRecord,
+	candidateIDs map[int]string,
+) error {
+	for _, execution := range executions {
+		candidateID := ""
+		if candidateIDs != nil {
+			candidateID = candidateIDs[execution.Ordinal]
+		}
+		shortType := "gen"
+		if execution.ExecutionType == "evaluation" {
+			shortType = "eval"
+		}
+		executionID := fmt.Sprintf("cex_%s_%s_%d_%d", requestHash[:16], shortType,
+			execution.Ordinal, execution.Attempt)
+		idempotencyKey := fmt.Sprintf("%s:execution:%s:%d:%d", requestKey,
+			execution.ExecutionType, execution.Ordinal, execution.Attempt)
+		_, err := writer.Exec(ctx, `INSERT INTO drama.candidate_execution_records(
+			candidate_execution_id,project_id,candidate_set_id,candidate_id,request_hash,
+			execution_type,ordinal,status,started_at,completed_at,provider,model,
+			failure_reason,retry_count,attempt,blind,idempotency_key)
+			VALUES($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12,
+			NULLIF($13,''),$14,$15,$16,$17)
+			ON CONFLICT(candidate_execution_id) DO UPDATE SET
+			status=EXCLUDED.status,completed_at=EXCLUDED.completed_at,
+			failure_reason=EXCLUDED.failure_reason
+			WHERE drama.candidate_execution_records.request_hash=EXCLUDED.request_hash
+			  AND drama.candidate_execution_records.execution_type=EXCLUDED.execution_type
+			  AND drama.candidate_execution_records.ordinal=EXCLUDED.ordinal
+			  AND drama.candidate_execution_records.attempt=EXCLUDED.attempt`,
+			executionID, projectID, candidateSetID, candidateID, requestHash,
+			execution.ExecutionType, execution.Ordinal, execution.Status,
+			execution.StartedAt, execution.CompletedAt, execution.Provider, execution.Model,
+			execution.FailureReason, execution.RetryCount, execution.Attempt,
+			execution.Blind, idempotencyKey)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ListCandidateSets(ctx context.Context, projectID string) ([]CandidateSet, error) {
@@ -780,14 +837,6 @@ func getCandidateSetQuery(ctx context.Context, queryer candidateQueryer, project
 	}
 	if err := rows.Err(); err != nil {
 		return CandidateSet{}, err
-	}
-	if result.BlindReview {
-		result.Model, result.GeneratorProvider, result.GeneratorModel = "", "", ""
-		result.ReviewerProvider, result.ReviewerModel = "", ""
-		for index := range result.Candidates {
-			result.Candidates[index].Provider, result.Candidates[index].Model = "", ""
-			result.Candidates[index].Score.ReviewerProvider, result.Candidates[index].Score.ReviewerModel = "", ""
-		}
 	}
 	return result, nil
 }

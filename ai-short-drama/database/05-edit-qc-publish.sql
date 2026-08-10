@@ -6,6 +6,13 @@ SET search_path TO drama, public;
 -- Re-running this migration is supported; it never removes tables, rows, or media files.
 
 -- Preserve every phase 1-4 orchestration value while admitting phase 5 stages.
+SELECT to_regclass('drama.schema_migrations') IS NULL AS phase05_ledger_missing \gset
+\if :phase05_ledger_missing
+\set phase05_refresh_constraints true
+\else
+SELECT NOT EXISTS(SELECT 1 FROM drama.schema_migrations WHERE version='23') AS phase05_refresh_constraints \gset
+\endif
+\if :phase05_refresh_constraints
 ALTER TABLE drama.projects DROP CONSTRAINT IF EXISTS projects_current_stage_check;
 ALTER TABLE drama.projects ADD CONSTRAINT projects_current_stage_check CHECK (current_stage IN (
   'created','novel_import','chunk_analysis','story_bible','review',
@@ -53,6 +60,9 @@ ALTER TABLE drama.workflow_tasks DROP CONSTRAINT IF EXISTS workflow_tasks_status
 ALTER TABLE drama.workflow_tasks ADD CONSTRAINT workflow_tasks_status_check CHECK (status IN (
   'pending','running','completed','failed','skipped','cancelled'
 ));
+\else
+\echo 'migration 05 preserves constraints owned by migration 23'
+\endif
 
 CREATE TABLE IF NOT EXISTS drama.edit_timelines (
   id BIGSERIAL PRIMARY KEY,

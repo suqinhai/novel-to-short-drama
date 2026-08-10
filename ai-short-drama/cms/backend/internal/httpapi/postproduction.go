@@ -60,18 +60,13 @@ func (h *Handler) validateDialogueTimings(c *gin.Context) {
 		writePostProductionError(c, err)
 		return
 	}
-	persist := input.Persist == nil || *input.Persist
+	persist := input.Persist != nil && *input.Persist
 	if persist {
-		err = h.store.SaveDialogueTimingValidation(
-			c.Request.Context(), c.Param("projectID"), c.Param("episodeID"),
-			input.Items, result, input.Actor,
-		)
-		if err != nil {
-			writePostProductionError(c, err)
-			return
-		}
+		respondError(c, http.StatusGone, "DIRECT_TIMELINE_MUTATION_DISABLED",
+			"dialogue timing changes require a previewed and confirmed timeline change plan")
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"report": result, "persisted": persist}})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"report": result, "persisted": false}})
 }
 
 func (h *Handler) applyEditingTemplate(c *gin.Context) {

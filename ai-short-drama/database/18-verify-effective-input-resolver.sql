@@ -23,8 +23,24 @@ BEGIN
      OR to_regprocedure('drama.record_effective_input_outputs(text,text,text)') IS NULL THEN
     RAISE EXCEPTION 'effective input resolver functions missing';
   END IF;
-  IF (SELECT count(*) FROM drama.effective_input_stage_requirements)<>77 THEN
+  -- Later migrations may add authoritative composite inputs.  Verify the
+  -- original matrix is still present instead of pinning the historical row
+  -- count, which made this verifier reject valid forward migrations.
+  IF (SELECT count(*) FROM drama.effective_input_stage_requirements)<77 THEN
     RAISE EXCEPTION 'effective input stage matrix is incomplete';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM (VALUES
+      ('episode_script'),('storyboard_design'),('visual_assets'),
+      ('storyboard_images'),('image_to_video'),('voice_audio'),
+      ('post_production')
+    ) expected(stage_key)
+    WHERE NOT EXISTS (
+      SELECT 1 FROM drama.effective_input_stage_requirements actual
+      WHERE actual.stage_key=expected.stage_key
+    )
+  ) THEN
+    RAISE EXCEPTION 'effective input stage matrix is missing a production stage';
   END IF;
   IF EXISTS(SELECT 1 FROM drama.effective_input_stage_requirements
     WHERE stage_key IN ('storyboard_images','image_to_video','voice_audio')

@@ -82,3 +82,8 @@ flowchart LR
 - 迁移：`14-multi-candidate-selection.sql` 重复执行由迁移 checksum 安全 no-op。
 
 本阶段到此结束，不包含真实多模型竞价、商业结算或第三阶段能力。
+> Current closure (migrations 21/24): production generation and independent
+> review require explicitly configured real providers. `deterministic_mock` is
+> registered only in a test process with
+> `CANDIDATE_ENABLE_DETERMINISTIC_MOCK=true`. Statements below that describe a
+> mock-only generator are retained as the historical migration-14 baseline.

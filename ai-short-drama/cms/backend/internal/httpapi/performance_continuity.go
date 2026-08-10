@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -43,35 +44,13 @@ func (h *Handler) listPerformanceBibles(c *gin.Context) {
 }
 
 func (h *Handler) createPerformanceBibleVersion(c *gin.Context) {
-	var input store.CreatePerformanceBibleInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_PERFORMANCE_BIBLE", err.Error())
-		return
-	}
-	item, err := h.store.CreatePerformanceBibleVersion(c.Request.Context(), c.Param("projectID"), input)
-	if errors.Is(err, pc.ErrInvalidInput) {
-		respondError(c, http.StatusUnprocessableEntity, "PERFORMANCE_BIBLE_VALIDATION_FAILED", err.Error())
-		return
-	}
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "PERFORMANCE_BIBLE_CREATE_FAILED", err.Error())
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": item})
+	respondError(c, http.StatusGone, "DIRECT_CONTENT_MUTATION_DISABLED",
+		"performance bible edits require change plan preview, confirmation, and execution")
 }
 
 func (h *Handler) lockPerformanceBible(c *gin.Context) {
-	item, err := h.store.LockPerformanceBible(c.Request.Context(), c.Param("performanceBibleID"))
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		respondError(c, http.StatusNotFound, "PERFORMANCE_BIBLE_NOT_FOUND", "表演圣经版本不存在")
-	case errors.Is(err, store.ErrConflict):
-		respondError(c, http.StatusConflict, "PERFORMANCE_BIBLE_LOCK_CONFLICT", "版本已锁定、已归档，或同一角色版本已有锁定版本")
-	case err != nil:
-		respondError(c, http.StatusInternalServerError, "PERFORMANCE_BIBLE_LOCK_FAILED", err.Error())
-	default:
-		c.JSON(http.StatusOK, gin.H{"data": item})
-	}
+	respondError(c, http.StatusGone, "DIRECT_CONTENT_MUTATION_DISABLED",
+		"performance bible status changes require change plan preview, confirmation, and execution")
 }
 
 func (h *Handler) listContinuityLedger(c *gin.Context) {
@@ -113,6 +92,10 @@ func (h *Handler) listVisualQCIssues(c *gin.Context) {
 }
 
 func (h *Handler) runVisualQCFixture(c *gin.Context) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MOCK_MODE")), "true") {
+		respondError(c, http.StatusNotFound, "TEST_FIXTURE_DISABLED", "visual QC fixture execution is available only when MOCK_MODE=true")
+		return
+	}
 	var input runVisualQCFixtureRequest
 	if err := c.ShouldBindJSON(&input); err != nil || strings.TrimSpace(input.EpisodeID) == "" ||
 		strings.TrimSpace(input.FixtureID) == "" || len(input.Frames) == 0 {

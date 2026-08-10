@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -277,7 +278,47 @@ func (s *Store) GetLatestPacing(ctx context.Context, projectID string) (json.Raw
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
-	return payload, traceID, err
+	if err != nil {
+		return nil, "", err
+	}
+	var native map[string]any
+	if err := json.Unmarshal(payload, &native); err != nil {
+		return nil, "", err
+	}
+	pacingID := strings.TrimSpace(fmt.Sprint(native["pacing_plan_id"]))
+	var overlay json.RawMessage
+	var entityVersionID, bindingID, changePlanID string
+	var version int
+	err = s.pool.QueryRow(ctx, `SELECT versioned.entity_version_id,versioned.version,versioned.content,
+		binding.binding_id,COALESCE(versioned.change_plan_id,'')
+		FROM drama.entity_versions versioned
+		JOIN drama.entity_version_bindings binding
+		  ON binding.entity_version_id=versioned.entity_version_id AND binding.is_current
+		WHERE versioned.project_id=$1 AND versioned.entity_type='pacing'
+		  AND versioned.entity_id=$2 AND versioned.is_current`, projectID, pacingID).
+		Scan(&entityVersionID, &version, &overlay, &bindingID, &changePlanID)
+	if err == nil {
+		var current map[string]any
+		if err := json.Unmarshal(overlay, &current); err != nil {
+			return nil, "", err
+		}
+		for key, value := range current {
+			native[key] = value
+		}
+		native["version_number"] = version
+		native["entity_version_id"] = entityVersionID
+		native["entity_version_binding_id"] = bindingID
+		if changePlanID != "" {
+			native["change_plan_id"] = changePlanID
+		}
+		payload, err = json.Marshal(native)
+		if err != nil {
+			return nil, "", err
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", err
+	}
+	return payload, traceID, nil
 }
 
 func (s *Store) GetLatestQualityScore(ctx context.Context, projectID string) (json.RawMessage, string, error) {

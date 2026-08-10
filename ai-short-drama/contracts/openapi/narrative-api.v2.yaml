@@ -537,7 +537,8 @@ paths:
     post:
       tags: [AdaptationProjects]
       operationId: createAdaptationSpecVersion
-      summary: Create and validate an adaptation specification version
+      summary: Disabled direct successor write; use the unified change-plan API
+      deprecated: true
       x-implementation-phase: 4
       parameters:
         - $ref: '#/components/parameters/ProjectID'
@@ -549,11 +550,8 @@ paths:
             schema:
               $ref: ../json-schema/adaptation-spec.v1.json
       responses:
-        '202':
-          description: Spec command accepted
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/OperationResponse'}
+        '410':
+          description: Direct formal-content mutation is disabled; preview, confirm and execute a change plan
   /adaptation-projects/{project_id}/compiler-runs:
     post:
       tags: [AdaptationProjects]
@@ -821,7 +819,7 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              properties: {mode: {type: string, enum: [deterministic_mock]}}
+              properties: {mode: {type: string, enum: [rules_v1]}}
       responses:
         '202': {description: Deterministic analysis completed idempotently}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -859,6 +857,8 @@ paths:
     patch:
       tags: [AdaptationProjects]
       operationId: editPacingBeats
+      summary: Disabled direct successor write; use the unified change-plan API
+      deprecated: true
       parameters:
         - $ref: '#/components/parameters/ProjectID'
         - name: pacing_plan_id
@@ -889,8 +889,7 @@ paths:
                       beat_ordinal: {type: integer, minimum: 1}
                       estimated_duration_seconds: {type: integer, minimum: 1}
       responses:
-        '202': {description: A new pacing version and local score version were created}
-        '409': {$ref: '#/components/responses/Conflict'}
+        '410': {description: Direct formal-content mutation is disabled; preview, confirm and execute a change plan}
   /adaptation-projects/{project_id}/quality-score-runs:
     post:
       tags: [AdaptationProjects]
@@ -1447,13 +1446,9 @@ components:
         difference_directions: {type: array, minItems: 1, items: {type: string, minLength: 1}}
         must_preserve: {type: array, items: {type: string}}
         allowed_changes: {type: array, items: {type: string}}
-        model:
-          type: string
-          deprecated: true
-          description: Legacy deterministic_mock request field; use generator_provider and generator_model.
-        generator_provider: {type: string, enum: [deterministic_mock, text_http, image_http, video_http]}
+        generator_provider: {type: string, enum: [text_http, image_http, video_http]}
         generator_model: {type: string, minLength: 1}
-        reviewer_provider: {type: string, enum: [deterministic_mock, reviewer_http]}
+        reviewer_provider: {type: string, enum: [reviewer_http]}
         reviewer_model:
           type: string
           minLength: 1

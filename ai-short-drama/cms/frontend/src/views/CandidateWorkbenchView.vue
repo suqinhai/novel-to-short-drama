@@ -26,8 +26,8 @@ const form = reactive({
   difference_directions: '强钩子\n紧凑节奏\n低成本可拍',
   must_preserve: '核心因果\n人物目标', allowed_changes: '对白\n场景顺序',
   random_seed: 42, temperature: 0, base_duration_seconds: 90,
-  generator_provider: 'deterministic_mock', generator_model: 'deterministic-generator-v2',
-  reviewer_provider: 'deterministic_mock', reviewer_model: 'deterministic-reviewer-v2', blind_review: true,
+  generator_provider: 'text_http', generator_model: '',
+  reviewer_provider: 'reviewer_http', reviewer_model: '', blind_review: true,
 })
 
 const candidates = computed(() => filterCandidates(activeSet.value?.candidates, filters))
@@ -40,17 +40,17 @@ const needsShot = computed(() => ['storyboard', 'image', 'video'].includes(form.
 const isImage = computed(() => activeSet.value?.target_type === 'image')
 const isVideo = computed(() => activeSet.value?.target_type === 'video')
 const generatorOptions = computed(() => {
-  if (form.target_type === 'image') return [{ value: 'deterministic_mock', label: 'Deterministic Mock' }, { value: 'image_http', label: '真实图片 Provider' }]
-  if (form.target_type === 'video') return [{ value: 'deterministic_mock', label: 'Deterministic Mock' }, { value: 'video_http', label: '真实视频 Provider' }]
-  return [{ value: 'deterministic_mock', label: 'Deterministic Mock' }, { value: 'text_http', label: '真实文本 Provider' }]
+  if (form.target_type === 'image') return [{ value: 'image_http', label: '真实图片 Provider' }]
+  if (form.target_type === 'video') return [{ value: 'video_http', label: '真实视频 Provider' }]
+  return [{ value: 'text_http', label: '真实文本 Provider' }]
 })
 const targetReady = computed(() => Boolean(resolveTargetId(form)))
 const estimatedCost = computed(() => activeSet.value ? `${Number(activeSet.value.estimated_cost || 0).toFixed(4)} ${activeSet.value.currency}` : '—')
 
 watch(() => form.target_type, (value) => {
   form.component_types = [...(targetComponents[value] || [])]
-  form.generator_provider = 'deterministic_mock'
-  form.generator_model = 'deterministic-generator-v2'
+  form.generator_provider = value === 'image' ? 'image_http' : value === 'video' ? 'video_http' : 'text_http'
+  form.generator_model = ''
 })
 
 watch(() => form.episode_id, () => {
@@ -59,12 +59,8 @@ watch(() => form.episode_id, () => {
 watch(() => form.scene_id, () => {
   form.shot_id = shots.value[0]?.shot_id || ''
 })
-watch(() => form.generator_provider, (value) => {
-  form.generator_model = value === 'deterministic_mock' ? 'deterministic-generator-v2' : ''
-})
-watch(() => form.reviewer_provider, (value) => {
-  form.reviewer_model = value === 'deterministic_mock' ? 'deterministic-reviewer-v2' : ''
-})
+watch(() => form.generator_provider, () => { form.generator_model = '' })
+watch(() => form.reviewer_provider, () => { form.reviewer_model = '' })
 
 function initializeTargets() {
   form.story_arc_id ||= targets.value.arcs?.[0]?.story_arc_revision_id || ''
@@ -218,9 +214,9 @@ onMounted(load)
 
       <div class="provider-grid">
         <label><span>生成 Provider</span><select v-model="form.generator_provider"><option v-for="option in generatorOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-        <label><span>生成模型</span><input v-model="form.generator_model" required :readonly="form.generator_provider === 'deterministic_mock'" placeholder="填写真实模型 ID" /></label>
-        <label><span>评审 Provider</span><select v-model="form.reviewer_provider"><option value="deterministic_mock">Deterministic Reviewer</option><option value="reviewer_http">真实独立 Reviewer</option></select></label>
-        <label><span>评分模型</span><input v-model="form.reviewer_model" required :readonly="form.reviewer_provider === 'deterministic_mock'" placeholder="必须与生成模型分离" /></label>
+        <label><span>生成模型</span><input v-model="form.generator_model" required placeholder="填写真实模型 ID" /></label>
+        <label><span>评审 Provider</span><select v-model="form.reviewer_provider"><option value="reviewer_http">真实独立 Reviewer</option></select></label>
+        <label><span>评分模型</span><input v-model="form.reviewer_model" required placeholder="必须与生成模型分离" /></label>
         <label class="blind-toggle"><input v-model="form.blind_review" type="checkbox" /><span>盲评：比较时隐藏模型与供应商</span></label>
       </div>
 

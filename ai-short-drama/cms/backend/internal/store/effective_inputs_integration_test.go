@@ -34,12 +34,12 @@ func TestEffectiveInputResolverIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.SchemaVersion != "effective-input-resolution.v1" ||
-		result.ResolverVersion != "effective-input-resolver.v1" ||
-		len(result.Items) != 11 || result.ContextHash == "" || result.ResolutionHash == "" {
+		result.ResolverVersion != "effective-input-resolver.v2" ||
+		len(result.Items) != 12 || result.ContextHash == "" || result.ResolutionHash == "" {
 		t.Fatalf("incomplete resolution: %+v", result)
 	}
-	if result.Mode != "legacy" {
-		t.Fatalf("historical project did not retain legacy compatibility mode: %q", result.Mode)
+	if result.Mode != "effective" {
+		t.Fatalf("legacy project bypassed the authoritative resolver: %q", result.Mode)
 	}
 	if err := database.pool.QueryRow(ctx,
 		`SELECT count(*) FROM drama.generation_effective_input_claims`).Scan(&claimsAfter); err != nil {

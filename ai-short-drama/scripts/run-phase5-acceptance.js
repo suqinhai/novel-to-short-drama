@@ -21,6 +21,7 @@ const migrationFiles = [
   'database/04-video-audio.sql', 'database/05-edit-qc-publish.sql', 'database/06-narrative-ir-foundation.sql',
   'database/07-adaptation-compiler-audit.sql', 'database/08-chapter-impact-analysis.sql',
   'database/09-phase5-contract-corrections.sql',
+  'database/10-backfill-singular-script-dialogues.sql',
   'database/11-pgcrypto-runtime-prerequisite.sql',
   'database/12-rolling-episode-production.sql',
   'database/13-adaptation-diagnostics-pacing-quality.sql',
@@ -31,6 +32,10 @@ const migrationFiles = [
   'database/18-effective-input-resolver.sql',
   'database/19-unified-versioned-change-entry.sql',
   'database/20-ir-merge-closure.sql',
+  'database/21-pluggable-candidate-providers.sql',
+  'database/22-restore-effective-input-stage-requirements.sql',
+  'database/23-versioned-production-routing.sql',
+  'database/24-authoritative-production-inputs.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -43,6 +48,10 @@ const verifyFiles = [
   'database/18-verify-effective-input-resolver.sql',
   'database/19-verify-unified-versioned-change-entry.sql',
   'database/20-verify-ir-merge-closure.sql',
+  'database/21-verify-pluggable-candidate-providers.sql',
+  'database/22-verify-effective-input-stage-requirements.sql',
+  'database/23-verify-versioned-production-routing.sql',
+  'database/24-verify-authoritative-production-inputs.sql',
 ];
 
 function loadEnv() {
@@ -58,6 +67,7 @@ function loadEnv() {
   return result;
 }
 const commandEnv = loadEnv();
+const testEnv = {...commandEnv, CANDIDATE_ENABLE_DETERMINISTIC_MOCK: 'true'};
 const postgresUser = commandEnv.POSTGRES_USER || 'n8n';
 const postgresPort = commandEnv.POSTGRES_PORT || '5432';
 const postgresPassword = commandEnv.POSTGRES_PASSWORD || '';
@@ -100,7 +110,9 @@ let failed = false;
 try {
   recreate(freshDatabase);
   for (const file of migrationFiles) sqlFile(freshDatabase, file, `fresh apply ${file}`);
-  for (const file of migrationFiles) sqlFile(freshDatabase, file, `idempotent reapply ${file}`);
+  for (let replay = 1; replay <= 2; replay += 1) {
+    for (const file of migrationFiles) sqlFile(freshDatabase, file, `idempotent reapply ${replay} ${file}`);
+  }
   for (const file of verifyFiles) sqlFile(freshDatabase, file, `verify ${file}`);
   sqlFile(freshDatabase, 'test-data/phase5-core-acceptance.sql', 'Phase 5 core relation/performance acceptance');
 
@@ -116,7 +128,7 @@ try {
     'Effective Input Resolver authority, isolation, blocking and provenance acceptance');
 
   const backendCwd = path.join(root, 'cms/backend');
-  run('Go backend unit tests', 'go', ['test', '-p', '1', './...'], {cwd: backendCwd, env: commandEnv});
+  run('Go backend unit tests', 'go', ['test', '-p', '1', './...'], {cwd: backendCwd, env: testEnv});
   run('Go Phase 2 source/spec integration including 1000 chapters', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store',
     '-run', 'TestAdaptationProjectAndSpecIntegration|TestSourceV2LifecycleIntegration|TestSourceV2ThousandChapterBatchIntegration'],
   {cwd: backendCwd, env: {...commandEnv, PHASE2_DATABASE_URL: databaseURL(freshDatabase)}});
@@ -131,17 +143,23 @@ try {
   run('Phase 3 compiler PostgreSQL E2E (valid + adversarial zero-write)', 'node', ['scripts/run-phase3-db-integration.js'], {
     env: {...commandEnv, PHASE3_TEST_DATABASE: legacyDatabase, PHASE3_POSTGRES_CONTAINER: container},
   });
-  sqlFile(legacyDatabase, 'test-data/phase4-chapter-impact-e2e.sql', 'Phase 4 exact stale propagation E2E');
-  run('Go Phase 4 impact review/regeneration integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestChapterImpactReadAndDecisionIntegration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 15 exact local edit integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestLocalEditingFourScenariosIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 4 performance/continuity integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPerformanceContinuityPhase4Integration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
+    {cwd: backendCwd, env: {...testEnv, MOCK_MODE: 'true', PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPhase5PostProductionMockChainIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE5_POST_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Effective Input Resolver read-only integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestEffectiveInputResolverIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE18_DATABASE_URL: databaseURL(legacyDatabase)}});
+  sqlFile(legacyDatabase, 'test-data/phase4-chapter-impact-e2e.sql', 'Phase 4 exact stale propagation E2E');
+  run('Go Phase 4 impact review/regeneration integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestChapterImpactReadAndDecisionIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go contiguous IR-merge/change-plan/candidate/reviewer/Resolver production E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store',
+    '-run', 'TestPluggableCandidateFrozenReplayAndDownstreamConsumption'],
+  {cwd: backendCwd, env: {...testEnv, PHASE21_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('n8n seven-stage authoritative snapshot-loader E2E', 'node', ['scripts/validate-authoritative-n8n-e2e.js'], {
+    env: {...commandEnv, PHASE5_TEST_DATABASE: legacyDatabase, PHASE5_POSTGRES_CONTAINER: container},
+  });
   run('Go backend vet', 'go', ['vet', './...'], {cwd: backendCwd, env: commandEnv});
 
   const frontendCwd = path.join(root, 'cms/frontend');
@@ -160,13 +178,22 @@ try {
     run('Media worker post-production tests', 'npm', ['test'], {cwd: mediaWorkerCwd});
     run('Media worker syntax checks', 'npm', ['run', 'check'], {cwd: mediaWorkerCwd});
   }
+  const veoAdapterCwd = path.join(root, 'scripts/veo-adapter');
+  if (process.platform === 'win32') {
+    run('Veo adapter tests', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm test'], {cwd: veoAdapterCwd});
+    run('Veo adapter syntax checks', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm run check'], {cwd: veoAdapterCwd});
+  } else {
+    run('Veo adapter tests', 'npm', ['test'], {cwd: veoAdapterCwd});
+    run('Veo adapter syntax checks', 'npm', ['run', 'check'], {cwd: veoAdapterCwd});
+  }
 
   for (const script of ['validate-phase1.js', 'validate-phase2.js', 'validate-phase2-ir.js',
     'validate-phase3-compiler.js', 'validate-phase4-impact.js', 'validate-phase4.js',
     'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
-    'validate-phase20.js',
+    'validate-phase20.js', 'validate-phase21.js',
+    'validate-video-provider-retry-idempotency.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
   }

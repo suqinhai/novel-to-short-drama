@@ -36,8 +36,14 @@ assert(store.includes('candidate_quality_baseline'), 'phase 1 score lineage miss
 
 const workflow = JSON.parse(read('workflows/04c-multi-candidate-generation.json'))
 assert(workflow.active === false, 'phase 14 workflow must import inactive')
-assert(JSON.stringify(workflow).includes('deterministic_mock'), 'phase 14 workflow must use deterministic mock')
-assert(JSON.stringify(workflow).includes('candidate-sets'), 'phase 14 workflow must call the candidate API')
+const workflowText = JSON.stringify(workflow)
+assert(workflowText.includes('candidate-sets'), 'phase 14 workflow must call the candidate API')
+for (const field of ['generator_provider', 'generator_model', 'reviewer_provider', 'reviewer_model', 'blind_review']) {
+  assert(workflowText.includes(field), `phase 14 workflow missing explicit ${field}`)
+}
+assert(workflowText.includes('INDEPENDENT_REVIEWER_REQUIRED'), 'phase 14 workflow must reject a non-independent reviewer')
+assert(workflowText.includes('$env.MOCK_MODE'), 'deterministic test provider must require the environment test gate')
+assert(workflowText.includes('MOCK_PROVIDER_FORBIDDEN'), 'phase 14 workflow must reject mock providers outside test mode')
 
 const api = read('contracts/openapi/narrative-api.v2.yaml')
 for (const pathName of ['candidate-sets', 'selections', 'compositions', 'decisions', 'timecode-comments']) {

@@ -46,7 +46,7 @@ INSERT INTO drama.character_performance_bibles(
   '["speech.pitch","appearance.age"]','["acting.emotion"]',
   '{"v1":"resolver acceptance"}','{"source_span_ids":["span_legacy_full_ch_phase1_legacy_001"]}',
   'locked',repeat('2',64),'phase18-fixture'
-);
+) ON CONFLICT(project_id,character_id,character_version,version) DO NOTHING;
 
 INSERT INTO drama.character_visual_profiles(
   profile_id,project_id,character_id,version,canonical_name,gender,apparent_age,
@@ -55,7 +55,8 @@ INSERT INTO drama.character_visual_profiles(
   ('profile_phase18_lin','p_phase1_legacy','char_lin',1,'Lin','female','28',
    'realistic restrained investigator','identity drift',1,'ready','approved','locked'),
   ('profile_phase18_zhou','p_phase1_legacy','char_zhou',1,'Zhou','male','31',
-   'realistic guarded witness','identity drift',1,'ready','approved','locked');
+   'realistic guarded witness','identity drift',1,'ready','approved','locked')
+ON CONFLICT(character_id,version) DO NOTHING;
 
 INSERT INTO drama.location_visual_profiles(
   profile_id,project_id,location_id,version,canonical_name,environment_type,
@@ -63,7 +64,7 @@ INSERT INTO drama.location_visual_profiles(
 ) VALUES(
   'profile_phase18_door','p_phase1_legacy','location_door',1,'Old house entrance','interior',
   'old wooden door under cold moonlight','modern furniture',1,'ready','approved','locked'
-);
+) ON CONFLICT(location_id,version) DO NOTHING;
 
 INSERT INTO drama.editing_template_bindings(
   editing_template_binding_id,project_id,episode_id,editing_template_version_id,version,
@@ -82,8 +83,15 @@ BEGIN
   IF result->>'status'<>'ready' OR NOT (result->>'ready')::boolean THEN
     RAISE EXCEPTION 'expected ready stage 09 resolution, got %',result;
   END IF;
-  IF jsonb_array_length(result->'items')<>11 THEN
-    RAISE EXCEPTION 'resolver must return all 11 authoritative input kinds';
+  IF jsonb_array_length(result->'items')<>12 THEN
+    RAISE EXCEPTION 'resolver must return the 11 lifecycle inputs plus the authoritative production snapshot';
+  END IF;
+  IF result->>'mode'<>'effective' OR result->>'resolver_version'<>'effective-input-resolver.v2' THEN
+    RAISE EXCEPTION 'legacy projects must use the authoritative v2 resolver: %',result;
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM jsonb_array_elements(result->'items') item
+    WHERE item->>'kind'='production_snapshot' AND item->>'state'='resolved') THEN
+    RAISE EXCEPTION 'resolved production snapshot is missing from effective inputs';
   END IF;
   IF EXISTS(
     SELECT 1 FROM jsonb_array_elements(result->'items') item

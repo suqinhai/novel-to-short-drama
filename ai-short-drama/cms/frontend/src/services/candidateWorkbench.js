@@ -35,10 +35,10 @@ export function resolveTargetId(form) {
 }
 
 export function buildCandidateRequest(form) {
-  const generatorProvider = form.generator_provider || 'deterministic_mock'
-  const reviewerProvider = form.reviewer_provider || 'deterministic_mock'
-  const generatorModel = form.generator_model || (generatorProvider === 'deterministic_mock' ? 'deterministic-generator-v2' : '')
-  const reviewerModel = form.reviewer_model || (reviewerProvider === 'deterministic_mock' ? 'deterministic-reviewer-v2' : '')
+	const generatorProvider = String(form.generator_provider || '').trim()
+	const reviewerProvider = String(form.reviewer_provider || '').trim()
+	const generatorModel = String(form.generator_model || '').trim()
+	const reviewerModel = String(form.reviewer_model || '').trim()
   return {
     target_type: form.target_type,
     target_id: resolveTargetId(form) || String(form.target_id || '').trim(),

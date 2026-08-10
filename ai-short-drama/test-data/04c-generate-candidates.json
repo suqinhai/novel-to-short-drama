@@ -7,6 +7,11 @@
   "difference_directions": ["强钩子", "紧凑节奏", "低成本可拍"],
   "must_preserve": ["核心因果", "人物目标"],
   "allowed_changes": ["对白", "场景顺序"],
+  "generator_provider": "text_http",
+  "generator_model": "REPLACE_GENERATOR_MODEL",
+  "reviewer_provider": "reviewer_http",
+  "reviewer_model": "REPLACE_REVIEWER_MODEL",
+  "blind_review": true,
   "random_seed": 42,
   "base_duration_seconds": 90,
   "idempotency_key": "phase14-demo-candidates-001"

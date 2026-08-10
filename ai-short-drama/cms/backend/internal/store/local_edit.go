@@ -173,19 +173,35 @@ func (s *Store) CreateChangePlan(ctx context.Context, projectID string, plan loc
 	risksJSON, _ := json.Marshal(plan.Risks)
 	rulesJSON, _ := json.Marshal(plan.ValidationRules)
 	locksJSON, _ := json.Marshal(plan.Locks)
-	_, err = tx.Exec(ctx, `INSERT INTO drama.change_plans(
+	requestDedupKey := projectID + ":" + fingerprint + ":" + strconv.Itoa(plan.Target.Version)
+	var persistedPlanID string
+	err = tx.QueryRow(ctx, `INSERT INTO drama.change_plans(
 		change_plan_id,project_id,status,user_intent,natural_language_instruction,
 		target_entity_type,target_entity_id,target_version,must_preserve,allowed_fields,
 		expected_changes,affected_upstream,affected_downstream,rebuild_decision,rebuild_tasks,
 		risks,validation_rules,rollback_version,change_kind,semantic_change,locks,
-		plan_fingerprint,requested_by)
+		plan_fingerprint,requested_by,request_dedup_key)
 		VALUES($1,$2,'validated',$3,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,
 		$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb,$16,$17,$18,
-		$19::jsonb,$20,$21)`,
+		$19::jsonb,$20,$21,$22)
+		ON CONFLICT(request_dedup_key) WHERE request_dedup_key IS NOT NULL DO NOTHING
+		RETURNING change_plan_id`,
 		changePlanID, projectID, plan.UserIntent, plan.Target.EntityType, plan.Target.EntityID,
 		plan.Target.Version, mustPreserve, allowedFieldsJSON, changesJSON, upstreamJSON,
 		downstreamJSON, rebuildJSON, rebuildTasksJSON, risksJSON, rulesJSON,
-		plan.RollbackVersion, plan.ChangeKind, plan.SemanticChange, locksJSON, fingerprint, requestedBy)
+		plan.RollbackVersion, plan.ChangeKind, plan.SemanticChange, locksJSON, fingerprint, requestedBy,
+		requestDedupKey).Scan(&persistedPlanID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err = tx.QueryRow(ctx, `SELECT change_plan_id FROM drama.change_plans
+			WHERE project_id=$1 AND plan_fingerprint=$2 AND target_version=$3`,
+			projectID, fingerprint, plan.Target.Version).Scan(&persistedPlanID); err != nil {
+			return ChangePlan{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return ChangePlan{}, err
+		}
+		return s.GetChangePlan(ctx, projectID, persistedPlanID)
+	}
 	if err != nil {
 		return ChangePlan{}, err
 	}
@@ -277,6 +293,12 @@ func (s *Store) ConfirmChangePlan(ctx context.Context, projectID, planID string,
 		if errors.Is(scanErr, pgx.ErrNoRows) {
 			return ChangePlan{}, ErrNotFound
 		}
+		if status == "confirmed" || status == "executing" || status == "applied" {
+			if err = tx.Commit(ctx); err != nil {
+				return ChangePlan{}, err
+			}
+			return s.GetChangePlan(ctx, projectID, planID)
+		}
 		return ChangePlan{}, fmt.Errorf("%w: plan is %s", ErrConflict, status)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(change_plan_event_id,change_plan_id,event_type,actor)
@@ -313,6 +335,12 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 	}
 	if err != nil {
 		return ChangePlan{}, err
+	}
+	if status == "applied" {
+		if err = tx.Commit(ctx); err != nil {
+			return ChangePlan{}, err
+		}
+		return s.GetChangePlan(ctx, projectID, planID)
 	}
 	if status != "confirmed" {
 		return ChangePlan{}, fmt.Errorf("%w: plan must be confirmed", ErrConflict)
@@ -484,6 +512,30 @@ func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID str
 		"shot":     `SELECT to_jsonb(s)-'id'-'created_at'-'updated_at' FROM drama.storyboard_shots s WHERE shot_id=$1 FOR UPDATE`,
 		"outline":  `SELECT to_jsonb(o)-'id'-'created_at'-'updated_at' FROM drama.episode_outlines o WHERE episode_id=$1 FOR UPDATE`,
 		"script":   `SELECT to_jsonb(s)-'id'-'created_at'-'updated_at' FROM drama.episode_scripts s WHERE script_id=$1 FOR UPDATE`,
+		"adaptation_spec": `SELECT (to_jsonb(s)-'id'-'created_at'-'updated_at')||jsonb_build_object(
+			  'chapter_ids',COALESCE((SELECT jsonb_agg(scope.chapter_id ORDER BY scope.ordinal_from NULLS LAST,scope.chapter_id)
+			    FROM drama.adaptation_scope_chapters scope WHERE scope.adaptation_spec_version_id=s.adaptation_spec_version_id
+			      AND scope.include_mode='include'),'[]'::jsonb),
+			  'story_arc_revision_ids',COALESCE((SELECT jsonb_agg(scope.story_arc_revision_id ORDER BY scope.story_arc_revision_id)
+			    FROM drama.adaptation_scope_arcs scope WHERE scope.adaptation_spec_version_id=s.adaptation_spec_version_id
+			      AND scope.include_mode='include'),'[]'::jsonb),
+			  'rules',COALESCE((SELECT jsonb_agg(to_jsonb(rule)-'id'-'created_at'-'updated_at' ORDER BY rule.priority DESC,rule.adaptation_rule_id)
+			    FROM drama.adaptation_rules rule WHERE rule.adaptation_spec_version_id=s.adaptation_spec_version_id),'[]'::jsonb)
+			) FROM drama.adaptation_spec_versions s WHERE adaptation_spec_version_id=$1 FOR UPDATE`,
+		"adaptation_plan": `SELECT to_jsonb(p)-'id'-'created_at'-'updated_at'
+			FROM drama.adaptation_plans p WHERE adaptation_plan_id=$1 FOR UPDATE`,
+		"pacing": `SELECT (to_jsonb(p)-'id'-'created_at')||jsonb_build_object(
+			  'story_arcs',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at' ORDER BY item.ordinal)
+			    FROM drama.pacing_story_arcs item WHERE item.pacing_plan_id=p.pacing_plan_id),'[]'::jsonb),
+			  'episodes',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at' ORDER BY item.episode_number)
+			    FROM drama.pacing_episodes item WHERE item.pacing_plan_id=p.pacing_plan_id),'[]'::jsonb),
+			  'beats',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at' ORDER BY item.episode_number,item.beat_ordinal)
+			    FROM drama.pacing_beats item WHERE item.pacing_plan_id=p.pacing_plan_id),'[]'::jsonb)
+			) FROM drama.pacing_plan_versions p WHERE pacing_plan_id=$1 FOR UPDATE`,
+		"performance_bible": `SELECT to_jsonb(p)-'id'-'created_at'-'updated_at'
+			FROM drama.character_performance_bibles p WHERE performance_bible_id=$1 FOR UPDATE`,
+		"continuity": `SELECT to_jsonb(c)-'id'-'created_at'-'updated_at'
+			FROM drama.continuity_ledger_entries c WHERE continuity_entry_id=$1 FOR UPDATE`,
 		"timeline": `SELECT to_jsonb(t)-'id'-'created_at'-'updated_at' FROM drama.edit_timelines t
 			WHERE t.episode_id=$1 AND t.is_current ORDER BY t.version DESC LIMIT 1 FOR UPDATE`,
 		"timeline_item": `SELECT to_jsonb(i)-'id'-'created_at'-'updated_at'
@@ -541,6 +593,16 @@ func readNativeEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entityI
 		query = `SELECT version FROM drama.episode_outlines WHERE episode_id=$1`
 	case "script":
 		query = `SELECT version FROM drama.episode_scripts WHERE script_id=$1`
+	case "adaptation_spec":
+		query = `SELECT version_number FROM drama.adaptation_spec_versions WHERE adaptation_spec_version_id=$1`
+	case "adaptation_plan":
+		query = `SELECT version_number FROM drama.adaptation_plans WHERE adaptation_plan_id=$1`
+	case "pacing":
+		query = `SELECT version_number FROM drama.pacing_plan_versions WHERE pacing_plan_id=$1`
+	case "performance_bible":
+		query = `SELECT version FROM drama.character_performance_bibles WHERE performance_bible_id=$1`
+	case "continuity":
+		query = `SELECT 1 FROM drama.continuity_ledger_entries WHERE continuity_entry_id=$1`
 	case "episode_content":
 		query = `SELECT GREATEST(outline.version,COALESCE((
 			SELECT max(script.version) FROM drama.episode_scripts script
@@ -813,6 +875,11 @@ func restoreChanges(entityType string, sourceJSON, currentJSON json.RawMessage) 
 			"action_description", "facial_expression", "composition", "shot_size",
 			"camera_angle", "camera_motion", "duration_seconds", "shot_order",
 		},
+		"adaptation_spec":   {"platform", "audience_profile", "target_episode_count", "episode_duration_seconds", "scope_mode", "chapter_ids", "story_arc_revision_ids", "rules"},
+		"adaptation_plan":   {"quality_report"},
+		"pacing":            {"total_duration_seconds", "story_arcs", "episodes", "beats"},
+		"performance_bible": {"speech", "acting", "relational_voices", "appearance", "locked_fields", "allowed_fields", "change_reasons", "source_refs"},
+		"continuity":        {"input_state", "output_state", "validation_status", "diagnostics"},
 	}
 	if fields[entityType] == nil {
 		return nil, fmt.Errorf("%w: version restore is not supported for %s", localedit.ErrInvalidPlan, entityType)

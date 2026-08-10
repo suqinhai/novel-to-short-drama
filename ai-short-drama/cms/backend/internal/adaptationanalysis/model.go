@@ -1,6 +1,8 @@
 package adaptationanalysis
 
-const AnalyzerVersion = "deterministic-mock-v3"
+// AnalyzerVersion identifies the local source-grounded rules engine. It is
+// production behavior and does not impersonate an external model provider.
+const AnalyzerVersion = "deterministic-rules-v3"
 
 type Chapter struct {
 	ID       string

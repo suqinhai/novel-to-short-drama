@@ -21,15 +21,15 @@
         "image_to_video", "voice_audio", "post_production"
       ]
     },
-    "mode": {"enum": ["effective", "legacy"]},
+    "mode": {"const": "effective"},
     "status": {"enum": ["ready", "needs_review", "blocked"]},
     "ready": {"type": "boolean"},
     "context_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "resolution_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "items": {
       "type": "array",
-      "minItems": 11,
-      "maxItems": 11,
+      "minItems": 12,
+      "maxItems": 12,
       "items": {"$ref": "#/$defs/input"}
     },
     "context": {"type": "object"},
@@ -49,14 +49,15 @@
       "additionalProperties": false,
       "required": [
         "kind", "requirement", "state", "input_ids", "versions", "source_status",
-        "content", "artifact_ids", "blocks"
+        "content", "artifact_ids", "provenance", "blocks"
       ],
       "properties": {
         "kind": {
           "enum": [
             "narrative_ir", "adaptation_spec", "adaptation_plan", "episode_plan",
             "pacing_plan", "candidate_selection", "performance_bible",
-            "continuity_ledger", "visual_profiles", "editing_template", "timeline"
+            "continuity_ledger", "visual_profiles", "editing_template", "timeline",
+            "production_snapshot"
           ]
         },
         "requirement": {"enum": ["required", "optional"]},
@@ -69,7 +70,21 @@
         "content": {"type": "object"},
         "artifact_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "reason": {"type": ["string", "null"]},
+        "provenance": {"$ref": "#/$defs/provenance"},
         "blocks": {"type": "boolean"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_type", "source_id", "version_id", "binding_id", "resolved_at", "selection_reason"],
+      "properties": {
+        "source_type": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "version_id": {},
+        "binding_id": {"type": "string", "minLength": 1},
+        "resolved_at": {"type": "string", "format": "date-time"},
+        "selection_reason": {"type": "string", "minLength": 1}
       }
     },
     "diagnostic": {

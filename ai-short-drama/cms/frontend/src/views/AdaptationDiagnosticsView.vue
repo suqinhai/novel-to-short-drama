@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { api } from '../services/api'
 import { narrativeApi, createIdempotencyKey } from '../services/narrativeApi'
-import { buildSpecFromDiagnostic, curvePoints, normalizeBeatEdits, severityLabel } from '../services/adaptationAnalysis'
+import { buildSpecFromDiagnostic, curvePoints, severityLabel } from '../services/adaptationAnalysis'
 
 const route = useRoute()
 const projectId = computed(() => route.params.projectId)
@@ -15,6 +16,8 @@ const error = ref('')
 const notice = ref('')
 const specDraft = ref(null)
 const showSpecConfirm = ref(false)
+const specPlan = ref(null)
+const pacingPlan = ref(null)
 
 const curve = (field) => curvePoints(pacing.value?.episodes || [], field)
 
@@ -47,10 +50,25 @@ async function runAnalysis() {
 async function saveBeats() {
   busy.value = true
   try {
-    await narrativeApi.editPacing(projectId.value, pacing.value.pacing_plan_id,
-      normalizeBeatEdits(beats.value), createIdempotencyKey('pacing-edit'))
+    pacingPlan.value = await api.createChangePlan(projectId.value, {
+      instruction: '更新节奏 beats；先预览精确影响，确认后创建不可变 successor 版本',
+      target: { entity_type: 'pacing', entity_id: pacing.value.pacing_plan_id, version: pacing.value.version_number },
+      changes: [{ operation: 'replace', field: 'beats', value: beats.value }],
+    })
+    notice.value = '节奏差异、影响和重建范围预览已生成；正式内容尚未修改。'
+  } catch (e) { error.value = e.message } finally { busy.value = false }
+}
+
+async function applyPacingPlan() {
+  if (!pacingPlan.value) return
+  busy.value = true
+  try {
+    const id = pacingPlan.value.change_plan_id
+    await api.confirmChangePlan(projectId.value, id, { actor: 'cms-user' })
+    await api.executeChangePlan(projectId.value, id)
+    pacingPlan.value = null
     await load()
-    notice.value = '已创建新的节奏版本；只传播了发生变化的节拍依赖。'
+    notice.value = '节奏 successor 版本已原子切换；精确 stale 与 pending rebuild 已记录。'
   } catch (e) { error.value = e.message } finally { busy.value = false }
 }
 
@@ -65,15 +83,42 @@ async function rescore() {
 
 function prepareSpec() {
   specDraft.value = buildSpecFromDiagnostic(diagnostic.value, pacing.value)
+  specPlan.value = null
   showSpecConfirm.value = true
 }
 
 async function confirmSpec() {
   busy.value = true
   try {
-    await narrativeApi.createAdaptationSpec(projectId.value, specDraft.value, createIdempotencyKey('diagnostic-spec-confirm'))
+    if (!specPlan.value) {
+      const specs = (await narrativeApi.listAdaptationSpecs(projectId.value)).data
+      const current = specs.find((item) => item.status === 'active') || specs[0]
+      if (!current) throw new Error('没有可作为修改基线的 Adaptation Spec。')
+      const spec = specDraft.value
+      specPlan.value = await api.createChangePlan(projectId.value, {
+        instruction: '应用诊断建议到 Adaptation Spec；先预览差异和影响，确认后创建不可变 successor 版本',
+        target: { entity_type: 'adaptation_spec', entity_id: current.adaptation_spec_version_id, version: current.version_number },
+        must_preserve: ['source_version_id', 'ir_revision_id', 'source_binding_id'],
+        changes: [
+          { operation: 'replace', field: 'platform', value: spec.platform },
+          { operation: 'replace', field: 'audience_profile', value: spec.audience_profile },
+          { operation: 'replace', field: 'target_episode_count', value: spec.target_episode_count },
+          { operation: 'replace', field: 'episode_duration_seconds', value: spec.episode_duration_seconds },
+          { operation: 'replace', field: 'scope_mode', value: spec.scope.mode },
+          { operation: 'replace', field: 'chapter_ids', value: spec.scope.chapter_ids },
+          { operation: 'replace', field: 'story_arc_revision_ids', value: spec.scope.story_arc_revision_ids },
+          { operation: 'replace', field: 'rules', value: spec.rules },
+        ],
+      })
+      notice.value = 'Spec 差异、影响与重建范围预览已生成；请再次确认后应用。'
+      return
+    }
+    const id = specPlan.value.change_plan_id
+    await api.confirmChangePlan(projectId.value, id, { actor: 'cms-user' })
+    await api.executeChangePlan(projectId.value, id)
     showSpecConfirm.value = false
-    notice.value = '用户确认完成，Adaptation Spec 新版本已创建。'
+    specPlan.value = null
+    notice.value = 'Adaptation Spec successor 版本已原子切换。'
   } catch (e) { error.value = e.message } finally { busy.value = false }
 }
 
@@ -110,12 +155,14 @@ onMounted(load)
       <div class="beat-table"><div class="beat-row head"><span>节拍</span><span>集</span><span>序</span><span>秒</span><span>强度</span></div><div v-for="beat in beats" :key="beat.beat_key" class="beat-row"><span><b>{{ beat.title }}</b><small>{{ beat.summary }}</small></span><input v-model.number="beat.episode_number" type="number" min="1"><input v-model.number="beat.beat_ordinal" type="number" min="1"><input v-model.number="beat.estimated_duration_seconds" type="number" min="1"><span>{{ beat.conflict_intensity }} / {{ beat.emotional_intensity }} / {{ beat.hook_strength }}</span></div></div>
     </section>
 
+    <div v-if="pacingPlan" class="modal"><div><h3>确认节奏修改计划？</h3><p>以下为差异、影响和 pending rebuild 预览；确认前正式内容保持不变。</p><pre>{{ JSON.stringify({ changes: pacingPlan.plan?.expected_changes, impacts: pacingPlan.impacts, rebuild_tasks: pacingPlan.plan?.rebuild_tasks, risks: pacingPlan.plan?.risks }, null, 2) }}</pre><div class="actions"><button @click="pacingPlan=null">取消</button><button class="button button-primary" :disabled="busy" @click="applyPacingPlan">确认并应用</button></div></div></div>
+
     <section v-if="quality" class="panel">
       <div class="panel-title"><div><h3>可解释质量评分 · {{ quality.total_score }}</h3><p>每项均展示证据、位置、严重度与修改建议。</p></div><button class="button button-secondary" :disabled="busy" @click="rescore">局部重新评分</button></div>
       <div class="score-grid"><article v-for="dimension in quality.dimensions" :key="dimension.dimension"><header><h4>{{ dimension.dimension }}</h4><strong>{{ dimension.score }}</strong></header><p v-for="issue in dimension.issues" :key="issue.quality_issue_id"><b :class="`sev-${issue.severity}`">{{ severityLabel(issue.severity) }}</b> {{ issue.message }}<small>位置：{{ issue.location }} · 建议：{{ issue.suggestion }}</small></p><details><summary>查看证据</summary><pre>{{ dimension.evidence }}</pre></details></article></div>
     </section>
 
-    <div v-if="showSpecConfirm" class="modal"><div><h3>确认创建 Adaptation Spec 新版本？</h3><p>诊断只生成草稿；点击确认后才写入不可变 Spec 版本。</p><pre>{{ JSON.stringify(specDraft, null, 2) }}</pre><div class="actions"><button @click="showSpecConfirm=false">取消</button><button class="button button-primary" :disabled="busy" @click="confirmSpec">确认创建</button></div></div></div>
+    <div v-if="showSpecConfirm" class="modal"><div><h3>确认创建 Adaptation Spec 新版本？</h3><p>{{ specPlan ? '以下为 change plan 差异与影响预览；再次确认才会原子切换 current。' : '诊断只生成草稿；先创建差异与影响预览，不会立即修改正式内容。' }}</p><pre>{{ JSON.stringify(specPlan ? { changes: specPlan.plan?.expected_changes, impacts: specPlan.impacts, rebuild_tasks: specPlan.plan?.rebuild_tasks, risks: specPlan.plan?.risks } : specDraft, null, 2) }}</pre><div class="actions"><button @click="showSpecConfirm=false;specPlan=null">取消</button><button class="button button-primary" :disabled="busy" @click="confirmSpec">{{ specPlan ? '确认并应用' : '生成修改预览' }}</button></div></div></div>
   </section>
 </template>
 

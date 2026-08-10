@@ -7,7 +7,7 @@ authoritative, read-only resolution boundary for production stages 05–10 and
 current bindings, explicit lock/approval state, and version lineage.
 
 The public read contract is `effective-input-resolution.v1`. Every response
-contains all eleven input kinds, their `required`/`optional` requirement,
+contains all twelve input kinds (including `production_snapshot`), their `required`/`optional` requirement,
 resolution state, exact IDs, explicit versions, content hash, source status,
 missing inputs, blocking diagnostics, a semantic `context_hash`, and a complete
 audit `resolution_hash`.
@@ -17,19 +17,20 @@ Supported states are:
 - `resolved`: legal input that may be consumed.
 - `missing`: no legal input exists; blocks only when required.
 - `stale`: a formerly valid/current input no longer matches its authority
-  chain; always blocks.
+  chain; blocks when it is required by the target stage. A stale confirmed
+  candidate always blocks downstream consumption.
 - `needs_review`: a draft, pending ledger, or unconfirmed candidate exists;
-  always blocks.
+  blocks when required, and always blocks candidate consumption.
 - `blocked`: ambiguity, conflict, failed input, or incomplete locked profile
-  set; always blocks.
+  set; blocks when required by the target stage.
 
 ## Consumer contract
 
-Workflows call `drama.claim_effective_inputs(...)` before generation. Effective
-projects may proceed only when `status=ready`. Historical projects keep
-`input_resolution_mode=legacy`; their claim records diagnostics but allows the
-existing compatibility path. Projects created after migration 18 default to
-`effective` and receive a current system editing-template binding.
+Workflows call `drama.claim_effective_inputs(...)` before generation. After
+migration 24, every project may proceed only when `status=ready`; the stored
+`compatibility_mode` is always false. Migration 24 backfills legacy projects to
+`input_resolution_mode=effective`, and the claim function has no compatibility
+allow-generation branch.
 
 The resolver context is passed to:
 
@@ -61,3 +62,27 @@ The endpoints are read-only. The OpenAPI contract is
 Numeric stages `05`, `06`, `07`, `08`, `09`, `10`, and `17` are accepted along
 with canonical keys `episode_script`, `storyboard_design`, `visual_assets`,
 `storyboard_images`, `image_to_video`, `voice_audio`, and `post_production`.
+
+## Migration 24 authoritative snapshot
+
+Migration 24 makes this resolver the only production read authority. Its v2
+response includes an immutable `production_snapshot` with exact native
+identities, current `entity_versions`, and confirmed candidate-selection
+bindings. The current primary project/source binding is frozen in both the
+payload and provenance. Every provenance entry contains `source_type`, `source_id`,
+`version_id`, `binding_id`, `resolved_at`, and `selection_reason`. The 05–10
+and 17 workflow loaders reject an absent or unresolved snapshot and never
+supply old rows, defaults, or mock content.
+
+Production candidate generation requires explicit, independent generator and
+reviewer provider/model configuration. `deterministic_mock` is registered only
+when `CANDIDATE_ENABLE_DETERMINISTIC_MOCK=true`; n8n mock branches additionally
+require an explicit test request/project and `MOCK_MODE=true`. Provider error,
+timeout, invalid JSON, or reviewer failure is recorded as a failed execution
+and cannot create a successful candidate or score.
+
+Candidate regeneration has one narrow remediation rule: it may proceed when
+the only Resolver blocker is the stale or unconfirmed candidate selection it
+is replacing. It still freezes the resolved production snapshot and cannot
+bypass any missing, stale, or blocked required upstream. Stages 05–10 and 17
+do not have this remediation exception.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -320,6 +321,9 @@ func (s *Store) ListShotHandoffs(ctx context.Context, projectID, episodeID strin
 func (s *Store) SaveVisualQCFixtureRun(
 	ctx context.Context, projectID, episodeID, fixtureID string, issues []pc.QCIssue,
 ) (string, error) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MOCK_MODE")), "true") {
+		return "", fmt.Errorf("%w: visual QC fixture requires MOCK_MODE=true", ErrConflict)
+	}
 	sum := sha256.Sum256([]byte(projectID + ":" + episodeID + ":" + fixtureID))
 	runID := "vqcr_" + hex.EncodeToString(sum[:])[:20]
 	tx, err := s.writer.Begin(ctx)

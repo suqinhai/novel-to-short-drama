@@ -106,6 +106,24 @@ var allowedFields = map[string]map[string]bool{
 	"script": {
 		"title": true, "opening_hook": true, "climax": true, "ending_hook": true,
 	},
+	"adaptation_spec": {
+		"platform": true, "audience_profile": true, "target_episode_count": true,
+		"episode_duration_seconds": true, "scope_mode": true, "chapter_ids": true,
+		"story_arc_revision_ids": true, "rules": true,
+	},
+	"adaptation_plan": {
+		"quality_report": true,
+	},
+	"pacing": {
+		"total_duration_seconds": true, "story_arcs": true, "episodes": true, "beats": true,
+	},
+	"performance_bible": {
+		"speech": true, "acting": true, "relational_voices": true, "appearance": true,
+		"locked_fields": true, "allowed_fields": true, "change_reasons": true, "source_refs": true,
+	},
+	"continuity": {
+		"input_state": true, "output_state": true, "validation_status": true, "diagnostics": true,
+	},
 	"episode_content": {"*": true},
 	"timeline": {
 		"editing_template_version_id": true, "template_scope": true,
@@ -349,7 +367,7 @@ func decideImpact(entityType string, fields []string, changes []Change, semantic
 	case "media":
 		rebuild.Edit = true
 		downstream = append(downstream, "edit_timeline_item")
-	case "outline", "script":
+	case "outline", "script", "adaptation_spec", "adaptation_plan", "pacing", "performance_bible", "continuity":
 		rebuild.Voice, rebuild.Subtitle, rebuild.Image = true, true, true
 		rebuild.Video, rebuild.Edit, rebuild.Continuity = true, true, true
 		downstream = append(downstream, "episode_script", "storyboard", "dialogue_audio",
@@ -494,6 +512,20 @@ func normalizeEntityType(value string) string {
 	case "episode", "episode_revision":
 		return "episode_content"
 	case "edit_timeline":
+		return "timeline"
+	case "action":
+		return "scene"
+	case "adaptation_spec_version":
+		return "adaptation_spec"
+	case "adaptation_plan_version":
+		return "adaptation_plan"
+	case "pacing_plan", "pacing_plan_version":
+		return "pacing"
+	case "character_performance_bible":
+		return "performance_bible"
+	case "continuity_entry":
+		return "continuity"
+	case "post_production_config":
 		return "timeline"
 	default:
 		return value

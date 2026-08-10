@@ -921,7 +921,8 @@ type mergeSpan struct {
 	SourceSpanID, SourceVersionID, ChapterID, ChapterRevisionID string
 	StartByte, EndByte, StartCodepoint, EndCodepoint            int
 	StartParagraph, EndParagraph                                *int
-	ExcerptHash, EvidenceText, LocatorVersion                   string
+	EvidenceText                                                *string
+	ExcerptHash, LocatorVersion                                 string
 	TargetChapterRevisionID, TargetContent                      string
 }
 
@@ -948,7 +949,7 @@ func prepareIRMergeSpanMap(ctx context.Context, tx pgx.Tx, proposalID, baseIRID,
 	)
 	SELECT span.source_span_id,span.source_version_id,span.chapter_id,span.chapter_revision_id,
 		span.start_utf8_byte,span.end_utf8_byte,span.start_codepoint,span.end_codepoint,
-		span.start_paragraph,span.end_paragraph,span.excerpt_hash,COALESCE(span.evidence_text,''),span.locator_version,
+		span.start_paragraph,span.end_paragraph,span.excerpt_hash,span.evidence_text,span.locator_version,
 		target.chapter_revision_id,chapter.content
 	FROM needed JOIN drama.source_spans span USING(source_span_id)
 	JOIN drama.source_version_chapters target ON target.source_version_id=$1 AND target.chapter_id=span.chapter_id
@@ -979,8 +980,11 @@ func prepareIRMergeSpanMap(ctx context.Context, tx pgx.Tx, proposalID, baseIRID,
 			startByte, endByte, startRune, endRune := span.StartByte, span.EndByte, span.StartCodepoint, span.EndCodepoint
 			startParagraph, endParagraph := span.StartParagraph, span.EndParagraph
 			if span.ChapterRevisionID != span.TargetChapterRevisionID {
+				if span.EvidenceText == nil || *span.EvidenceText == "" {
+					return fmt.Errorf("%w: source span %s cannot be relocated: evidence_text is empty", ErrIRMergeBlocked, span.SourceSpanID)
+				}
 				var relocateErr error
-				startByte, endByte, startRune, endRune, startParagraph, endParagraph, relocateErr = relocateUTF8Evidence(span.TargetContent, span.EvidenceText, span.StartByte)
+				startByte, endByte, startRune, endRune, startParagraph, endParagraph, relocateErr = relocateUTF8Evidence(span.TargetContent, *span.EvidenceText, span.StartByte)
 				if relocateErr != nil {
 					return fmt.Errorf("%w: source span %s cannot be relocated: %v", ErrIRMergeBlocked, span.SourceSpanID, relocateErr)
 				}
