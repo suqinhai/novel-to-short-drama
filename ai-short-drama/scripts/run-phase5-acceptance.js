@@ -37,6 +37,8 @@ const migrationFiles = [
   'database/23-versioned-production-routing.sql',
   'database/24-authoritative-production-inputs.sql',
   'database/25-season-planning-workbench.sql',
+  'database/26-atomic-multi-shot-editor.sql',
+  'database/27-lightweight-nle.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -54,6 +56,8 @@ const verifyFiles = [
   'database/23-verify-versioned-production-routing.sql',
   'database/24-verify-authoritative-production-inputs.sql',
   'database/25-verify-season-planning-workbench.sql',
+  'database/26-verify-atomic-multi-shot-editor.sql',
+  'database/27-verify-lightweight-nle.sql',
 ];
 
 function loadEnv() {
@@ -147,6 +151,8 @@ try {
   });
   run('Go Phase 15 exact local edit integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestLocalEditingFourScenariosIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
+  run('Go atomic multi-shot concurrency, rollback, continuity and restore integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestAtomicMultiShotEditorIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 4 performance/continuity integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPerformanceContinuityPhase4Integration'],
     {cwd: backendCwd, env: {...testEnv, MOCK_MODE: 'true', PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPhase5PostProductionMockChainIntegration'],
@@ -196,7 +202,7 @@ try {
     'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
-    'validate-phase20.js', 'validate-phase21.js',
+    'validate-phase20.js', 'validate-phase21.js', 'validate-phase27.js',
     'validate-video-provider-retry-idempotency.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);

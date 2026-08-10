@@ -82,12 +82,14 @@ export function shotSplitRequest(workbench, shot, form) {
     dialogue_ids: form.first_dialogue_ids || [], tail_state: bridge,
     action_phase: { ...(shot.action_phase || {}), end: String(form.bridge_phase || 'bridge') },
     coverage_role: form.first_coverage_role || shot.coverage_role || '',
+    coverage_group: form.first_coverage_group || '', coverage_side: form.first_coverage_side || '',
   })
   Object.assign(second, {
     action_description: String(form.second_action || '').trim(), duration_seconds: Number(form.second_duration),
     dialogue_ids: form.second_dialogue_ids || [], head_state: bridge,
     action_phase: { ...(shot.action_phase || {}), start: String(form.bridge_phase || 'bridge') },
     coverage_role: form.second_coverage_role || shot.coverage_role || '',
+    coverage_group: form.second_coverage_group || '', coverage_side: form.second_coverage_side || '',
   })
   return {
     operation: 'split', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
@@ -107,6 +109,7 @@ export function shotMergeRequest(workbench, left, right, form = {}) {
     head_state: left.head_state || {}, tail_state: right.tail_state || {},
     action_phase: { start: left.action_phase?.start || '', end: right.action_phase?.end || '' },
     coverage_role: form.coverage_role || left.coverage_role || '',
+    coverage_group: form.coverage_group || left.coverage_group || '', coverage_side: form.coverage_side || left.coverage_side || '',
   })
   return {
     operation: 'merge', base_sequence_version: Number(workbench?.shot_sequence_version || 1),

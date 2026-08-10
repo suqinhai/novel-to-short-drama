@@ -165,3 +165,12 @@ func TestEarlyEditCanExplicitlyQueueNoRebuildsButStillHasAPlan(t *testing.T) {
 		t.Fatalf("early edit did not retain versioned plan semantics: %+v", plan)
 	}
 }
+
+func TestStructuralShotIntentCannotFallBackToActionDescriptionMarker(t *testing.T) {
+	for _, instruction := range []string{"拆分镜头为两个镜头", "合并相邻镜头", "reorder shot"} {
+		_, err := Build(Request{Instruction: instruction, Target: Target{EntityType: "shot", EntityID: "shot-1", Version: 1}})
+		if !errors.Is(err, ErrInvalidPlan) {
+			t.Fatalf("%q should require atomic shot editor, got %v", instruction, err)
+		}
+	}
+}

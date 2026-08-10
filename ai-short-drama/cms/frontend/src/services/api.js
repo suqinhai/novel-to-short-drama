@@ -156,6 +156,25 @@ export const api = {
   getTimelineVersions(projectId, episodeId) {
     return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions`)
   },
+  getNLETimeline(projectId, episodeId, params = {}) {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/nle-timeline?${query}`)
+  },
+  editNLETimelineItem(projectId, episodeId, timelineId, itemId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/items/${encodeURIComponent(itemId)}`, {
+      method: 'PATCH', body: JSON.stringify(payload),
+    })
+  },
+  restoreNLETimelineDraft(projectId, episodeId, timelineId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/restore-draft`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  confirmNLETimelineRender(projectId, episodeId, timelineId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/render`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
   getPerformanceBibles(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`)
   },

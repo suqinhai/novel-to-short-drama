@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -29,6 +30,10 @@ func registerPostProductionRoutes(api *gin.RouterGroup, handler *Handler) {
 	api.POST("/projects/:projectID/episodes/:episodeID/sound-style", handler.replaceEpisodeSoundStyle)
 	api.GET("/projects/:projectID/episodes/:episodeID/timeline-versions", handler.listTimelineVersions)
 	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/restore", handler.restoreTimelineVersion)
+	api.GET("/projects/:projectID/episodes/:episodeID/nle-timeline", handler.getNLETimeline)
+	api.PATCH("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/items/:itemID", handler.createNLEItemDraft)
+	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/restore-draft", handler.restoreNLETimelineDraft)
+	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/render", handler.confirmNLETimelineRender)
 }
 
 func (h *Handler) getCreativeWorkbench(c *gin.Context) {
@@ -93,6 +98,80 @@ func (h *Handler) listTimelineVersions(c *gin.Context) {
 func (h *Handler) restoreTimelineVersion(c *gin.Context) {
 	respondError(c, http.StatusGone, "DIRECT_TIMELINE_MUTATION_DISABLED",
 		"时间线恢复也必须创建新 change plan，不允许直接切换 current")
+}
+
+func (h *Handler) getNLETimeline(c *gin.Context) {
+	startMS, startErr := strconv.ParseInt(defaultQuery(c.Query("start_ms"), "0"), 10, 64)
+	endMS, endErr := strconv.ParseInt(defaultQuery(c.Query("end_ms"), "30000"), 10, 64)
+	limit, limitErr := strconv.Atoi(defaultQuery(c.Query("limit"), "500"))
+	offset, offsetErr := strconv.Atoi(defaultQuery(c.Query("offset"), "0"))
+	if startErr != nil || endErr != nil || limitErr != nil || offsetErr != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_TIMELINE_WINDOW", "timeline window must use integer milliseconds")
+		return
+	}
+	result, err := h.store.GetNLETimelinePage(c.Request.Context(), c.Param("projectID"),
+		c.Param("episodeID"), c.Query("timeline_id"), startMS, endMS, limit, offset)
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (h *Handler) createNLEItemDraft(c *gin.Context) {
+	var input store.NLETimelineItemPatch
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_TIMELINE_PATCH", "timeline edit payload is invalid")
+		return
+	}
+	if input.BaseTimelineID == "" {
+		input.BaseTimelineID = c.Param("timelineID")
+	}
+	if input.BaseTimelineID != c.Param("timelineID") {
+		respondError(c, http.StatusConflict, "STALE_TIMELINE_BASE", "base_timeline_id must match the edited timeline version")
+		return
+	}
+	result, err := h.store.CreateNLEItemDraft(c.Request.Context(), c.Param("projectID"),
+		c.Param("episodeID"), c.Param("itemID"), input)
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": result})
+}
+
+func (h *Handler) restoreNLETimelineDraft(c *gin.Context) {
+	var input restoreTimelineRequest
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&input); err != nil {
+			respondError(c, http.StatusBadRequest, "INVALID_RESTORE_REQUEST", "restore request is invalid")
+			return
+		}
+	}
+	result, err := h.store.RestoreNLETimelineDraft(c.Request.Context(), c.Param("projectID"),
+		c.Param("episodeID"), c.Param("timelineID"), input.Actor)
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": result})
+}
+
+func (h *Handler) confirmNLETimelineRender(c *gin.Context) {
+	result, err := h.store.ConfirmNLETimelineRender(c.Request.Context(), c.Param("projectID"),
+		c.Param("episodeID"), c.Param("timelineID"))
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": result})
+}
+
+func defaultQuery(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func writePostProductionError(c *gin.Context, err error) {

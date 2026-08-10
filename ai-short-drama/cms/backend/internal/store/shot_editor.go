@@ -356,7 +356,7 @@ func (s *Store) executeShotEditPlan(ctx context.Context, projectID, episodeID, p
 			}
 		}
 	}
-	if err = insertShotLineageAndDependencies(ctx, tx, projectID, planID, operation, request, current, proposed, newArtifacts); err != nil {
+	if err = insertShotLineageAndDependencies(ctx, tx, projectID, planID, operation, request, createdIDs, current, proposed, newArtifacts); err != nil {
 		return ShotEditPlan{}, err
 	}
 
@@ -786,19 +786,22 @@ func insertArtifactDependency(ctx context.Context, tx pgx.Tx, upstream, downstre
 	return err
 }
 
-func insertShotLineageAndDependencies(ctx context.Context, tx pgx.Tx, projectID, planID, operation string, request shoteditor.Request, base, proposed []shoteditor.Shot, newArtifacts map[string]string) error {
+func insertShotLineageAndDependencies(ctx context.Context, tx pgx.Tx, projectID, planID, operation string, request shoteditor.Request, createdIDs []string, base, proposed []shoteditor.Shot, newArtifacts map[string]string) error {
 	relations := [][2]string{}
 	relation := ""
 	if operation == shoteditor.OperationSplit {
 		relation = "split_into"
-		for _, target := range request.NewShotIDs {
+		for _, target := range createdIDs {
 			relations = append(relations, [2]string{request.ShotID, target})
 		}
 	}
 	if operation == shoteditor.OperationMerge {
 		relation = "merged_into"
+		if len(createdIDs) != 1 {
+			return fmt.Errorf("%w: merge successor identity is missing", shoteditor.ErrInvalidEdit)
+		}
 		for _, source := range request.ShotIDs {
-			relations = append(relations, [2]string{source, request.NewShotIDs[0]})
+			relations = append(relations, [2]string{source, createdIDs[0]})
 		}
 	}
 	baseMap := shotMap(base)
@@ -928,6 +931,12 @@ func switchCurrentShotSequence(ctx context.Context, tx pgx.Tx, projectID, episod
 	}
 	if len(retiredIDs) > 0 {
 		if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET retired_by_shot_edit_plan_id=$2 WHERE shot_id=ANY($1)`, retiredIDs, planID); err != nil {
+			return err
+		}
+	}
+	for _, shot := range proposed {
+		if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET shot_order=$2,shot_number=$3
+			WHERE shot_id=$1`, shot.ShotID, shot.ShotOrder, shot.ShotNumber); err != nil {
 			return err
 		}
 	}

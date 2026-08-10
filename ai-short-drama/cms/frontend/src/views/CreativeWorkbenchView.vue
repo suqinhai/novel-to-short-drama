@@ -8,6 +8,7 @@ import {
   TimerReset, Undo2, UsersRound, Volume2, WandSparkles,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
+import TimelineNLE from '../components/TimelineNLE.vue'
 import {
   dialogueConversionPlan, dialogueEditPlan, dialoguesForScene, exactDialogueRebuildRange,
   issueEditLink, normalizeWorkbench, sceneDragPlan, shotsForScene, soundTrackLabels,
@@ -176,6 +177,8 @@ function openShotEditor(mode, shot = selectedShot.value) {
   if (!shot) return
   selectedShotId.value = shot.shot_id
   const half = Number(shot.duration_seconds || 0) / 2
+  const ordered = [...workspace.value.shots].sort((left, right) => left.shot_order - right.shot_order)
+  const following = ordered[ordered.findIndex(item => item.shot_id === shot.shot_id) + 1]
   shotForm.value = {
     mode, shot_id: shot.shot_id, shot_size: shot.shot_size, camera_angle: shot.camera_angle,
     composition: shot.composition, camera_motion: shot.camera_motion,
@@ -183,14 +186,16 @@ function openShotEditor(mode, shot = selectedShot.value) {
     action_phase: JSON.stringify(shot.action_phase || {}, null, 2),
     head_state: JSON.stringify(shot.head_state || {}, null, 2),
     tail_state: JSON.stringify(shot.tail_state || {}, null, 2),
-    action_description: shot.action_description, facial_expression: shot.facial_expression,
-    duration_seconds: Number(shot.duration_seconds), coverage_role: shot.coverage_role || '',
+    action_description: mode === 'merge' && following ? `${shot.action_description}；${following.action_description}` : shot.action_description, facial_expression: shot.facial_expression,
+    duration_seconds: mode === 'merge' && following ? Number(shot.duration_seconds)+Number(following.duration_seconds) : Number(shot.duration_seconds), coverage_role: shot.coverage_role || '',
+    coverage_group: shot.coverage_group || '', coverage_side: shot.coverage_side || '',
     axis: shot.axis || '', dialogue_ids: (shot.dialogue_ids || []).join(','),
     first_action: shot.action_description, second_action: shot.action_description,
     first_duration: Number(half.toFixed(2)), second_duration: Number((Number(shot.duration_seconds)-half).toFixed(2)),
     first_dialogue_ids: '', second_dialogue_ids: (shot.dialogue_ids || []).join(','),
     bridge_state: JSON.stringify(shot.tail_state || {}, null, 2), bridge_phase: 'bridge',
     first_coverage_role: shot.coverage_role || '', second_coverage_role: shot.coverage_role || '',
+    first_coverage_group: '', first_coverage_side: '', second_coverage_group: '', second_coverage_side: '',
   }
 }
 
@@ -226,6 +231,7 @@ async function previewShotForm() {
         action_description: shotForm.value.action_description,
         facial_expression: shotForm.value.facial_expression,
         duration_seconds: Number(shotForm.value.duration_seconds), coverage_role: shotForm.value.coverage_role,
+        coverage_group: shotForm.value.coverage_group, coverage_side: shotForm.value.coverage_side,
         axis: shotForm.value.axis, dialogue_ids: idList(shotForm.value.dialogue_ids),
       }))
     }
@@ -295,7 +301,18 @@ async function applyTemplate() {
 
 async function restoreTimeline(item) {
   if (!currentTimeline.value) return
-  await createPlan(timelineRestoreChangePlan(currentTimeline.value, item))
+  saving.value = true
+  error.value = ''
+  try {
+    const result = await api.restoreNLETimelineDraft(projectId.value, episodeId.value, item.timeline_id, { actor: 'creative-workbench' })
+    notice.value = `已从 v${item.version} 创建恢复草稿 v${result.timeline.version}；旧 current 保持不变，确认并重编成功后才会切换。`
+    activeTab.value = 'timeline'
+    await load()
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    saving.value = false
+  }
 }
 
 async function replaceSoundStyle() {
@@ -441,14 +458,14 @@ onMounted(load)
               <form v-if="shotForm" class="shot-editor-form" @submit.prevent="previewShotForm">
                 <header><div><span>STRUCTURAL DRAFT</span><h3>{{ shotForm.mode === 'split' ? '拆分镜头' : shotForm.mode === 'merge' ? '合并相邻镜头' : '修改镜头版本' }}</h3></div><button type="button" @click="shotForm=null">关闭</button></header>
                 <template v-if="shotForm.mode === 'split'">
-                  <section><h4>新镜头 A</h4><label>动作<textarea v-model="shotForm.first_action" required /></label><label>时长<input v-model.number="shotForm.first_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.first_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.first_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label></section>
-                  <section><h4>新镜头 B</h4><label>动作<textarea v-model="shotForm.second_action" required /></label><label>时长<input v-model.number="shotForm.second_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.second_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.second_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label></section>
+                  <section><h4>新镜头 A</h4><label>动作<textarea v-model="shotForm.first_action" required /></label><label>时长<input v-model.number="shotForm.first_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.first_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.first_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>正反打组<input v-model="shotForm.first_coverage_group" /></label><label>正反打侧<select v-model="shotForm.first_coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label></section>
+                  <section><h4>新镜头 B</h4><label>动作<textarea v-model="shotForm.second_action" required /></label><label>时长<input v-model.number="shotForm.second_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.second_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.second_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>正反打组<input v-model="shotForm.second_coverage_group" /></label><label>正反打侧<select v-model="shotForm.second_coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label></section>
                   <section class="wide"><h4>两镜接力</h4><label>中间动作阶段<input v-model="shotForm.bridge_phase" required /></label><label>共享 A 尾 / B 首状态 JSON<textarea v-model="shotForm.bridge_state" required /></label></section>
                 </template>
                 <template v-else>
                   <label>景别<input v-model="shotForm.shot_size" /></label><label>机位<input v-model="shotForm.camera_angle" /></label><label>构图<input v-model="shotForm.composition" /></label><label>运镜<input v-model="shotForm.camera_motion" /></label>
                   <label class="wide">动作<textarea v-model="shotForm.action_description" required /></label><label>表情<input v-model="shotForm.facial_expression" /></label><label>时长<input v-model.number="shotForm.duration_seconds" type="number" min="0.1" step="0.1" /></label><label>轴线<input v-model="shotForm.axis" /></label>
-                  <label>覆盖类型<select v-model="shotForm.coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>对白 ID（逗号）<input v-model="shotForm.dialogue_ids" /></label>
+                  <label>覆盖类型<select v-model="shotForm.coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>对白 ID（逗号）<input v-model="shotForm.dialogue_ids" /></label><label>正反打组<input v-model="shotForm.coverage_group" /></label><label>正反打侧<select v-model="shotForm.coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label>
                   <label v-if="shotForm.mode === 'edit'" class="wide">表演 JSON<textarea v-model="shotForm.performance" /></label><label v-if="shotForm.mode === 'edit'" class="wide">动作阶段 JSON<textarea v-model="shotForm.action_phase" /></label><label v-if="shotForm.mode === 'edit'" class="wide">首帧状态 JSON<textarea v-model="shotForm.head_state" /></label><label v-if="shotForm.mode === 'edit'" class="wide">尾帧状态 JSON<textarea v-model="shotForm.tail_state" /></label>
                   <p v-if="shotForm.mode === 'merge'" class="wide">将与下一相邻镜头 {{ nextShot?.shot_id || '—' }} 合并；人物、场景、轴线、动作接力、对白顺序和时长由服务端校验。</p>
                 </template>
@@ -494,15 +511,7 @@ onMounted(load)
           </section>
 
           <section v-else-if="activeTab === 'timeline'" class="canvas-stack">
-            <article class="timeline-panel">
-              <header><div><span>MULTI-TRACK TIMELINE</span><h3>图片、视频、音频和字幕时间线</h3></div><div class="transport"><button><Pause :size="14" /></button><button><Play :size="14" /></button><strong>{{ milliseconds(maxTimelineMS) }}</strong></div></header>
-              <div class="timeline-ruler"><span v-for="tick in 6" :key="tick" :style="{ left: `${(tick-1)*20}%` }">{{ milliseconds(maxTimelineMS*(tick-1)/5) }}</span></div>
-              <div v-for="lane in lanes" :key="lane.type" class="timeline-lane">
-                <b>{{ lane.label }}</b>
-                <div><span v-for="item in lane.entries" :key="item.timeline_item_id" :class="lane.type" :style="{ left: `${item.timeline_start_ms/maxTimelineMS*100}%`, width: `${Math.max(1,(item.timeline_end_ms-item.timeline_start_ms)/maxTimelineMS*100)}%` }" :title="item.entity_id">{{ item.entity_id }}</span></div>
-              </div>
-              <p v-if="!lanes.length" class="empty-row">当前时间线尚无可展示轨道。</p>
-            </article>
+            <TimelineNLE :project-id="projectId" :episode-id="episodeId" :timeline-versions="workspace.timeline_versions" @notice="notice=$event" @error="error=$event" @versions-changed="load" />
           </section>
 
           <section v-else-if="activeTab === 'quality'" class="canvas-stack">

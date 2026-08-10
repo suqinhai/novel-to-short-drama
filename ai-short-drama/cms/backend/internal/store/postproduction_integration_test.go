@@ -61,7 +61,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				{Operation: "replace", Field: "override_config", Value: map[string]any{"fast_cut_ratio": .66}},
 			},
 		})
-		first := currentTimeline(t, ctx, database, projectID, episodeID)
+		first := latestTimeline(t, ctx, database, projectID, episodeID)
 		if firstPlan.Status != "applied" || len(firstPlan.RebuildTasks) != 1 ||
 			firstPlan.RebuildTasks[0].Status != "pending" {
 			t.Fatalf("template change was not queued through the version executor: %#v", firstPlan)
@@ -77,7 +77,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				{Operation: "replace", Field: "override_config", Value: map[string]any{"fast_cut_ratio": .8}},
 			},
 		})
-		second := currentTimeline(t, ctx, database, projectID, episodeID)
+		second := latestTimeline(t, ctx, database, projectID, episodeID)
 		if first.Version != 2 || second.Version != 3 || second.ParentTimelineID == nil ||
 			*second.ParentTimelineID != first.TimelineID {
 			t.Fatalf("template switch did not create a linear timeline history: first=%#v second=%#v", first, second)
@@ -91,19 +91,19 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				Operation: "replace", Field: "restore_source_timeline_id", Value: "timeline_phase5_v1",
 			}},
 		})
-		restored := currentTimeline(t, ctx, database, projectID, episodeID)
+		restored := latestTimeline(t, ctx, database, projectID, episodeID)
 		if restored.Version != 4 || restored.ParentTimelineID == nil ||
 			*restored.ParentTimelineID != "timeline_phase5_v1" ||
-			restored.ApprovalState != "draft" || !restored.IsCurrent {
-			t.Fatalf("restore must clone a new current version: %#v", restored)
+			restored.ApprovalState != "draft" || restored.IsCurrent {
+			t.Fatalf("restore must clone a new non-current draft version: %#v", restored)
 		}
 		var originalCurrent bool
 		if scanErr := database.pool.QueryRow(ctx, `SELECT is_current FROM drama.edit_timelines
 			WHERE timeline_id='timeline_phase5_v1'`).Scan(&originalCurrent); scanErr != nil {
 			t.Fatal(scanErr)
 		}
-		if originalCurrent {
-			t.Fatal("restoring may not reactivate or overwrite the historical row")
+		if !originalCurrent {
+			t.Fatal("restoring a draft must preserve the last approved current row")
 		}
 	})
 
@@ -117,7 +117,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				Operation: "replace", Field: "sound_style_group", Value: "cinematic_noir",
 			}},
 		})
-		timeline := currentTimeline(t, ctx, database, projectID, episodeID)
+		timeline := latestTimeline(t, ctx, database, projectID, episodeID)
 		if timeline.Version != 5 || len(result.RebuildTasks) != 1 ||
 			result.RebuildTasks[0].Status != "pending" {
 			t.Fatalf("unexpected sound style successor plan: timeline=%#v plan=%#v", timeline, result)
@@ -247,7 +247,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		var oldDuration int64
 		_ = database.pool.QueryRow(ctx, `SELECT duration_ms FROM drama.edit_timeline_items
 			WHERE timeline_item_id='item_phase5_dialogue_1'`).Scan(&oldDuration)
-		if oldDuration != 1800 || currentTimeline(t, ctx, database, projectID, episodeID).Version != 5 {
+		if oldDuration != 1800 || latestTimeline(t, ctx, database, projectID, episodeID).Version != 5 {
 			t.Fatalf("pending dialogue rebuild changed old timeline: old=%d", oldDuration)
 		}
 	})
@@ -283,6 +283,74 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 			t.Fatalf("expected dialogue→audio→timeline→master lineage, got %d nodes", downstream)
 		}
 	})
+
+	t.Run("NLE drafts never replace current until render succeeds and failed render rolls back", func(t *testing.T) {
+		base := latestTimeline(t, ctx, database, projectID, episodeID)
+		var itemID, approvedBefore string
+		if err = database.pool.QueryRow(ctx, `SELECT timeline_item_id FROM drama.edit_timeline_items
+			WHERE timeline_id=$1 AND track_type='dialogue' ORDER BY sequence_number LIMIT 1`,
+			base.TimelineID).Scan(&itemID); err != nil {
+			t.Fatal(err)
+		}
+		if err = database.pool.QueryRow(ctx, `SELECT timeline_id FROM drama.edit_timelines
+			WHERE episode_id=$1 AND is_current`, episodeID).Scan(&approvedBefore); err != nil {
+			t.Fatal(err)
+		}
+		volume := .75
+		draft, draftErr := database.CreateNLEItemDraft(ctx, projectID, episodeID, itemID, NLETimelineItemPatch{
+			BaseTimelineID: base.TimelineID, Volume: &volume, Reason: "acceptance_volume_edit",
+		})
+		if draftErr != nil {
+			t.Fatal(draftErr)
+		}
+		if draft.Timeline.IsCurrent || draft.Timeline.ApprovalState != "draft" || draft.Item == nil {
+			t.Fatalf("edit must create a non-current item-linked draft: %#v", draft)
+		}
+		job, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, draft.Timeline.TimelineID)
+		if renderErr != nil {
+			t.Fatal(renderErr)
+		}
+		if _, err = database.writer.Exec(ctx, `UPDATE drama.render_jobs
+			SET status='failed',completed_at=now(),error_code='ACCEPTANCE_FAILURE',error_message='fixture failure'
+			WHERE render_job_id=$1`, job.RenderJobID); err != nil {
+			t.Fatal(err)
+		}
+		var currentAfterFailure, failedState string
+		_ = database.pool.QueryRow(ctx, `SELECT timeline_id FROM drama.edit_timelines
+			WHERE episode_id=$1 AND is_current`, episodeID).Scan(&currentAfterFailure)
+		_ = database.pool.QueryRow(ctx, `SELECT approval_state FROM drama.edit_timelines
+			WHERE timeline_id=$1`, draft.Timeline.TimelineID).Scan(&failedState)
+		if currentAfterFailure != approvedBefore || failedState != "render_failed" {
+			t.Fatalf("failed render replaced approved current: before=%s after=%s draft=%s",
+				approvedBefore, currentAfterFailure, failedState)
+		}
+
+		restored, restoreErr := database.RestoreNLETimelineDraft(ctx, projectID, episodeID, "timeline_phase5_v1", nil)
+		if restoreErr != nil {
+			t.Fatal(restoreErr)
+		}
+		if restored.Timeline.IsCurrent || restored.Timeline.ParentTimelineID == nil ||
+			*restored.Timeline.ParentTimelineID != "timeline_phase5_v1" {
+			t.Fatalf("restore must create a successor draft: %#v", restored)
+		}
+		successJob, successErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, restored.Timeline.TimelineID)
+		if successErr != nil {
+			t.Fatal(successErr)
+		}
+		if _, err = database.writer.Exec(ctx, `UPDATE drama.render_jobs
+			SET status='succeeded',progress=100,completed_at=now(),output_url='/results/acceptance.mp4'
+			WHERE render_job_id=$1`, successJob.RenderJobID); err != nil {
+			t.Fatal(err)
+		}
+		var promotedState string
+		var promotedCurrent bool
+		_ = database.pool.QueryRow(ctx, `SELECT approval_state,is_current FROM drama.edit_timelines
+			WHERE timeline_id=$1`, restored.Timeline.TimelineID).Scan(&promotedState, &promotedCurrent)
+		if promotedState != "approved" || !promotedCurrent {
+			t.Fatalf("successful render did not atomically approve current: state=%s current=%v",
+				promotedState, promotedCurrent)
+		}
+	})
 }
 
 func executeIntegrationChangePlan(
@@ -307,7 +375,7 @@ func executeIntegrationChangePlan(
 	return record
 }
 
-func currentTimeline(
+func latestTimeline(
 	t *testing.T, ctx context.Context, database *Store, projectID, episodeID string,
 ) TimelineVersionRecord {
 	t.Helper()
@@ -315,11 +383,9 @@ func currentTimeline(
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range versions {
-		if version.IsCurrent {
-			return version
-		}
+	if len(versions) > 0 {
+		return versions[0]
 	}
-	t.Fatal("current timeline not found")
+	t.Fatal("timeline not found")
 	return TimelineVersionRecord{}
 }

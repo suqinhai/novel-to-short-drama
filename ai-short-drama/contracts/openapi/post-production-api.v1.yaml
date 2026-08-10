@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: AI Short Drama Post-production and Creative Workbench API
   version: 1.0.0-phase5
-  description: Unified Phase 5 read API. All formal timeline mutations use the project change-plan preview, confirm and execute endpoints; legacy direct mutation paths return 410.
+  description: Unified Phase 5 API. Lightweight NLE gestures create immutable non-current drafts; only an explicit render request can promote a successfully rendered draft. Legacy direct approved-version mutation paths return 410.
 servers:
   - url: /api/v1
 tags:
@@ -10,6 +10,8 @@ tags:
   - {name: DialogueTiming}
   - {name: EditingTemplates}
   - {name: Sound}
+  - {name: ShotEditor}
+  - {name: NLE}
 paths:
   /projects/{project_id}/episodes/{episode_id}/creative-workbench:
     get:
@@ -25,6 +27,64 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/CreativeWorkbenchResponse'}
         '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{project_id}/episodes/{episode_id}/shot-edit-plans:
+    post:
+      tags: [ShotEditor]
+      operationId: createShotEditPlan
+      summary: Preview a split, merge, reorder, update or restore without changing formal shot data.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ShotEditRequest'}}}
+      responses:
+        '201': {description: Validated impact preview; current shot sequence is untouched, content: {application/json: {schema: {$ref: '#/components/schemas/ShotEditPlanResponse'}}}}
+        '409': {description: Base shot sequence version is stale.}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+  /projects/{project_id}/episodes/{episode_id}/shot-edit-plans/{shot_edit_plan_id}:
+    get:
+      tags: [ShotEditor]
+      operationId: getShotEditPlan
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: shot_edit_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Shot edit preview, confirmation and rebuild state, content: {application/json: {schema: {$ref: '#/components/schemas/ShotEditPlanResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{project_id}/episodes/{episode_id}/shot-edit-plans/{shot_edit_plan_id}/confirm:
+    post:
+      tags: [ShotEditor]
+      operationId: confirmShotEditPlan
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: shot_edit_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Confirmed plan; formal shot data is still untouched, content: {application/json: {schema: {$ref: '#/components/schemas/ShotEditPlanResponse'}}}}
+        '409': {description: Preview has blocking continuity or coverage conflicts.}
+  /projects/{project_id}/episodes/{episode_id}/shot-edit-plans/{shot_edit_plan_id}/execute:
+    post:
+      tags: [ShotEditor]
+      operationId: executeShotEditPlan
+      summary: Atomically create shot versions, lineage, continuity, handoffs, stale marks and pending rebuilds, then switch current.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: shot_edit_plan_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200': {description: Applied atomic successor sequence, content: {application/json: {schema: {$ref: '#/components/schemas/ShotEditPlanResponse'}}}}
+        '409': {description: Concurrent sequence edit won; this transaction wrote no formal data.}
+  /projects/{project_id}/episodes/{episode_id}/shot-sequence-versions:
+    get:
+      tags: [ShotEditor]
+      operationId: listShotSequenceVersions
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+      responses:
+        '200': {description: Immutable shot sequence history used to create restore previews.}
   /projects/{project_id}/episodes/{episode_id}/dialogue-timings/validate:
     post:
       tags: [DialogueTiming]
@@ -117,6 +177,59 @@ paths:
       responses:
         '410':
           description: Direct restore disabled. Restoration must be a confirmed change plan that creates a new version.
+  /projects/{project_id}/episodes/{episode_id}/nle-timeline:
+    get:
+      tags: [NLE]
+      operationId: getNLETimelineWindow
+      summary: Read one virtualized millisecond window without loading full-resolution video.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: timeline_id, in: query, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: start_ms, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: end_ms, in: query, schema: {type: integer, minimum: 1, default: 30000}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 500}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
+      responses:
+        '200': {description: Timeline metadata, render state, proxy/waveform-enriched items and pagination state., content: {application/json: {schema: {$ref: '#/components/schemas/NLETimelinePageResponse'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{project_id}/episodes/{episode_id}/timeline-versions/{timeline_id}/items/{timeline_item_id}:
+    patch:
+      tags: [NLE]
+      operationId: createNLEItemDraft
+      summary: Clone the base timeline and apply one millisecond item edit to the new non-current draft.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: timeline_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: timeline_item_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/NLEItemPatch'}}}}
+      responses:
+        '201': {description: Immutable draft successor; no render job was created.}
+        '409': {description: Stale base, rendering base, or invalid trim/fade interval.}
+  /projects/{project_id}/episodes/{episode_id}/timeline-versions/{timeline_id}/restore-draft:
+    post:
+      tags: [NLE]
+      operationId: restoreNLETimelineDraft
+      summary: Clone a historical timeline into a new non-current restoration draft.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: timeline_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '201': {description: New restoration draft; the approved current pointer is unchanged.}
+  /projects/{project_id}/episodes/{episode_id}/timeline-versions/{timeline_id}/render:
+    post:
+      tags: [NLE]
+      operationId: confirmNLETimelineRender
+      summary: Explicitly confirm recompilation and create the draft's render job.
+      parameters:
+        - {$ref: '#/components/parameters/ProjectID'}
+        - {$ref: '#/components/parameters/EpisodeID'}
+        - {name: timeline_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '202': {description: Render job created. Success atomically promotes this timeline; failure preserves the old current.}
+        '409': {description: Timeline is not a renderable draft or already has an active render.}
 components:
   parameters:
     ProjectID:
@@ -131,6 +244,38 @@ components:
       schema: {$ref: '#/components/schemas/ID'}
   schemas:
     ID: {type: string, minLength: 1, maxLength: 160}
+    NLEItemPatch:
+      type: object
+      required: [base_timeline_id]
+      properties:
+        base_timeline_id: {$ref: '#/components/schemas/ID'}
+        timeline_start_ms: {type: integer, minimum: 0}
+        timeline_end_ms: {type: integer, minimum: 1}
+        source_in_ms: {type: integer, minimum: 0}
+        source_out_ms: {type: integer, minimum: 1}
+        volume: {type: number, minimum: 0}
+        fade_in_ms: {type: integer, minimum: 0}
+        fade_out_ms: {type: integer, minimum: 0}
+        transform_config: {type: object}
+        effect_config: {type: object}
+        reason: {type: string}
+        actor: {type: string}
+    NLETimelinePageResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [timeline, current_timeline_id, items, total, has_more, window_start_ms, window_end_ms]
+          properties:
+            timeline: {type: object}
+            current_timeline_id: {$ref: '#/components/schemas/ID'}
+            items: {type: array, maxItems: 500, items: {type: object}}
+            total: {type: integer, minimum: 0}
+            has_more: {type: boolean}
+            window_start_ms: {type: integer, minimum: 0}
+            window_end_ms: {type: integer, minimum: 1}
+            render_job: {type: object}
     CreativeWorkbenchResponse:
       type: object
       required: [data]
@@ -160,6 +305,39 @@ components:
             comments: {type: array, items: {type: object}}
             workspace_versions: {type: array, items: {type: object}}
             template_bindings: {type: array, items: {type: object}}
+            shot_sequence_version: {type: integer, minimum: 1}
+    ShotEditRequest:
+      type: object
+      required: [operation]
+      properties:
+        operation: {enum: [split, merge, reorder, update, restore]}
+        base_sequence_version: {type: integer, minimum: 1}
+        shot_id: {$ref: '#/components/schemas/ID'}
+        shot_ids: {type: array, items: {$ref: '#/components/schemas/ID'}}
+        ordered_shot_ids: {type: array, items: {$ref: '#/components/schemas/ID'}}
+        shots: {type: array, items: {type: object}}
+        patch: {type: object}
+        source_sequence_version_id: {$ref: '#/components/schemas/ID'}
+        required_coverage: {type: array, items: {enum: [establishing, action, reaction, shot_reverse, insert_closeup]}}
+        requested_by: {type: string}
+    ShotEditPlanResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [shot_edit_plan_id, status, operation, base_sequence_version, proposed_snapshot, impact_preview, coverage_report, continuity_conflicts, handoff_preview]
+          properties:
+            shot_edit_plan_id: {$ref: '#/components/schemas/ID'}
+            status: {enum: [validated, confirmed, executing, applied, failed, cancelled]}
+            operation: {enum: [split, merge, reorder, update, restore]}
+            base_sequence_version: {type: integer, minimum: 1}
+            proposed_snapshot: {type: array, items: {type: object}}
+            impact_preview: {type: object}
+            coverage_report: {type: array, items: {type: object}}
+            continuity_conflicts: {type: array, items: {type: object}}
+            handoff_preview: {type: array, items: {type: object}}
+            rebuild_tasks: {type: array, items: {type: object, properties: {status: {enum: [pending, running, succeeded, failed, cancelled]}}}}
     DialogueTimingValidationRequest:
       type: object
       required: [items]

@@ -28,3 +28,4 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/24-authoritative-production-inputs.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/25-season-planning-workbench.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/26-atomic-multi-shot-editor.sql
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/27-lightweight-nle.sql

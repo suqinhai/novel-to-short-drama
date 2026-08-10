@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -183,6 +184,101 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 			if shot.ShotID == shotA && shot.ThumbnailURL != "" {
 				t.Fatalf("legacy media leaked onto restored successor: %s", shot.ThumbnailURL)
 			}
+		}
+		workspace, workspaceErr := database.GetCreativeWorkbench(ctx, projectID, episodeID)
+		if workspaceErr != nil {
+			t.Fatal(workspaceErr)
+		}
+		var visibleShots []shoteditor.Shot
+		if err = json.Unmarshal(workspace.Shots, &visibleShots); err != nil {
+			t.Fatal(err)
+		}
+		if workspace.ShotSequenceVersion != 4 || len(visibleShots) != len(shots) {
+			t.Fatalf("workbench did not expose the current shot sequence: v%d %#v", workspace.ShotSequenceVersion, visibleShots)
+		}
+	})
+
+	t.Run("split and merge create fresh identities and pending real-media tasks", func(t *testing.T) {
+		tx, err := database.writer.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, version, _, readErr := readCurrentShotSequence(ctx, tx, projectID, episodeID, false)
+		_ = tx.Rollback(ctx)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		source := current[0]
+		first, second := source, source
+		first.DurationSeconds, second.DurationSeconds = source.DurationSeconds/2, source.DurationSeconds-source.DurationSeconds/2
+		first.ActionDescription, second.ActionDescription = "Alice grips the letter", "Alice completes the lift"
+		bridge := map[string]any{"pose": "letter quarter raised", "gaze": "bob"}
+		first.TailState, second.HeadState = bridge, bridge
+		first.ActionPhase = map[string]any{"start": "raise/start", "end": "raise/bridge"}
+		second.ActionPhase = map[string]any{"start": "raise/bridge", "end": "raise/middle"}
+		splitPlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationSplit, BaseSequenceVersion: version, ShotID: source.ShotID, Shots: []shoteditor.Shot{first, second}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = database.ConfirmShotEditPlan(ctx, projectID, episodeID, splitPlan.ShotEditPlanID, nil); err != nil {
+			t.Fatal(err)
+		}
+		splitApplied, err := database.ExecuteShotEditPlan(ctx, projectID, episodeID, splitPlan.ShotEditPlanID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := splitPlan.Impact.CreatedShotIDs
+		if len(created) != 2 {
+			t.Fatalf("split created ids=%v", created)
+		}
+		var sourceCurrent bool
+		var mediaOnChildren int
+		_ = database.pool.QueryRow(ctx, `SELECT is_current FROM drama.storyboard_shots WHERE shot_id=$1`, source.ShotID).Scan(&sourceCurrent)
+		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.storyboard_images WHERE shot_id=ANY($1)`, created).Scan(&mediaOnChildren)
+		if sourceCurrent || mediaOnChildren != 0 {
+			t.Fatalf("split identity/media isolation failed: source_current=%v child_media=%d", sourceCurrent, mediaOnChildren)
+		}
+		for _, task := range splitApplied.RebuildTasks {
+			if task.Status != "pending" {
+				t.Fatalf("real rebuild task was not pending: %#v", task)
+			}
+		}
+		if _, err = database.UpdateShotEditRebuildTaskStatus(ctx, projectID, episodeID, splitPlan.ShotEditPlanID, splitApplied.RebuildTasks[0].RebuildTaskID, RebuildTaskStatusInput{Status: "completed"}); !errors.Is(err, shoteditor.ErrInvalidEdit) {
+			t.Fatalf("completed must never be accepted for real media: %v", err)
+		}
+
+		tx, err = database.writer.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterSplit, splitVersion, _, readErr := readCurrentShotSequence(ctx, tx, projectID, episodeID, false)
+		_ = tx.Rollback(ctx)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		left, right := afterSplit[0], afterSplit[1]
+		merged := left
+		merged.DurationSeconds = left.DurationSeconds + right.DurationSeconds
+		merged.ActionDescription = "Alice lifts the letter in one continuous action"
+		merged.CharacterIDs = uniqueVersionedEntityIDs(append(append([]string{}, left.CharacterIDs...), right.CharacterIDs...))
+		merged.DialogueIDs = append(append([]string{}, left.DialogueIDs...), right.DialogueIDs...)
+		merged.HeadState, merged.TailState = left.HeadState, right.TailState
+		merged.ActionPhase = map[string]any{"start": left.ActionPhase["start"], "end": right.ActionPhase["end"]}
+		mergePlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationMerge, BaseSequenceVersion: splitVersion, ShotIDs: []string{left.ShotID, right.ShotID}, Shots: []shoteditor.Shot{merged}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = database.ConfirmShotEditPlan(ctx, projectID, episodeID, mergePlan.ShotEditPlanID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = database.ExecuteShotEditPlan(ctx, projectID, episodeID, mergePlan.ShotEditPlanID); err != nil {
+			t.Fatal(err)
+		}
+		var activeSources, activeMerged int
+		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.storyboard_shots WHERE shot_id=ANY($1) AND is_current`, created).Scan(&activeSources)
+		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.storyboard_shots WHERE shot_id=$1 AND is_current`, mergePlan.Impact.CreatedShotIDs[0]).Scan(&activeMerged)
+		if activeSources != 0 || activeMerged != 1 {
+			t.Fatalf("merge current switch failed: sources=%d merged=%d", activeSources, activeMerged)
 		}
 	})
 

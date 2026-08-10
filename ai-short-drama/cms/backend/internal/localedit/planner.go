@@ -147,6 +147,9 @@ func Build(req Request) (Plan, error) {
 	if allowedFields[req.Target.EntityType] == nil {
 		return Plan{}, fmt.Errorf("%w: unsupported target type %s", ErrInvalidPlan, req.Target.EntityType)
 	}
+	if req.Target.EntityType == "shot" && isStructuralShotInstruction(req.Instruction) {
+		return Plan{}, fmt.Errorf("%w: split, merge and reorder must use the atomic shot-sequence editor", ErrInvalidPlan)
+	}
 
 	changes, inferredPreserve, locks, inferredKind := interpret(req)
 	locks = append(locks, req.Locks...)
@@ -534,6 +537,16 @@ func normalizeEntityType(value string) string {
 	default:
 		return value
 	}
+}
+
+func isStructuralShotInstruction(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, marker := range []string{"拆分镜头", "拆成两镜", "合并镜头", "合并相邻", "镜头换序", "镜头重排", "split shot", "merge shot", "reorder shot"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func unique(values []string) []string {

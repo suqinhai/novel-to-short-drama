@@ -153,6 +153,27 @@ END $$;
 CREATE UNIQUE INDEX uq_continuity_ledger_current_sequence
   ON drama.continuity_ledger_entries(project_id,episode_id,scope,sequence_number) WHERE is_current;
 
+-- Migration 16 targeted the former full-table unique constraint. Point its
+-- idempotent inheritance upsert at the new current-only uniqueness rule while
+-- leaving historical sequence records addressable.
+CREATE OR REPLACE FUNCTION drama.inherit_episode_continuity(
+  source_entry_id TEXT,target_episode_id TEXT,target_episode_number INTEGER
+) RETURNS TEXT LANGUAGE plpgsql AS $$
+DECLARE source_row drama.continuity_ledger_entries; new_id TEXT;
+BEGIN
+  SELECT * INTO STRICT source_row FROM drama.continuity_ledger_entries
+  WHERE continuity_entry_id=source_entry_id AND validation_status='valid';
+  new_id='cle_'||substr(encode(digest(source_entry_id||':'||target_episode_id,'sha256'),'hex'),1,20);
+  INSERT INTO drama.continuity_ledger_entries(
+    continuity_entry_id,project_id,episode_id,episode_number,scope,sequence_number,
+    input_state,output_state,inherited_from_entry_id,validation_status,diagnostics,state_hash,is_current)
+  VALUES(new_id,source_row.project_id,target_episode_id,target_episode_number,'episode',0,
+    source_row.output_state,source_row.output_state,source_entry_id,'valid','[]',
+    encode(digest(source_row.output_state::text,'sha256'),'hex'),true)
+  ON CONFLICT(project_id,episode_id,scope,sequence_number) WHERE is_current DO NOTHING;
+  RETURN new_id;
+END $$;
+
 ALTER TABLE drama.shot_handoffs
   ADD COLUMN is_current BOOLEAN NOT NULL DEFAULT true,
   ADD COLUMN shot_sequence_version_id TEXT REFERENCES drama.shot_sequence_versions(shot_sequence_version_id) ON DELETE RESTRICT;
@@ -183,7 +204,7 @@ BEGIN
   LOOP EXECUTE format('ALTER TABLE drama.incremental_rebuild_tasks DROP CONSTRAINT %I',item.conname); END LOOP;
 END $$;
 UPDATE drama.incremental_rebuild_tasks SET status='succeeded' WHERE status='completed';
-ALTER TABLE drama.incremental_rebuild_tasks ALTER COLUMN provider SET DEFAULT 'workflow';
+ALTER TABLE drama.incremental_rebuild_tasks ALTER COLUMN provider DROP DEFAULT;
 ALTER TABLE drama.incremental_rebuild_tasks
   ADD CONSTRAINT incremental_rebuild_tasks_action_check CHECK(action IN(
     'regenerate_voice','update_subtitle','regenerate_image','regenerate_video','recompose_timeline','update_continuity'

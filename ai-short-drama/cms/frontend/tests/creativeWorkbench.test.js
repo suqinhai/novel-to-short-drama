@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   dialogueConversionPlan, dialogueEditPlan, exactDialogueRebuildRange, normalizeWorkbench,
-  sceneDragPlan, soundStyleReplacementPayload, templateApplyPayload, timelineLanes, timingValidationItems,
+  reorderedShotIds, sceneDragPlan, shotMergeRequest, shotReorderRequest, shotSplitRequest,
+  shotUpdateRequest, soundStyleReplacementPayload, templateApplyPayload, timelineLanes, timingValidationItems,
   timelineRestoreChangePlan, timelineSoundStyleChangePlan, timelineTemplateChangePlan,
 } from '../src/services/creativeWorkbench.js'
 
@@ -34,6 +35,34 @@ test('场景拖拽只计划 scene_number 并锁定剧情事实', () => {
   assert.deepEqual(plan.allowed_fields, ['scene_number'])
   assert.equal(plan.changes[0].value, 1)
   assert(plan.must_preserve.includes('剧情事实'))
+})
+
+test('镜头拖拽、拆分、合并和字段修改都生成 shot sequence 预览请求', () => {
+  const first = {
+    shot_id: 'shot_a', shot_order: 1, duration_seconds: 4, action_description: '抬手',
+    character_ids: ['alice'], dialogue_ids: ['d1'], head_state: { pose: 'down' }, tail_state: { pose: 'middle' },
+    action_phase: { start: 'start', end: 'middle' }, shot_size: 'wide', camera_angle: 'eye',
+  }
+  const second = {
+    shot_id: 'shot_b', shot_order: 2, duration_seconds: 3, action_description: '落手',
+    character_ids: ['bob'], dialogue_ids: ['d2'], head_state: { pose: 'middle' }, tail_state: { pose: 'end' },
+    action_phase: { start: 'middle', end: 'end' }, shot_size: 'medium', camera_angle: 'eye',
+  }
+  const workspace = { shot_sequence_version: 4, shots: [first, second] }
+  assert.deepEqual(reorderedShotIds(workspace.shots, 'shot_b', 'shot_a'), ['shot_b', 'shot_a'])
+  assert.equal(shotReorderRequest(workspace, 'shot_b', 'shot_a').base_sequence_version, 4)
+  assert.deepEqual(shotUpdateRequest(workspace, first, { shot_size: 'close_up' }).patch, { shot_size: 'close_up' })
+  const split = shotSplitRequest(workspace, first, {
+    first_action: '抬手上半', second_action: '抬手下半', first_duration: 2, second_duration: 2,
+    first_dialogue_ids: [], second_dialogue_ids: ['d1'], bridge_state: { pose: 'bridge' }, bridge_phase: 'bridge',
+  })
+  assert.equal(split.operation, 'split')
+  assert.deepEqual(split.shots.map(item => item.duration_seconds), [2, 2])
+  assert.deepEqual(split.shots[0].tail_state, split.shots[1].head_state)
+  const merge = shotMergeRequest(workspace, first, second)
+  assert.equal(merge.operation, 'merge')
+  assert.deepEqual(merge.shots[0].character_ids, ['alice', 'bob'])
+  assert.deepEqual(merge.shots[0].dialogue_ids, ['d1', 'd2'])
 })
 
 test('对白精确重建范围不扩散到整集', () => {

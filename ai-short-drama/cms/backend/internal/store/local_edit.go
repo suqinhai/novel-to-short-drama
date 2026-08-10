@@ -537,7 +537,7 @@ func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID str
 		"continuity": `SELECT to_jsonb(c)-'id'-'created_at'-'updated_at'
 			FROM drama.continuity_ledger_entries c WHERE continuity_entry_id=$1 FOR UPDATE`,
 		"timeline": `SELECT to_jsonb(t)-'id'-'created_at'-'updated_at' FROM drama.edit_timelines t
-			WHERE t.episode_id=$1 AND t.is_current ORDER BY t.version DESC LIMIT 1 FOR UPDATE`,
+			WHERE t.episode_id=$1 ORDER BY t.version DESC LIMIT 1 FOR UPDATE`,
 		"timeline_item": `SELECT to_jsonb(i)-'id'-'created_at'-'updated_at'
 			FROM drama.edit_timeline_items i WHERE timeline_item_id=$1 FOR UPDATE`,
 		"shot_video": `SELECT to_jsonb(v)-'id'-'created_at'-'updated_at'
@@ -610,7 +610,7 @@ func readNativeEntityVersion(ctx context.Context, tx pgx.Tx, entityType, entityI
 			FROM drama.episode_outlines outline WHERE outline.episode_id=$1`
 	case "timeline":
 		query = `SELECT version FROM drama.edit_timelines
-			WHERE episode_id=$1 AND is_current ORDER BY version DESC LIMIT 1`
+			WHERE episode_id=$1 ORDER BY version DESC LIMIT 1`
 	case "timeline_item":
 		query = `SELECT timeline.version FROM drama.edit_timeline_items item
 			JOIN drama.edit_timelines timeline USING(timeline_id) WHERE item.timeline_item_id=$1`

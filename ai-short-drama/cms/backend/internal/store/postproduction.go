@@ -151,8 +151,9 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 		{&result.TimelineVersions, `SELECT COALESCE(jsonb_agg(to_jsonb(timeline)-'id' ORDER BY timeline.version DESC),'[]')
 			FROM drama.edit_timelines timeline WHERE timeline.project_id=$1 AND timeline.episode_id=$2`},
 		{&result.TimelineItems, `SELECT COALESCE(jsonb_agg(to_jsonb(item)-'id' ORDER BY item.track_type,item.track_number,item.sequence_number),'[]')
-			FROM drama.edit_timeline_items item JOIN drama.edit_timelines timeline USING(timeline_id)
-			WHERE item.project_id=$1 AND item.episode_id=$2 AND timeline.is_current`},
+			FROM (SELECT item.* FROM drama.edit_timeline_items item JOIN drama.edit_timelines timeline USING(timeline_id)
+			  WHERE item.project_id=$1 AND item.episode_id=$2 AND timeline.is_current
+			  ORDER BY item.track_type,item.track_number,item.sequence_number LIMIT 200) item`},
 		{&result.PerformanceBibles, `SELECT COALESCE(jsonb_agg(to_jsonb(bible)-'id' ORDER BY bible.character_id,bible.version DESC),'[]')
 			FROM drama.character_performance_bibles bible WHERE bible.project_id=$1 AND bible.status IN('approved','locked')
 			  AND $2::text IS NOT NULL`},
@@ -286,7 +287,7 @@ func cloneTimelineVersion(
 		sourceID = sourceTimelineID
 	} else {
 		err := tx.QueryRow(ctx, `SELECT timeline_id FROM drama.edit_timelines
-			WHERE project_id=$1 AND episode_id=$2 AND is_current FOR UPDATE`,
+			WHERE project_id=$1 AND episode_id=$2 ORDER BY version DESC LIMIT 1 FOR UPDATE`,
 			projectID, episodeID).Scan(&sourceID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return TimelineVersionRecord{}, ErrNotFound
@@ -294,11 +295,6 @@ func cloneTimelineVersion(
 		if err != nil {
 			return TimelineVersionRecord{}, err
 		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE drama.edit_timelines
-		SET is_current=false,approval_state=CASE WHEN approval_state='approved' THEN 'superseded' ELSE approval_state END
-		WHERE project_id=$1 AND episode_id=$2 AND is_current`, projectID, episodeID); err != nil {
-		return TimelineVersionRecord{}, err
 	}
 	timelineID, err := newPublicID("etl_")
 	if err != nil {
@@ -312,7 +308,7 @@ func cloneTimelineVersion(
 		resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
 		tracks,transitions,subtitle_config,render_config,source_versions,status,
 		parent_timeline_id,editing_template_binding_id,editing_template_version_id,
-		version_reason,approval_state,is_current)
+		version_reason,approval_state,is_current,edit_origin)
 		SELECT $4,project_id,episode_id,script_id,storyboard_id,audio_plan_id,
 		(SELECT COALESCE(max(version),0)+1 FROM drama.edit_timelines WHERE episode_id=$2),
 		resolution,aspect_ratio,fps,video_codec,audio_codec,sample_rate,target_duration_ms,
@@ -322,7 +318,11 @@ func cloneTimelineVersion(
 		render_config||COALESCE($9::jsonb,'{}')||COALESCE($10::jsonb,'{}'),
 		source_versions,'draft',$3,
 		COALESCE(NULLIF($5,''),editing_template_binding_id),
-		COALESCE(NULLIF($6,''),editing_template_version_id),$7,$8,true
+		COALESCE(NULLIF($6,''),editing_template_version_id),$7,'draft',false,
+		CASE WHEN $8::text='restored' OR $7 LIKE '%restore%' THEN 'timeline_restore'
+		     WHEN NULLIF($6,'') IS NOT NULL THEN 'template_change'
+		     WHEN COALESCE($10::jsonb,'{}') ? 'sound_style_group' THEN 'sound_change'
+		     ELSE 'nle_edit' END
 		FROM drama.edit_timelines WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3`,
 		projectID, episodeID, sourceID, timelineID, bindingID, templateVersionID,
 		reason, approvalState, nullableJSON(templateConfig), nullableJSON(overrideConfig))
@@ -336,13 +336,14 @@ func cloneTimelineVersion(
 		timeline_item_id,timeline_id,project_id,episode_id,track_type,track_number,
 		sequence_number,entity_type,entity_id,source_url,source_path,timeline_start_ms,
 		timeline_end_ms,source_in_ms,source_out_ms,duration_ms,volume,fade_in_ms,fade_out_ms,
-		transform_config,effect_config,status)
+		transform_config,effect_config,status,parent_timeline_item_id,proxy_url,waveform_url)
 		SELECT 'eti_'||substr(encode(digest(timeline_item_id||':'||$2,'sha256'),'hex'),1,24),
 		$2,project_id,episode_id,track_type,track_number,sequence_number,entity_type,entity_id,
 		source_url,source_path,timeline_start_ms,timeline_end_ms,source_in_ms,source_out_ms,
 		duration_ms,volume,fade_in_ms,fade_out_ms,transform_config,
 		effect_config||CASE WHEN $3='' THEN '{}'::jsonb
-			ELSE jsonb_build_object('editing_template_version_id',$3::text) END,status
+			ELSE jsonb_build_object('editing_template_version_id',$3::text) END,status,
+		timeline_item_id,proxy_url,waveform_url
 		FROM drama.edit_timeline_items WHERE timeline_id=$1`,
 		sourceID, timelineID, templateVersionID)
 	if err != nil {
