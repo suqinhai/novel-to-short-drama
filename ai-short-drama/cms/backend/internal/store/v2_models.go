@@ -269,6 +269,8 @@ type CompilerRunInput struct {
 	AdaptationSpecVersionID string
 	IRRevisionID            string
 	CompilerVersion         string
+	PlanningConstraints     json.RawMessage
+	ProviderSuggestions     json.RawMessage
 }
 
 type AdaptationSpecSummary struct {

@@ -281,8 +281,10 @@ func rebaseLifecycleInputsForMergedIR(t *testing.T, ctx context.Context, databas
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO drama.adaptation_plans(adaptation_plan_id,compiler_run_id,project_id,
-		adaptation_spec_version_id,version_number,status,is_current,content_hash,quality_report)
-		SELECT $1,$2,project_id,$3,$4,'approved',true,$5,quality_report
+		adaptation_spec_version_id,version_number,status,is_current,content_hash,quality_report,
+		approved_by,approved_at,validation_run_at)
+		SELECT $1,$2,project_id,$3,$4,'approved',true,$5,quality_report,
+			'authoritative-e2e-fixture',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
 		FROM drama.adaptation_plans WHERE adaptation_plan_id=$6`, newPlanID, compilerRunID, newSpecID,
 		oldPlanVersion+1, hashText("e2e-plan:"+mergedIRID), oldPlanID); err != nil {
 		t.Fatal(err)

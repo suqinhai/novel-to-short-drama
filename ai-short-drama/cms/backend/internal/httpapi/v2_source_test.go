@@ -25,6 +25,37 @@ type fakeSourceV2 struct {
 	lastComposition     store.CandidateCompositionInput
 }
 
+type fakeSeasonV2 struct {
+	*fakeSourceV2
+	lastDraft      store.SeasonPlanDraft
+	approvalFails  bool
+	versionCreated bool
+}
+
+func (f *fakeSeasonV2) ListSeasonPlans(context.Context, string) ([]store.SeasonPlanSummary, error) {
+	return []store.SeasonPlanSummary{{AdaptationPlanID: "ap_test", VersionNumber: 2, PlanName: "高钩子版", Status: "waiting_review"}}, nil
+}
+func (f *fakeSeasonV2) ValidateSeasonPlanDraft(_ context.Context, _ string, draft store.SeasonPlanDraft) (store.SeasonValidationResult, error) {
+	f.lastDraft = draft
+	return store.SeasonValidationResult{ValidatorVersion: "test-v1", Passed: false, Checks: map[string]bool{"rules": false},
+		Diagnostics:    []store.SeasonDiagnostic{{Severity: "blocking", Code: "CAUSAL_ORDER_VIOLATION", Message: "blocked", Details: map[string]any{}}},
+		RuleViolations: map[string][]store.SeasonDiagnostic{"hard": {}, "soft": {}}}, nil
+}
+func (f *fakeSeasonV2) CreateSeasonPlanVersion(_ context.Context, _ string, _ string, draft store.SeasonPlanDraft) (json.RawMessage, string, error) {
+	f.lastDraft, f.versionCreated = draft, true
+	return json.RawMessage(`{"adaptation_plan_id":"ap_v2","version_number":2,"status":"waiting_review"}`), "tr_version", nil
+}
+func (f *fakeSeasonV2) ApproveSeasonPlan(context.Context, string, string) (store.SeasonApprovalResult, error) {
+	result := store.SeasonApprovalResult{AdaptationPlanID: "ap_test", Status: "waiting_review", QueueCreated: false,
+		Validation: store.SeasonValidationResult{ValidatorVersion: "test-v1", Passed: !f.approvalFails, Checks: map[string]bool{"rules": !f.approvalFails}, RuleViolations: map[string][]store.SeasonDiagnostic{"hard": {}, "soft": {}}}}
+	if f.approvalFails {
+		result.Validation.Diagnostics = []store.SeasonDiagnostic{{Severity: "blocking", Code: "FORESHADOW_RESOLUTION_WITHOUT_PLANT", Message: "blocked", Details: map[string]any{}}}
+		return result, store.ErrValidation
+	}
+	result.Status = "approved"
+	return result, nil
+}
+
 func (f *fakeSourceV2) ListSourceWorks(context.Context, string, int, int) (store.SourceWorkList, error) {
 	return store.SourceWorkList{}, nil
 }
@@ -182,6 +213,48 @@ func completedTestOperation() store.Operation {
 		OperationID: "op_test", TraceID: "tr_test", OperationType: "source_import", TargetType: "source_version",
 		TargetID: "sv_test", Status: "completed", Checkpoint: store.OperationCheckpoint{Stage: "finished"},
 		ResultRef: &store.ResultReference{ResourceType: "source_version", ResourceID: "sv_test"}, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func TestSeasonWorkbenchAdversarialAPI(t *testing.T) {
+	fake := &fakeSeasonV2{fakeSourceV2: &fakeSourceV2{}, approvalFails: true}
+	router := newSourceV2TestRouter(fake)
+	draft := `{"schema_version":"season-plan-draft.v1","plan_name":"冲突方案","strategy_label":"manual",
+		"episodes":[{"episode_number":1,"title":"第一集","logline":"测试","three_second_opening":"开门",
+		"first_thirty_seconds_goal":"逃离","core_conflict":"门锁死","climax":"钥匙出现","ending_hook":"门后有人",
+		"emotion_curve":[0.2,0.9],"information_reveal_amount":0.5,"estimated_duration_seconds":90,"events":[]}],"omitted_events":[]}`
+
+	validate := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-plans/ap_test/validate", bytes.NewBufferString(draft))
+	validate.Header.Set("Content-Type", "application/json")
+	validateRecorder := httptest.NewRecorder()
+	router.ServeHTTP(validateRecorder, validate)
+	if validateRecorder.Code != http.StatusOK || !bytes.Contains(validateRecorder.Body.Bytes(), []byte("CAUSAL_ORDER_VIOLATION")) {
+		t.Fatalf("operation validation did not expose blocking rule: %d %s", validateRecorder.Code, validateRecorder.Body.String())
+	}
+
+	missingKey := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-plans/ap_test/versions", bytes.NewBufferString(draft))
+	missingKey.Header.Set("Content-Type", "application/json")
+	missingKeyRecorder := httptest.NewRecorder()
+	router.ServeHTTP(missingKeyRecorder, missingKey)
+	if missingKeyRecorder.Code != http.StatusBadRequest || fake.versionCreated {
+		t.Fatalf("version save without idempotency key mutated state: %d %s", missingKeyRecorder.Code, missingKeyRecorder.Body.String())
+	}
+
+	save := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-plans/ap_test/versions", bytes.NewBufferString(draft))
+	save.Header.Set("Content-Type", "application/json")
+	save.Header.Set("Idempotency-Key", "season-save-test")
+	saveRecorder := httptest.NewRecorder()
+	router.ServeHTTP(saveRecorder, save)
+	if saveRecorder.Code != http.StatusCreated || !fake.versionCreated || !bytes.Contains(saveRecorder.Body.Bytes(), []byte(`"adaptation_plan_id":"ap_v2"`)) {
+		t.Fatalf("new immutable version was not created: %d %s", saveRecorder.Code, saveRecorder.Body.String())
+	}
+
+	approve := httptest.NewRequest(http.MethodPost, "/api/v2/adaptation-plans/ap_test/approve", bytes.NewBufferString(`{"approved_by":"reviewer"}`))
+	approve.Header.Set("Content-Type", "application/json")
+	approveRecorder := httptest.NewRecorder()
+	router.ServeHTTP(approveRecorder, approve)
+	if approveRecorder.Code != http.StatusUnprocessableEntity || !bytes.Contains(approveRecorder.Body.Bytes(), []byte("FORESHADOW_RESOLUTION_WITHOUT_PLANT")) || !bytes.Contains(approveRecorder.Body.Bytes(), []byte(`"queue_created":false`)) {
+		t.Fatalf("approval bypassed adversarial validation or created queue: %d %s", approveRecorder.Code, approveRecorder.Body.String())
 	}
 }
 

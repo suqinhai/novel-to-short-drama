@@ -17,6 +17,7 @@ import LocalEditingWorkbenchView from '../views/LocalEditingWorkbenchView.vue'
 import PerformanceContinuityView from '../views/PerformanceContinuityView.vue'
 import CreativeWorkbenchView from '../views/CreativeWorkbenchView.vue'
 import IRMergeReviewView from '../views/IRMergeReviewView.vue'
+import SeasonPlanningWorkbenchView from '../views/SeasonPlanningWorkbenchView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -30,6 +31,7 @@ const router = createRouter({
     { path: '/projects/new', name: 'project-new', component: NewProjectView, meta: { title: '新建项目', eyebrow: 'CREATE PRODUCTION' } },
     { path: '/projects/:projectId', name: 'project-detail', component: ProjectDetailView, meta: { title: '项目详情', eyebrow: 'PROJECT WORKSPACE' } },
     { path: '/projects/:projectId/adaptation-scope', name: 'project-adaptation-scope', component: AdaptationScopeView, meta: { title: '改编范围', eyebrow: 'ADAPTATION SPEC' } },
+    { path: '/projects/:projectId/season-planner', name: 'project-season-planner', component: SeasonPlanningWorkbenchView, meta: { title: '整季分集统筹工作台', eyebrow: 'SEASON PLANNING' } },
     { path: '/projects/:projectId/impact', name: 'project-impact', component: ImpactAnalysisView, meta: { title: '修订影响分析', eyebrow: 'SOURCE IMPACT' } },
     { path: '/projects/:projectId/adaptation-diagnostics', name: 'project-adaptation-diagnostics', component: AdaptationDiagnosticsView, meta: { title: '改编诊断', eyebrow: 'ADAPTATION INTELLIGENCE' } },
     { path: '/adaptations/new', name: 'adaptation-new', component: AdaptationScopeView, meta: { title: '新建改编项目', eyebrow: 'ADAPTATION SPEC' } },

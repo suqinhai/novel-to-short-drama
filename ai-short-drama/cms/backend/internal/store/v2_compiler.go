@@ -9,10 +9,20 @@ import (
 )
 
 func (s *Store) StartCompilerRun(ctx context.Context, projectID, key string, input CompilerRunInput) (Operation, error) {
+	planningConstraints := input.PlanningConstraints
+	if len(planningConstraints) == 0 || string(planningConstraints) == "null" {
+		planningConstraints = json.RawMessage(`{}`)
+	}
+	providerSuggestions := input.ProviderSuggestions
+	if len(providerSuggestions) == 0 || string(providerSuggestions) == "null" {
+		providerSuggestions = json.RawMessage(`[]`)
+	}
 	inputHash, err := hashJSON(map[string]any{
 		"adaptation_spec_version_id": input.AdaptationSpecVersionID,
 		"ir_revision_id":             input.IRRevisionID,
 		"compiler_version":           input.CompilerVersion,
+		"planning_constraints":       planningConstraints,
+		"provider_suggestions":       providerSuggestions,
 	})
 	if err != nil {
 		return Operation{}, err
@@ -77,6 +87,8 @@ func (s *Store) StartCompilerRun(ctx context.Context, projectID, key string, inp
 		"adaptation_spec_version_id": input.AdaptationSpecVersionID,
 		"ir_revision_id":             input.IRRevisionID,
 		"compiler_version":           input.CompilerVersion,
+		"planning_constraints":       planningConstraints,
+		"provider_suggestions":       providerSuggestions,
 		"pipeline":                   pipeline,
 		"completed_items":            0,
 		"total_items":                len(pipeline),
@@ -109,9 +121,19 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 	err := s.pool.QueryRow(ctx, `SELECT operation.trace_id,jsonb_build_object(
 		'schema_version','compiler-plan.v2','adaptation_plan_id',plan.adaptation_plan_id,
 		'project_id',plan.project_id,'status',plan.status,'compiler_run_id',run.compiler_run_id,
+		'target_episode_duration_seconds',spec.episode_duration_seconds,
+		'version_number',plan.version_number,'parent_adaptation_plan_id',plan.parent_adaptation_plan_id,
+		'plan_name',plan.plan_name,'strategy_label',plan.strategy_label,'is_current',plan.is_current,
+		'approved_by',plan.approved_by,'approved_at',plan.approved_at,'validation_run_at',plan.validation_run_at,
+		'workbench_snapshot',plan.workbench_snapshot,'creative_suggestions',plan.creative_suggestions,
 		'episodes',COALESCE((SELECT jsonb_agg(jsonb_build_object(
 			'episode_number',episode.episode_number,'title',episode.title,'logline',episode.logline,
 			'estimated_duration_seconds',episode.estimated_duration_seconds,'opening_hook',episode.opening_hook,
+			'three_second_opening',episode.three_second_opening,
+			'first_thirty_seconds_goal',episode.first_thirty_seconds_goal,'core_conflict',episode.core_conflict,
+			'climax',episode.climax,'emotion_curve',episode.emotion_curve,
+			'information_reveal_amount',episode.information_reveal_amount,
+			'character_arc_entity_ids',episode.character_arc_entity_ids,'story_arc_revision_ids',episode.story_arc_revision_ids,
 			'ending_hook',episode.ending_hook,'continuity_in',episode.continuity_in,'continuity_out',episode.continuity_out,
 			'source_event_ids',CASE WHEN jsonb_array_length(episode.source_event_ids)=0 THEN
 				COALESCE((SELECT jsonb_agg(assignment.event_revision_id ORDER BY assignment.sequence_number)
@@ -132,8 +154,29 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 			'event_assignments',COALESCE((SELECT jsonb_agg(jsonb_build_object(
 				'event_revision_id',assignment.event_revision_id,'sequence_number',assignment.sequence_number,
 				'usage_mode',assignment.usage_mode,'merge_group_id',assignment.merge_group_id,
-				'rule_ids',assignment.rule_trace) ORDER BY assignment.sequence_number)
+				'rule_ids',assignment.rule_trace,'summary',event.summary,'importance',event.importance,
+				'event_type',event.event_type,'chapter_id',fact.chapter_id,'chapter_title',chapter_revision.title,
+				'participants',COALESCE((SELECT jsonb_agg(jsonb_build_object('entity_revision_id',entity.entity_revision_id,
+					'name',entity.canonical_name,'role',participant.participant_role) ORDER BY entity.canonical_name)
+					FROM drama.event_participants participant JOIN drama.narrative_entity_revisions entity
+					ON entity.entity_revision_id=participant.entity_revision_id
+					WHERE participant.event_revision_id=assignment.event_revision_id),'[]'::jsonb),
+				'character_states',COALESCE((SELECT jsonb_agg(jsonb_build_object('state_change_id',state.state_change_id,
+					'character_entity_revision_id',state.character_entity_revision_id,'state_dimension',state.state_dimension,
+					'before_state',state.before_state,'after_state',state.after_state) ORDER BY state.sequence_number)
+					FROM drama.character_state_changes state WHERE state.trigger_event_revision_id=assignment.event_revision_id),'[]'::jsonb),
+				'foreshadowing',COALESCE((SELECT jsonb_agg(jsonb_build_object('foreshadow_thread_id',occurrence.foreshadow_thread_id,
+					'title',thread.title,'lifecycle_stage',occurrence.lifecycle_stage,'occurrence_order',occurrence.occurrence_order)
+					ORDER BY occurrence.occurrence_order) FROM drama.foreshadow_occurrences occurrence
+					JOIN drama.foreshadow_threads thread USING(foreshadow_thread_id)
+					WHERE occurrence.event_revision_id=assignment.event_revision_id),'[]'::jsonb)
+				) ORDER BY assignment.sequence_number)
 				FROM drama.episode_event_assignments assignment
+				JOIN drama.narrative_event_revisions event USING(event_revision_id)
+				JOIN drama.narrative_fact_revisions fact USING(fact_revision_id)
+				JOIN drama.source_version_chapters version_chapter ON version_chapter.source_version_id=run.source_version_id
+					AND version_chapter.chapter_id=fact.chapter_id
+				JOIN drama.chapter_revisions chapter_revision ON chapter_revision.chapter_revision_id=version_chapter.chapter_revision_id
 				WHERE assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id),'[]'::jsonb)
 		) ORDER BY episode.episode_number) FROM drama.adaptation_episode_plans episode
 		WHERE episode.adaptation_plan_id=plan.adaptation_plan_id),'[]'::jsonb),
@@ -142,9 +185,27 @@ func (s *Store) GetAdaptationPlan(ctx context.Context, adaptationPlanID string) 
 			'entity_type',diagnostic.entity_type,'entity_id',diagnostic.entity_id,'details',diagnostic.details)
 			ORDER BY diagnostic.id) FROM drama.compiler_diagnostics diagnostic
 			WHERE diagnostic.compiler_run_id=run.compiler_run_id),'[]'::jsonb),
-		'validation',COALESCE(plan.quality_report->'validation','{}'::jsonb)
+		'validation',COALESCE(plan.quality_report->'validation','{}'::jsonb),
+		'latest_validation',COALESCE((SELECT jsonb_build_object('validator_version',validation.validator_version,
+			'passed',validation.passed,'checks',validation.checks,'diagnostics',validation.diagnostics)
+			FROM drama.adaptation_plan_validation_runs validation WHERE validation.adaptation_plan_id=plan.adaptation_plan_id
+			ORDER BY validation.created_at DESC LIMIT 1),plan.quality_report->'workbench_validation','null'::jsonb),
+		'season_curves',jsonb_build_object(
+			'emotion',COALESCE((SELECT jsonb_agg(COALESCE((SELECT max((point->>'emotion')::numeric)
+				FROM jsonb_array_elements(episode.emotion_curve) point),0) ORDER BY episode.episode_number)
+				FROM drama.adaptation_episode_plans episode WHERE episode.adaptation_plan_id=plan.adaptation_plan_id),'[]'::jsonb),
+			'information_reveal',COALESCE((SELECT jsonb_agg(episode.information_reveal_amount ORDER BY episode.episode_number)
+				FROM drama.adaptation_episode_plans episode WHERE episode.adaptation_plan_id=plan.adaptation_plan_id),'[]'::jsonb),
+			'duration',COALESCE((SELECT jsonb_agg(episode.estimated_duration_seconds ORDER BY episode.episode_number)
+				FROM drama.adaptation_episode_plans episode WHERE episode.adaptation_plan_id=plan.adaptation_plan_id),'[]'::jsonb)),
+		'rules',COALESCE((SELECT jsonb_agg(jsonb_build_object('adaptation_rule_id',rule.adaptation_rule_id,
+			'rule_type',rule.rule_type,'enforcement',rule.enforcement,'target_type',rule.target_type,
+			'target_id',rule.target_id,'priority',rule.priority,'parameters',rule.parameters,'rationale',rule.rationale)
+			ORDER BY rule.priority DESC,rule.adaptation_rule_id) FROM drama.adaptation_rules rule
+			WHERE rule.adaptation_spec_version_id=plan.adaptation_spec_version_id),'[]'::jsonb)
 	) FROM drama.adaptation_plans plan
 	JOIN drama.compiler_runs run ON run.compiler_run_id=plan.compiler_run_id
+	JOIN drama.adaptation_spec_versions spec ON spec.adaptation_spec_version_id=plan.adaptation_spec_version_id
 	JOIN drama.operations operation ON operation.operation_id=run.operation_id
 	WHERE plan.adaptation_plan_id=$1`, adaptationPlanID).Scan(&traceID, &plan)
 	if errors.Is(err, pgx.ErrNoRows) {

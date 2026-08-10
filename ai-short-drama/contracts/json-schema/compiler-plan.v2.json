@@ -4,25 +4,55 @@
   "title": "Reviewable Adaptation Compiler Plan V2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "compiler_run_id", "episodes", "diagnostics", "validation"],
+  "required": ["schema_version", "compiler_run_id", "episodes", "diagnostics", "validation", "season_curves", "creative_suggestions"],
   "properties": {
     "schema_version": {"const": "compiler-plan.v2"},
     "compiler_run_id": {"$ref": "#/$defs/id"},
+    "adaptation_plan_id": {"$ref": "#/$defs/id"},
+    "project_id": {"$ref": "#/$defs/id"},
+    "target_episode_duration_seconds": {"type": "integer", "minimum": 1},
+    "version_number": {"type": "integer", "minimum": 1},
+    "parent_adaptation_plan_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+    "plan_name": {"type": "string", "maxLength": 500},
+    "strategy_label": {"type": "string", "maxLength": 200},
+    "status": {"enum": ["draft", "validating", "waiting_review", "approved", "rejected", "superseded"]},
+    "is_current": {"type": "boolean"},
+    "approved_by": {"type": ["string", "null"], "maxLength": 500},
+    "approved_at": {"type": ["string", "null"], "format": "date-time"},
+    "validation_run_at": {"type": ["string", "null"], "format": "date-time"},
+    "workbench_snapshot": {"type": "object"},
+    "latest_validation": {"type": ["object", "null"]},
+    "rules": {"type": "array", "items": {"type": "object"}},
     "episodes": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"$ref": "#/$defs/episode"}},
     "diagnostics": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/diagnostic"}},
     "validation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hard_rules_satisfied", "event_references_valid", "timeline_valid", "causality_valid", "foreshadowing_valid", "duration_valid"],
+      "required": ["hard_rules_satisfied", "event_references_valid", "timeline_valid", "causality_valid", "foreshadowing_valid", "duration_valid", "pacing_valid", "hook_valid", "emotion_valid", "character_arc_valid", "information_reveal_valid"],
       "properties": {
         "hard_rules_satisfied": {"type": "boolean"},
         "event_references_valid": {"type": "boolean"},
         "timeline_valid": {"type": "boolean"},
         "causality_valid": {"type": "boolean"},
         "foreshadowing_valid": {"type": "boolean"},
-        "duration_valid": {"type": "boolean"}
+        "duration_valid": {"type": "boolean"},
+        "pacing_valid": {"type": "boolean"},
+        "hook_valid": {"type": "boolean"},
+        "emotion_valid": {"type": "boolean"},
+        "character_arc_valid": {"type": "boolean"},
+        "information_reveal_valid": {"type": "boolean"}
       }
-    }
+    },
+    "season_curves": {
+      "type": "object", "additionalProperties": false,
+      "required": ["emotion", "information_reveal", "duration"],
+      "properties": {
+        "emotion": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}},
+        "information_reveal": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}},
+        "duration": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "creative_suggestions": {"type": "array", "items": {"$ref": "#/$defs/suggestion"}}
   },
   "$defs": {
     "id": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
@@ -33,16 +63,18 @@
       "properties": {
         "event_revision_id": {"$ref": "#/$defs/id"},
         "sequence_number": {"type": "integer", "minimum": 1},
-        "usage_mode": {"enum": ["preserve", "merge", "transform", "reference"]},
+        "usage_mode": {"enum": ["preserve", "merge", "split", "transform", "reference"]},
         "merge_group_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
-        "rule_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+        "rule_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
       }
     },
     "episode": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "episode_number", "title", "logline", "estimated_duration_seconds", "opening_hook", "ending_hook",
+        "episode_number", "title", "logline", "estimated_duration_seconds", "opening_hook", "three_second_opening",
+        "first_thirty_seconds_goal", "core_conflict", "climax", "ending_hook", "emotion_curve",
+        "information_reveal_amount", "character_arc_entity_ids", "story_arc_revision_ids",
         "source_event_ids", "source_chapter_ids", "added_adaptation_content", "merged_content", "deviation_notes", "event_assignments"
       ],
       "properties": {
@@ -51,7 +83,15 @@
         "logline": {"type": "string", "maxLength": 4000},
         "estimated_duration_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
         "opening_hook": {"type": "string", "maxLength": 4000},
+        "three_second_opening": {"type": "string", "maxLength": 4000},
+        "first_thirty_seconds_goal": {"type": "string", "maxLength": 4000},
+        "core_conflict": {"type": "string", "maxLength": 4000},
+        "climax": {"type": "string", "maxLength": 4000},
         "ending_hook": {"type": "string", "maxLength": 4000},
+        "emotion_curve": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "information_reveal_amount": {"type": "number", "minimum": 0, "maximum": 1},
+        "character_arc_entity_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "story_arc_revision_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
         "continuity_in": {"type": "array", "items": {"type": "string", "maxLength": 2000}},
         "continuity_out": {"type": "array", "items": {"type": "string", "maxLength": 2000}},
         "source_event_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
@@ -78,7 +118,7 @@
         "merge_group_id": {"$ref": "#/$defs/id"},
         "source_event_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
         "description": {"type": "string", "minLength": 1, "maxLength": 4000},
-        "rule_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+        "rule_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
       }
     },
     "deviation": {
@@ -101,6 +141,17 @@
         "entity_type": {"type": ["string", "null"], "maxLength": 200},
         "entity_id": {"anyOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
         "details": {"type": "object"}
+      }
+    },
+    "suggestion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suggestion_id", "provider", "scope", "summary", "rationale"],
+      "properties": {
+        "suggestion_id": {"$ref": "#/$defs/id"},
+        "provider": {"type": "string", "maxLength": 200},
+        "scope": {"type": "string", "maxLength": 200},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "rationale": {"type": "string", "maxLength": 4000}
       }
     }
   }

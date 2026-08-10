@@ -2,13 +2,14 @@ const API_BASE = import.meta.env.VITE_NARRATIVE_API_BASE_URL || '/api/v2'
 const ETAG_PREFIX = 'cms:narrative-etag:'
 
 export class NarrativeApiError extends Error {
-  constructor(message, { status = 0, code = 'REQUEST_FAILED', details = [], traceId = '' } = {}) {
+  constructor(message, { status = 0, code = 'REQUEST_FAILED', details = [], traceId = '', data = null } = {}) {
     super(message)
     this.name = 'NarrativeApiError'
     this.status = status
     this.code = code
     this.details = details
     this.traceId = traceId
+    this.data = data
     this.isConflict = status === 409 || status === 412
   }
 }
@@ -48,6 +49,7 @@ async function request(path, { resource, ...options } = {}) {
       code: apiError.code,
       details: apiError.details,
       traceId: payload?.trace_id,
+      data: payload?.data,
     })
   }
 
@@ -190,6 +192,22 @@ export const narrativeApi = {
   },
   getLatestAdaptationPlan(projectId) {
     return request(`/adaptation-projects/${id(projectId)}/adaptation-plans/latest`)
+  },
+  listSeasonPlans(projectId) {
+    return request(`/adaptation-projects/${id(projectId)}/adaptation-plans`)
+  },
+  validateSeasonPlan(adaptationPlanId, draft) {
+    return request(`/adaptation-plans/${id(adaptationPlanId)}/validate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
+    })
+  },
+  createSeasonPlanVersion(adaptationPlanId, draft, idempotencyKey) {
+    return command(`/adaptation-plans/${id(adaptationPlanId)}/versions`, { body: draft, idempotencyKey })
+  },
+  approveSeasonPlan(adaptationPlanId, approvedBy = 'cms-reviewer') {
+    return request(`/adaptation-plans/${id(adaptationPlanId)}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved_by: approvedBy }),
+    })
   },
   runAdaptationAnalysis(projectId, idempotencyKey) {
     return command(`/adaptation-projects/${id(projectId)}/diagnostic-runs`, {

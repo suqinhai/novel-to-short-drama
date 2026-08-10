@@ -53,6 +53,8 @@ services:
       - ./database/23-verify-versioned-production-routing.sql:/opt/drama/23-verify-versioned-production-routing.sql:ro
       - ./database/24-authoritative-production-inputs.sql:/opt/drama/24-authoritative-production-inputs.sql:ro
       - ./database/24-verify-authoritative-production-inputs.sql:/opt/drama/24-verify-authoritative-production-inputs.sql:ro
+      - ./database/25-season-planning-workbench.sql:/opt/drama/25-season-planning-workbench.sql:ro
+      - ./database/25-verify-season-planning-workbench.sql:/opt/drama/25-verify-season-planning-workbench.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

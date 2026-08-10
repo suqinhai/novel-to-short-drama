@@ -275,18 +275,21 @@ INSERT INTO drama.compiler_diagnostics(
 
 INSERT INTO drama.adaptation_plans(
   adaptation_plan_id,compiler_run_id,project_id,adaptation_spec_version_id,
-  version_number,status,is_current,content_hash
+  version_number,status,is_current,content_hash,approved_by,approved_at,validation_run_at
 ) VALUES (
   'adaptation_plan_phase1_001','compiler_run_phase1_001','p_phase1_legacy',
-  'adaptation_spec_version_phase1_001',1,'approved',true,repeat('b',64)
+  'adaptation_spec_version_phase1_001',1,'approved',true,repeat('b',64),'fixture',now(),now()
 );
 
 INSERT INTO drama.adaptation_episode_plans(
   adaptation_episode_plan_id,adaptation_plan_id,episode_number,title,logline,
-  estimated_duration_seconds,opening_hook,ending_hook,content_hash
+  estimated_duration_seconds,opening_hook,ending_hook,content_hash,three_second_opening,
+  first_thirty_seconds_goal,core_conflict,climax,emotion_curve,information_reveal_amount
 ) VALUES (
   'adaptation_episode_plan_phase1_001','adaptation_plan_phase1_001',1,'异常开端',
-  '林夏发现异常并获得钥匙线索',90,'门自动打开','钥匙出现',repeat('c',64)
+  '林夏发现异常并获得钥匙线索',90,'门自动打开','钥匙出现',repeat('c',64),
+  '门突然自动打开','林夏必须确认门后的异常来源','异常空间阻止林夏离开','钥匙线索出现',
+  '[{"position":1,"emotion":0.6},{"position":2,"emotion":0.9}]',0.55
 );
 
 INSERT INTO drama.episode_event_assignments(

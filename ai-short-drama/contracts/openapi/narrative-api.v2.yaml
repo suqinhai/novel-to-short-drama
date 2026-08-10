@@ -573,12 +573,37 @@ paths:
                 adaptation_spec_version_id: {$ref: '#/components/schemas/ID'}
                 ir_revision_id: {$ref: '#/components/schemas/ID'}
                 compiler_version: {type: string, minLength: 1, maxLength: 200}
+                planning_constraints: {type: object}
+                provider_suggestions:
+                  type: array
+                  maxItems: 1000
+                  items: {type: object}
       responses:
         '202':
           description: Compiler run accepted
           content:
             application/json:
               schema: {$ref: '#/components/schemas/OperationResponse'}
+  /adaptation-projects/{project_id}/adaptation-plans:
+    get:
+      tags: [AdaptationProjects]
+      operationId: listSeasonPlans
+      summary: List immutable whole-season alternatives for comparison
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Whole-season plan summaries ordered by version
+  /adaptation-projects/{project_id}/adaptation-plans/latest:
+    get:
+      tags: [AdaptationProjects]
+      operationId: getLatestAdaptationPlan
+      summary: Get the latest whole-season adaptation plan version
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Latest whole-season plan
   /adaptation-plans/{adaptation_plan_id}:
     get:
       tags: [AdaptationProjects]
@@ -605,6 +630,68 @@ paths:
                   data:
                     $ref: ../json-schema/compiler-plan.v2.json
         '404': {$ref: '#/components/responses/NotFound'}
+  /adaptation-plans/{adaptation_plan_id}/validate:
+    post:
+      tags: [AdaptationProjects]
+      operationId: validateSeasonPlanDraft
+      summary: Revalidate a workbench operation against hard and soft rules without persisting it
+      parameters:
+        - name: adaptation_plan_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SeasonPlanDraft'}
+      responses:
+        '200':
+          description: Deterministic validation result grouped by hard and soft violations
+  /adaptation-plans/{adaptation_plan_id}/versions:
+    post:
+      tags: [AdaptationProjects]
+      operationId: createSeasonPlanVersion
+      summary: Save edits as an immutable successor; never overwrite the reviewed or approved plan
+      parameters:
+        - name: adaptation_plan_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SeasonPlanDraft'}
+      responses:
+        '201':
+          description: New waiting-review adaptation plan version
+        '409': {$ref: '#/components/responses/Conflict'}
+  /adaptation-plans/{adaptation_plan_id}/approve:
+    post:
+      tags: [AdaptationProjects]
+      operationId: approveSeasonPlan
+      summary: Rerun causal, character-state, foreshadow, duration and rule gates, then approve without creating a queue
+      parameters:
+        - name: adaptation_plan_id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/ID'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                approved_by: {type: string, maxLength: 500}
+      responses:
+        '200':
+          description: Plan approved; queue_created is always false
+        '422':
+          description: Approval validation failed with complete diagnostics
   /adaptation-projects/{project_id}/impact:
     get:
       tags: [Lineage]
@@ -1753,6 +1840,62 @@ components:
         source_version_id: {$ref: '#/components/schemas/ID'}
         ir_revision_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: 'null'}]}
         resource_revision: {type: integer, minimum: 1}
+    SeasonPlanDraft:
+      type: object
+      additionalProperties: false
+      required: [schema_version, plan_name, strategy_label, episodes, omitted_events]
+      properties:
+        schema_version: {type: string, const: season-plan-draft.v1}
+        plan_name: {type: string, minLength: 1, maxLength: 500}
+        strategy_label: {type: string, minLength: 1, maxLength: 200}
+        episodes:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/SeasonEpisodeDraft'}
+        omitted_events:
+          type: array
+          maxItems: 10000
+          items: {$ref: '#/components/schemas/SeasonEventCard'}
+        creative_suggestions:
+          type: array
+          maxItems: 1000
+          items: {type: object}
+    SeasonEpisodeDraft:
+      type: object
+      additionalProperties: false
+      required: [episode_number, title, logline, three_second_opening, first_thirty_seconds_goal,
+        core_conflict, climax, ending_hook, emotion_curve, information_reveal_amount,
+        estimated_duration_seconds, events]
+      properties:
+        episode_number: {type: integer, minimum: 1}
+        title: {type: string, minLength: 1, maxLength: 500}
+        logline: {type: string, maxLength: 4000}
+        three_second_opening: {type: string, minLength: 1, maxLength: 4000}
+        first_thirty_seconds_goal: {type: string, minLength: 1, maxLength: 4000}
+        core_conflict: {type: string, minLength: 1, maxLength: 4000}
+        climax: {type: string, minLength: 1, maxLength: 4000}
+        ending_hook: {type: string, minLength: 1, maxLength: 4000}
+        emotion_curve: {type: array, minItems: 1, items: {type: object}}
+        information_reveal_amount: {type: number, minimum: 0, maximum: 1}
+        estimated_duration_seconds: {type: integer, minimum: 1, maximum: 7200}
+        continuity_in: {type: array, items: {type: string}}
+        continuity_out: {type: array, items: {type: string}}
+        events: {type: array, items: {$ref: '#/components/schemas/SeasonEventCard'}}
+    SeasonEventCard:
+      type: object
+      additionalProperties: true
+      required: [card_id, presentation_mode, source_event_ids, summary]
+      properties:
+        card_id: {$ref: '#/components/schemas/ID'}
+        presentation_mode: {type: string, enum: [preserve, merge, split, omit, original, transform]}
+        source_event_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/ID'}}
+        source_chapter_ids: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/ID'}}
+        summary: {type: string, minLength: 1, maxLength: 4000}
+        rationale: {type: string, maxLength: 4000}
+        split_label: {type: string, maxLength: 200}
+        merge_group_id: {anyOf: [{$ref: '#/components/schemas/ID'}, {type: string, maxLength: 0}]}
+        importance: {type: number, minimum: 0, maximum: 1}
     Operation:
       type: object
       additionalProperties: false

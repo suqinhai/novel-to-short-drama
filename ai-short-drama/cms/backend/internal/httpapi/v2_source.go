@@ -67,16 +67,25 @@ type irMergeV2Service interface {
 	PublishIRMergeProposal(context.Context, string, string, store.PublishIRMergeInput) (store.PublishIRMergeResult, error)
 }
 
+type seasonWorkbenchService interface {
+	ListSeasonPlans(context.Context, string) ([]store.SeasonPlanSummary, error)
+	ValidateSeasonPlanDraft(context.Context, string, store.SeasonPlanDraft) (store.SeasonValidationResult, error)
+	CreateSeasonPlanVersion(context.Context, string, string, store.SeasonPlanDraft) (json.RawMessage, string, error)
+	ApproveSeasonPlan(context.Context, string, string) (store.SeasonApprovalResult, error)
+}
+
 type sourceV2Handler struct {
 	service          sourceV2Service
 	candidateService candidateV2Service
 	irMergeService   irMergeV2Service
+	seasonService    seasonWorkbenchService
 }
 
 func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	h := &sourceV2Handler{service: service}
 	h.candidateService, _ = service.(candidateV2Service)
 	h.irMergeService, _ = service.(irMergeV2Service)
+	h.seasonService, _ = service.(seasonWorkbenchService)
 	api := router.Group("/api/v2")
 	api.GET("/source-works", h.listWorks)
 	api.POST("/source-works", h.createWork)
@@ -98,9 +107,13 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.POST("/narrative-ir-merge-proposals/:proposalID/publish", h.publishIRMergeProposal)
 	api.POST("/adaptation-projects/:projectID/compiler-runs", h.startCompilerRun)
 	api.GET("/adaptation-projects/:projectID/adaptation-plans/latest", h.getLatestAdaptationPlan)
+	api.GET("/adaptation-projects/:projectID/adaptation-plans", h.listSeasonPlans)
 	api.GET("/adaptation-projects/:projectID/impact", h.getProjectImpact)
 	api.POST("/adaptation-projects/:projectID/impact/:changeSetID/regeneration-requests", h.createRegenerationRequest)
 	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
+	api.POST("/adaptation-plans/:adaptationPlanID/validate", h.validateSeasonPlan)
+	api.POST("/adaptation-plans/:adaptationPlanID/versions", h.createSeasonPlanVersion)
+	api.POST("/adaptation-plans/:adaptationPlanID/approve", h.approveSeasonPlan)
 	api.POST("/adaptation-projects", h.createAdaptationProject)
 	api.GET("/adaptation-projects/:projectID/specs", h.listAdaptationSpecs)
 	api.POST("/adaptation-projects/:projectID/specs", h.createAdaptationSpec)
@@ -912,9 +925,11 @@ func (h *sourceV2Handler) startCompilerRun(c *gin.Context) {
 		return
 	}
 	var request struct {
-		AdaptationSpecVersionID string `json:"adaptation_spec_version_id"`
-		IRRevisionID            string `json:"ir_revision_id"`
-		CompilerVersion         string `json:"compiler_version"`
+		AdaptationSpecVersionID string          `json:"adaptation_spec_version_id"`
+		IRRevisionID            string          `json:"ir_revision_id"`
+		CompilerVersion         string          `json:"compiler_version"`
+		PlanningConstraints     json.RawMessage `json:"planning_constraints"`
+		ProviderSuggestions     json.RawMessage `json:"provider_suggestions"`
 	}
 	if !decodeStrictJSON(c, &request) ||
 		!publicIDPattern.MatchString(request.AdaptationSpecVersionID) ||
@@ -925,10 +940,26 @@ func (h *sourceV2Handler) startCompilerRun(c *gin.Context) {
 		}
 		return
 	}
+	if len(request.PlanningConstraints) > 0 && string(request.PlanningConstraints) != "null" {
+		var value map[string]any
+		if json.Unmarshal(request.PlanningConstraints, &value) != nil {
+			v2InputError(c, "INVALID_PLANNING_CONSTRAINTS", "planning_constraints must be an object")
+			return
+		}
+	}
+	if len(request.ProviderSuggestions) > 0 && string(request.ProviderSuggestions) != "null" {
+		var value []map[string]any
+		if json.Unmarshal(request.ProviderSuggestions, &value) != nil {
+			v2InputError(c, "INVALID_PROVIDER_SUGGESTIONS", "provider_suggestions must be an array")
+			return
+		}
+	}
 	operation, err := h.service.StartCompilerRun(c.Request.Context(), c.Param("projectID"), key, store.CompilerRunInput{
 		AdaptationSpecVersionID: request.AdaptationSpecVersionID,
 		IRRevisionID:            request.IRRevisionID,
 		CompilerVersion:         strings.TrimSpace(request.CompilerVersion),
+		PlanningConstraints:     request.PlanningConstraints,
+		ProviderSuggestions:     request.ProviderSuggestions,
 	})
 	if err != nil {
 		v2Error(c, err)
@@ -953,6 +984,83 @@ func (h *sourceV2Handler) getLatestAdaptationPlan(c *gin.Context) {
 		return
 	}
 	v2Response(c, http.StatusOK, trace, plan, nil)
+}
+
+func (h *sourceV2Handler) listSeasonPlans(c *gin.Context) {
+	if h.seasonService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	plans, err := h.seasonService.ListSeasonPlans(c.Request.Context(), c.Param("projectID"))
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), plans, nil)
+}
+
+func (h *sourceV2Handler) validateSeasonPlan(c *gin.Context) {
+	if h.seasonService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	var draft store.SeasonPlanDraft
+	if !decodeStrictJSON(c, &draft) {
+		return
+	}
+	validation, err := h.seasonService.ValidateSeasonPlanDraft(c.Request.Context(), c.Param("adaptationPlanID"), draft)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), validation, nil)
+}
+
+func (h *sourceV2Handler) createSeasonPlanVersion(c *gin.Context) {
+	if h.seasonService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	key, ok := requireIdempotencyKey(c)
+	if !ok {
+		return
+	}
+	var draft store.SeasonPlanDraft
+	if !decodeStrictJSON(c, &draft) {
+		return
+	}
+	plan, trace, err := h.seasonService.CreateSeasonPlanVersion(c.Request.Context(), c.Param("adaptationPlanID"), key, draft)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusCreated, trace, plan, nil)
+}
+
+func (h *sourceV2Handler) approveSeasonPlan(c *gin.Context) {
+	if h.seasonService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	var input struct {
+		ApprovedBy string `json:"approved_by"`
+	}
+	if !decodeStrictJSON(c, &input) {
+		return
+	}
+	result, err := h.seasonService.ApproveSeasonPlan(c.Request.Context(), c.Param("adaptationPlanID"), strings.TrimSpace(input.ApprovedBy))
+	if errors.Is(err, store.ErrValidation) {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"contract_version": "narrative-api.v2", "trace_id": traceID(c), "data": result,
+			"error": gin.H{"code": "ADAPTATION_PLAN_VALIDATION_FAILED", "message": "批准前校验未通过"},
+		})
+		return
+	}
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), result, nil)
 }
 
 func normalizeImport(request importRequest) (store.ImportInput, error) {

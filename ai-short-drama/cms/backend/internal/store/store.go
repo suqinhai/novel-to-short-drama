@@ -20,6 +20,7 @@ var (
 	ErrUnsafeArchive     = errors.New("project cannot be archived safely")
 	ErrNotArchived       = errors.New("project is not archived")
 	ErrCandidateProvider = errors.New("candidate provider failed")
+	ErrValidation        = errors.New("validation failed")
 )
 
 type Store struct {

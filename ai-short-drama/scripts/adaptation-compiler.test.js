@@ -106,4 +106,41 @@ assert.deepEqual(orderingStage.data.ordered_event_ids, [
   'event_fixture_003', 'event_fixture_004', 'event_fixture_001', 'event_fixture_002',
 ]);
 
-console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, duration-aware merging, chapter ordering, deterministic output`);
+const narrativeAllocation = fixture('phase3-compiler-valid.json');
+narrativeAllocation.run.compiler_run_id = 'compiler_fixture_narrative_dp';
+narrativeAllocation.spec.target_episode_count = 3;
+narrativeAllocation.spec.episode_duration_seconds = 130;
+narrativeAllocation.spec.planning_constraints = {ending_hook_min: 0.8};
+narrativeAllocation.rules = [];
+narrativeAllocation.events = Array.from({length: 7}, (_, index) => ({
+  ...narrativeAllocation.events[index < 4 ? 0 : 2],
+  event_revision_id: `event_narrative_${index + 1}`,
+  fact_revision_id: `fact_narrative_${index + 1}`,
+  source_span_id: `span_narrative_${index + 1}`,
+  narrative_order: index + 1,
+  importance: 0.5,
+  emotion_intensity: [0.2, 0.8, 0.3, 0.5, 0.95, 0.4, 1][index],
+  hook_strength: [0.1, 1, 0.1, 0.1, 1, 0.1, 1][index],
+  information_reveal: 0.4,
+  character_arc_weight: index % 2 ? 0.9 : 0.2,
+}));
+narrativeAllocation.relations = [];
+narrativeAllocation.state_changes = [];
+narrativeAllocation.foreshadow_occurrences = [];
+narrativeAllocation.provider_suggestions = [{provider: 'fixture-provider', scope: 'season', summary: '加强第二集情绪反差', rationale: '创作建议不改变硬规则分配'}];
+const narrativeAllocationResult = compile(narrativeAllocation);
+assert.equal(narrativeAllocationResult.publishable, true, JSON.stringify(narrativeAllocationResult.plan.diagnostics));
+assert.deepEqual(narrativeAllocationResult.plan.episodes.map((episode) => episode.source_event_ids.length), [2, 3, 2]);
+assert.equal(narrativeAllocationResult.stages.find((item) => item.stage === 'episode_allocation').data.strategy, 'narrative_constraint_dp');
+assert.equal(narrativeAllocationResult.plan.creative_suggestions[0].provider, 'fixture-provider');
+assert(narrativeAllocationResult.plan.episodes.every((episode) => episode.three_second_opening && episode.core_conflict &&
+  episode.climax && episode.emotion_curve.length && Number.isFinite(episode.information_reveal_amount)));
+
+const informationAttack = JSON.parse(JSON.stringify(narrativeAllocation));
+informationAttack.run.compiler_run_id = 'compiler_fixture_information_attack';
+informationAttack.spec.planning_constraints = {information_reveal_per_episode_max: 0.2};
+const informationAttackResult = compile(informationAttack);
+assert.equal(informationAttackResult.publishable, false);
+assert(informationAttackResult.plan.diagnostics.some((item) => item.code === 'INFORMATION_REVEAL_EXCEEDED' && item.severity === 'blocking'));
+
+console.log(`PASS adaptation compiler: ${PIPELINE.length} ordered stages, narrative constraints, provider suggestions, adversarial gates, deterministic output`);

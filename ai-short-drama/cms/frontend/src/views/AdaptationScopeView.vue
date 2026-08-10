@@ -437,7 +437,7 @@ onMounted(load)
             <label class="field"><span>每批视频镜头</span><input v-model.number="rollingForm.max_video_batch" type="number" min="1" max="20" /></label>
             <label class="field"><span>每集 Token 预算（可选）</span><input v-model="rollingForm.token_budget" type="number" min="1" placeholder="留空则不设硬预算" /></label>
             <label class="field"><span>每集费用预算 CNY（可选）</span><input v-model="rollingForm.cost_budget" type="number" min="0.01" step="0.01" placeholder="留空则不设硬预算" /></label>
-            <button class="button button-primary" :disabled="adopting || !planValidationPassed || adaptationPlan.status === 'approved'" @click="adoptPlan"><LoaderCircle v-if="adopting" :size="16" class="spin" /><CheckCircle2 v-else :size="16" />{{ adopting ? '建立队列中…' : adaptationPlan.status === 'approved' ? '已建立生产队列' : '批准并建立单集队列' }}</button>
+            <RouterLink class="button button-primary" :to="`/projects/${projectId}/season-planner?plan=${adaptationPlan.adaptation_plan_id}`"><CheckCircle2 :size="16" />进入整季分集统筹工作台</RouterLink>
           </div>
         </template>
       </article>

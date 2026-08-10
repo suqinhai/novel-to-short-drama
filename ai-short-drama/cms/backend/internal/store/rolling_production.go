@@ -144,16 +144,17 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 	var (
 		planStatus, compilerRunID, specVersionID, irRevisionID string
 		workID, sourceVersionID, projectName                   string
+		approvedAt                                             *time.Time
 	)
 	err = tx.QueryRow(ctx, `SELECT plan.status,plan.compiler_run_id,plan.adaptation_spec_version_id,
-		compiler.ir_revision_id,compiler.work_id,compiler.source_version_id,project.novel_name
+		compiler.ir_revision_id,compiler.work_id,compiler.source_version_id,project.novel_name,plan.approved_at
 		FROM drama.adaptation_plans plan
 		JOIN drama.compiler_runs compiler ON compiler.compiler_run_id=plan.compiler_run_id
 		JOIN drama.projects project ON project.project_id=plan.project_id
 		WHERE plan.project_id=$1 AND plan.adaptation_plan_id=$2
 		FOR UPDATE OF plan`, projectID, adaptationPlanID).Scan(
 		&planStatus, &compilerRunID, &specVersionID, &irRevisionID,
-		&workID, &sourceVersionID, &projectName,
+		&workID, &sourceVersionID, &projectName, &approvedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RollingProduction{}, ErrNotFound
@@ -161,8 +162,8 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 	if err != nil {
 		return RollingProduction{}, err
 	}
-	if planStatus != "waiting_review" && planStatus != "approved" {
-		return RollingProduction{}, fmt.Errorf("%w: adaptation plan must be waiting_review", ErrConflict)
+	if planStatus != "approved" || approvedAt == nil {
+		return RollingProduction{}, fmt.Errorf("%w: adaptation plan must pass approval validation before queue creation", ErrConflict)
 	}
 
 	rows, err := tx.Query(ctx, `SELECT episode.adaptation_episode_plan_id,episode.episode_number,
@@ -461,16 +462,6 @@ func (s *Store) AdoptAdaptationPlan(ctx context.Context, projectID, adaptationPl
 		}
 	}
 
-	if _, err = tx.Exec(ctx, `UPDATE drama.adaptation_plans
-		SET status=CASE WHEN adaptation_plan_id=$2 THEN 'approved'
-			WHEN status='approved' THEN 'superseded' ELSE status END,
-			is_current=(adaptation_plan_id=$2)
-		WHERE project_id=$1`, projectID, adaptationPlanID); err != nil {
-		return RollingProduction{}, err
-	}
-	if err = publishAdaptationPlanArtifacts(ctx, tx, projectID, adaptationPlanID); err != nil {
-		return RollingProduction{}, err
-	}
 	if _, err = tx.Exec(ctx, `UPDATE drama.projects
 		SET target_episode_count=$2,current_stage='waiting_next_episode',
 			status='waiting_next_episode',error_message=NULL,

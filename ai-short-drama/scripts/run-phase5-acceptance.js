@@ -36,6 +36,7 @@ const migrationFiles = [
   'database/22-restore-effective-input-stage-requirements.sql',
   'database/23-versioned-production-routing.sql',
   'database/24-authoritative-production-inputs.sql',
+  'database/25-season-planning-workbench.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -52,6 +53,7 @@ const verifyFiles = [
   'database/22-verify-effective-input-stage-requirements.sql',
   'database/23-verify-versioned-production-routing.sql',
   'database/24-verify-authoritative-production-inputs.sql',
+  'database/25-verify-season-planning-workbench.sql',
 ];
 
 function loadEnv() {
@@ -160,6 +162,8 @@ try {
   run('n8n seven-stage authoritative snapshot-loader E2E', 'node', ['scripts/validate-authoritative-n8n-e2e.js'], {
     env: {...commandEnv, PHASE5_TEST_DATABASE: legacyDatabase, PHASE5_POSTGRES_CONTAINER: container},
   });
+  run('Go whole-season workbench adversarial version/approval/queue integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration'],
+    {cwd: backendCwd, env: {...commandEnv, PHASE25_DATABASE_URL: databaseURL(legacyDatabase)}});
   run('Go backend vet', 'go', ['vet', './...'], {cwd: backendCwd, env: commandEnv});
 
   const frontendCwd = path.join(root, 'cms/frontend');

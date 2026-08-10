@@ -103,6 +103,87 @@ function allocateByCount(eventUnits, episodeCount) {
   return buckets;
 }
 
+function eventSignal(event, key, fallback = 0) {
+  const explicit = Number(event?.[key]);
+  if (Number.isFinite(explicit)) return Math.max(0, Math.min(1, explicit));
+  return Math.max(0, Math.min(1, Number(fallback) || 0));
+}
+
+function unitSignals(unit) {
+  const events = unit.events || [];
+  const average = (key, fallback) => events.length
+    ? events.reduce((sum, event) => sum + eventSignal(event, key, fallback(event)), 0) / events.length
+    : 0;
+  return {
+    emotion: average('emotion_intensity', (event) => Number(event.importance ?? 0.5)),
+    information: average('information_reveal', (event) => Number(event.importance ?? 0.5) * 0.7),
+    hook: Math.max(0, ...events.map((event) => eventSignal(event, 'hook_strength',
+      ['turning_point', 'climax', 'reversal', 'revelation'].includes(event.arc_role || event.event_type)
+        ? 0.9 : Number(event.importance ?? 0.5)))),
+    characterArc: Math.max(0, ...events.map((event) => eventSignal(event, 'character_arc_weight',
+      Number(event.importance ?? 0.5) * (asArray(event.participant_entity_revision_ids).length ? 1 : 0.5)))),
+    arcIDs: unique(events.flatMap((event) => asArray(event.story_arc_revision_ids))),
+  };
+}
+
+// Deterministic dynamic programming over contiguous Narrative IR units. The
+// objective explicitly balances runtime, episode-end hook strength, emotional
+// rise/fall, character-arc beats and information density. Provider suggestions
+// may annotate the result later, but can never alter this hard-rule allocation.
+function allocateWithNarrativeConstraints(eventUnits, episodeCount, durationTarget, constraints = {}) {
+  if (!Number.isInteger(episodeCount) || episodeCount < 1 || eventUnits.length < episodeCount ||
+      eventUnits.some((unit) => unit.estimated_seconds > durationTarget)) return null;
+  const maxInfo = Number.isFinite(Number(constraints.information_reveal_per_episode_max))
+    ? Number(constraints.information_reveal_per_episode_max) : 1;
+  const minHook = Number.isFinite(Number(constraints.ending_hook_min)) ? Number(constraints.ending_hook_min) : 0;
+  const prefixSeconds = [0];
+  for (const unit of eventUnits) prefixSeconds.push(prefixSeconds[prefixSeconds.length - 1] + unit.estimated_seconds);
+  const states = Array.from({length: episodeCount + 1}, () => Array(eventUnits.length + 1).fill(null));
+  states[0][0] = {cost: 0, boundaries: []};
+  for (let episode = 1; episode <= episodeCount; episode += 1) {
+    for (let end = episode; end <= eventUnits.length; end += 1) {
+      for (let start = episode - 1; start < end; start += 1) {
+        const previous = states[episode - 1][start];
+        if (!previous || eventUnits.length - end < episodeCount - episode) continue;
+        const seconds = prefixSeconds[end] - prefixSeconds[start];
+        if (seconds > durationTarget) continue;
+        const units = eventUnits.slice(start, end);
+        const signals = units.map(unitSignals);
+        const info = signals.reduce((sum, item) => sum + item.information, 0) / Math.max(1, signals.length);
+        const hook = signals[signals.length - 1]?.hook || 0;
+        const emotions = signals.map((item) => item.emotion);
+        const peak = Math.max(...emotions);
+        const peakIndex = emotions.indexOf(peak);
+        const idealPeak = Math.max(0, emotions.length - 2);
+        const characterArc = Math.max(...signals.map((item) => item.characterArc));
+        const arcCoverage = unique(signals.flatMap((item) => item.arcIDs)).length;
+        const durationPenalty = Math.pow((durationTarget - seconds) / durationTarget, 2) * 100;
+        const hookPenalty = Math.max(0, minHook - hook) * 160 - hook * 22;
+        const informationPenalty = Math.max(0, info - maxInfo) * 140 + Math.abs(info - Math.min(maxInfo, 0.55)) * 9;
+        const emotionPenalty = Math.abs(peakIndex - idealPeak) * 5 - peak * 8;
+        const characterPenalty = characterArc ? -characterArc * 6 : 8;
+        const arcPenalty = arcCoverage ? -Math.min(3, arcCoverage) * 2 : 5;
+        const cost = previous.cost + durationPenalty + hookPenalty + informationPenalty + emotionPenalty + characterPenalty + arcPenalty;
+        const current = states[episode][end];
+        const boundaries = [...previous.boundaries, end];
+        if (!current || cost < current.cost - 1e-9 ||
+            (Math.abs(cost - current.cost) < 1e-9 && JSON.stringify(boundaries) < JSON.stringify(current.boundaries))) {
+          states[episode][end] = {cost, boundaries};
+        }
+      }
+    }
+  }
+  const best = states[episodeCount][eventUnits.length];
+  if (!best) return null;
+  const buckets = [];
+  let start = 0;
+  for (const end of best.boundaries) {
+    buckets.push(eventUnits.slice(start, end));
+    start = end;
+  }
+  return {buckets, score: Number(best.cost.toFixed(6)), strategy: 'narrative_constraint_dp'};
+}
+
 function allocateWithBalancedMerges(eventUnits, episodeCount, durationTarget, rules, compilerRunID) {
   if (!Number.isInteger(episodeCount) || episodeCount < 1 || eventUnits.length < episodeCount) return null;
 
@@ -238,6 +319,7 @@ function compile(input) {
 
   const episodeCount = Number(spec.target_episode_count || 0);
   const durationTarget = Number(spec.episode_duration_seconds || 0);
+  const planningConstraints = spec.planning_constraints || input.planning_constraints || {};
   if (!Number.isInteger(episodeCount) || episodeCount < 1 || !Number.isInteger(durationTarget) || durationTarget < 1) {
     block('INVALID_TARGET_FORMAT', 'Episode count and duration must be positive integers.');
   }
@@ -249,12 +331,18 @@ function compile(input) {
   }));
   const totalCapacity = Math.max(0, episodeCount * durationTarget);
   let totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
-  let buckets = allocateByDuration(eventUnits, episodeCount, durationTarget);
+  let narrativeAllocation = allocateWithNarrativeConstraints(
+    eventUnits, episodeCount, durationTarget, planningConstraints,
+  );
+  let buckets = narrativeAllocation?.buckets || null;
   if (!buckets) {
     const balanced = allocateWithBalancedMerges(eventUnits, episodeCount, durationTarget, rules, run.compiler_run_id);
     if (balanced) {
       eventUnits = balanced.eventUnits;
-      buckets = balanced.buckets;
+      narrativeAllocation = allocateWithNarrativeConstraints(
+        eventUnits, episodeCount, durationTarget, planningConstraints,
+      );
+      buckets = narrativeAllocation?.buckets || balanced.buckets;
       totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
     }
   }
@@ -287,14 +375,23 @@ function compile(input) {
     };
     eventUnits.splice(candidate.index, 2, group);
     totalSeconds = eventUnits.reduce((sum, unit) => sum + unit.estimated_seconds, 0);
-    buckets = allocateByDuration(eventUnits, episodeCount, durationTarget);
+    narrativeAllocation = allocateWithNarrativeConstraints(
+      eventUnits, episodeCount, durationTarget, planningConstraints,
+    );
+    buckets = narrativeAllocation?.buckets || null;
   }
   if (totalSeconds > totalCapacity) block('DURATION_CAPACITY_EXCEEDED', `所选事件预计需要 ${totalSeconds} 秒，超过目标总容量 ${totalCapacity} 秒；请增加集数或单集时长、缩小范围，或补充明确的允许合并/省略规则。`, 'adaptation_spec_version', run.adaptation_spec_version_id, {estimated_seconds: totalSeconds, capacity_seconds: totalCapacity});
   if (eventUnits.length < episodeCount) block('TOO_FEW_EVENT_UNITS', `可独立分配的事件单元只有 ${eventUnits.length} 个，少于目标 ${episodeCount} 集。`, 'adaptation_spec_version', run.adaptation_spec_version_id, {event_units: eventUnits.length, target_episode_count: episodeCount});
   stage('event_compression_merge', {event_unit_count: eventUnits.length, estimated_seconds: totalSeconds, merge_groups: eventUnits.filter((unit) => unit.merge_group_id).map((unit) => ({merge_group_id: unit.merge_group_id, source_event_ids: unit.events.map((event) => event.event_revision_id), rule_ids: unit.merge_rule_ids}))});
 
   buckets ||= allocateByCount(eventUnits, episodeCount);
-  stage('episode_allocation', {episode_count: buckets.length, event_counts: buckets.map((bucket) => bucket.reduce((sum, unit) => sum + unit.events.length, 0))});
+  stage('episode_allocation', {
+    episode_count: buckets.length,
+    strategy: narrativeAllocation?.strategy || 'deterministic_fallback',
+    objective_score: narrativeAllocation?.score ?? null,
+    constraints: planningConstraints,
+    event_counts: buckets.map((bucket) => bucket.reduce((sum, unit) => sum + unit.events.length, 0)),
+  });
 
   const eventPosition = new Map();
   buckets.forEach((bucket, episodeIndex) => bucket.forEach((unit) => unit.events.forEach((event, eventIndex) => {
@@ -402,13 +499,38 @@ function compile(input) {
     }
     const first = episodeEvents[0];
     const last = episodeEvents[episodeEvents.length - 1];
+    const signals = episodeEvents.map((event, eventIndex) => ({
+      position: eventIndex + 1,
+      event_revision_id: event.event_revision_id,
+      emotion: Number(eventSignal(event, 'emotion_intensity', Number(event.importance ?? 0.5)).toFixed(3)),
+    }));
+    const climaxEvent = episodeEvents.reduce((best, event) => {
+      const score = eventSignal(event, 'emotion_intensity', Number(event.importance ?? 0.5)) +
+        (['climax', 'turning_point', 'reversal'].includes(event.arc_role || event.event_type) ? 0.4 : 0);
+      return !best || score >= best.score ? {event, score} : best;
+    }, null)?.event;
+    const revealAmount = Number((episodeEvents.reduce((sum, event) => sum +
+      eventSignal(event, 'information_reveal', Number(event.importance ?? 0.5) * 0.7), 0) /
+      Math.max(1, episodeEvents.length)).toFixed(3));
+    const participantIDs = unique(episodeEvents.flatMap((event) => asArray(event.participant_entity_revision_ids)));
+    const storyArcIDs = unique(episodeEvents.flatMap((event) => asArray(event.story_arc_revision_ids)));
     return {
       episode_number: episodeIndex + 1,
       title: `第${episodeIndex + 1}集｜${String(first?.summary || '待审核事件').slice(0, 120)}`,
       logline: episodeEvents.map((event) => event.summary).join('；').slice(0, 4000),
       estimated_duration_seconds: episodeDurations[episodeIndex],
       opening_hook: String(first?.summary || '').slice(0, 4000),
+      three_second_opening: String(first?.summary || '').slice(0, 4000),
+      first_thirty_seconds_goal: episodeEvents.slice(0, Math.max(1, Math.ceil(episodeEvents.length / 3)))
+        .map((event) => event.summary).join('；').slice(0, 4000),
+      core_conflict: String(episodeEvents.reduce((best, event) =>
+        Number(event.importance ?? 0) >= Number(best?.importance ?? -1) ? event : best, null)?.summary || '').slice(0, 4000),
+      climax: String(climaxEvent?.summary || last?.summary || '').slice(0, 4000),
       ending_hook: String(last?.summary || '').slice(0, 4000),
+      emotion_curve: signals,
+      information_reveal_amount: revealAmount,
+      character_arc_entity_ids: participantIDs,
+      story_arc_revision_ids: storyArcIDs,
       continuity_in: episodeIndex ? [`承接第${episodeIndex}集的事件状态`] : [],
       continuity_out: episodeIndex + 1 < buckets.length ? [`进入第${episodeIndex + 2}集的前置状态`] : [],
       source_event_ids: sourceEventIDs,
@@ -433,8 +555,55 @@ function compile(input) {
     causality_valid: ordered.length === selected.length,
     foreshadowing_valid: foreshadowValid,
     duration_valid: durationValid,
+    pacing_valid: true,
+    hook_valid: true,
+    emotion_valid: true,
+    character_arc_valid: true,
+    information_reveal_valid: true,
   };
-  const plan = {schema_version: 'compiler-plan.v2', compiler_run_id: run.compiler_run_id, episodes, diagnostics, validation};
+  for (const episode of episodes) {
+    const episodeID = String(episode.episode_number);
+    const endEvent = events.find((event) => event.event_revision_id === episode.source_event_ids.at(-1));
+    const hook = eventSignal(endEvent, 'hook_strength', Number(endEvent?.importance ?? 0.5));
+    const minimumHook = Number(planningConstraints.ending_hook_min ?? 0);
+    if (minimumHook > 0 && hook < minimumHook) {
+      block('ENDING_HOOK_BELOW_MINIMUM', 'Episode ending hook is below the configured minimum.', 'episode', episodeID,
+        {actual: hook, minimum: minimumHook});
+      validation.hook_valid = false;
+    }
+    const maximumReveal = Number(planningConstraints.information_reveal_per_episode_max ?? 1);
+    if (episode.information_reveal_amount > maximumReveal) {
+      block('INFORMATION_REVEAL_EXCEEDED', 'Episode information reveal exceeds the configured maximum.', 'episode', episodeID,
+        {actual: episode.information_reveal_amount, maximum: maximumReveal});
+      validation.information_reveal_valid = false;
+    }
+    if (episode.emotion_curve.length > 1 && Math.max(...episode.emotion_curve.map((item) => item.emotion)) -
+        Math.min(...episode.emotion_curve.map((item) => item.emotion)) < Number(planningConstraints.minimum_emotion_range ?? 0)) {
+      block('EMOTION_CURVE_TOO_FLAT', 'Episode emotion range is below the configured minimum.', 'episode', episodeID);
+      validation.emotion_valid = false;
+    }
+    if (Number(planningConstraints.character_arc_min_beats ?? 0) > episode.character_arc_entity_ids.length) {
+      block('CHARACTER_ARC_BEATS_INSUFFICIENT', 'Episode lacks the configured minimum character-arc coverage.', 'episode', episodeID);
+      validation.character_arc_valid = false;
+    }
+  }
+  validation.hard_rules_satisfied = !diagnostics.some((item) => item.severity === 'blocking');
+  const creativeSuggestions = asArray(input.provider_suggestions).map((suggestion, index) => ({
+    suggestion_id: String(suggestion.suggestion_id || makeID('suggestion_', [run.compiler_run_id, index, suggestion.summary || ''])),
+    provider: String(suggestion.provider || 'unknown').slice(0, 200),
+    scope: String(suggestion.scope || 'season').slice(0, 200),
+    summary: String(suggestion.summary || '').slice(0, 4000),
+    rationale: String(suggestion.rationale || '').slice(0, 4000),
+  })).filter((suggestion) => suggestion.summary);
+  const plan = {
+    schema_version: 'compiler-plan.v2', compiler_run_id: run.compiler_run_id, episodes, diagnostics, validation,
+    season_curves: {
+      emotion: episodes.map((episode) => Math.max(...episode.emotion_curve.map((item) => item.emotion))),
+      information_reveal: episodes.map((episode) => episode.information_reveal_amount),
+      duration: episodes.map((episode) => episode.estimated_duration_seconds),
+    },
+    creative_suggestions: creativeSuggestions,
+  };
   stage('reviewable_plan', {episode_count: episodes.length, output_hash: digest(plan), blocking_diagnostic_count: diagnostics.filter((item) => item.severity === 'blocking').length});
   const publishable = Object.values(validation).every(Boolean) && episodes.length === episodeCount && episodes.length > 0;
   return {plan, stages, publishable, output_hash: digest(plan), pipeline: PIPELINE};

@@ -27,14 +27,18 @@ if(!Array.isArray(plan.episodes)||plan.episodes.length<1)failures.push('episodes
 for(const episode of plan.episodes||[]){
   if(!Number.isInteger(episode.episode_number)||!Number.isInteger(episode.estimated_duration_seconds)||episode.estimated_duration_seconds<1)failures.push('episode numbers');
   if(!ids(episode.source_event_ids)||!episode.source_event_ids.length||!ids(episode.source_chapter_ids)||!episode.source_chapter_ids.length)failures.push('source audit ids');
-  for(const field of ['added_adaptation_content','merged_content','deviation_notes','event_assignments'])if(!Array.isArray(episode[field]))failures.push(field);
+  for(const field of ['added_adaptation_content','merged_content','deviation_notes','event_assignments','emotion_curve','character_arc_entity_ids','story_arc_revision_ids'])if(!Array.isArray(episode[field]))failures.push(field);
+  for(const field of ['three_second_opening','first_thirty_seconds_goal','core_conflict','climax','ending_hook'])if(typeof episode[field]!=='string')failures.push(field);
+  if(typeof episode.information_reveal_amount!=='number'||episode.information_reveal_amount<0||episode.information_reveal_amount>1)failures.push('information_reveal_amount');
   const assigned=(episode.event_assignments||[]).map((item)=>item.event_revision_id);
   if(JSON.stringify(assigned)!==JSON.stringify(episode.source_event_ids))failures.push('assignment audit mismatch');
   for(const merge of episode.merged_content||[])if(!ids(merge.source_event_ids)||merge.source_event_ids.length<2||!ids(merge.rule_ids)||!merge.rule_ids.length)failures.push('merge audit');
   for(const addition of episode.added_adaptation_content||[])if(!addition.description||!addition.reason||!ids(addition.rule_ids)||!addition.rule_ids.length)failures.push('addition audit');
 }
 const validation=plan.validation||{};
-for(const key of ['hard_rules_satisfied','event_references_valid','timeline_valid','causality_valid','foreshadowing_valid','duration_valid'])if(typeof validation[key]!=='boolean')failures.push(key);
+for(const key of ['hard_rules_satisfied','event_references_valid','timeline_valid','causality_valid','foreshadowing_valid','duration_valid','pacing_valid','hook_valid','emotion_valid','character_arc_valid','information_reveal_valid'])if(typeof validation[key]!=='boolean')failures.push(key);
+if(!plan.season_curves||!Array.isArray(plan.season_curves.emotion)||!Array.isArray(plan.season_curves.information_reveal)||!Array.isArray(plan.season_curves.duration))failures.push('season_curves');
+if(!Array.isArray(plan.creative_suggestions))failures.push('creative_suggestions');
 if(forbidden(plan))failures.push('forbidden provider payload');
 if(failures.length){
   plan.diagnostics=Array.isArray(plan.diagnostics)?plan.diagnostics:[];
@@ -63,7 +67,9 @@ SELECT jsonb_build_object(
     'ir_revision_id',run.ir_revision_id,'compiler_version',run.compiler_version),
   'spec',jsonb_build_object('source_version_id',spec.source_version_id,'ir_revision_id',spec.ir_revision_id,
     'status',spec.status,'scope_mode',spec.scope_mode,'target_episode_count',spec.target_episode_count,
-    'episode_duration_seconds',spec.episode_duration_seconds),
+    'episode_duration_seconds',spec.episode_duration_seconds,
+    'planning_constraints',COALESCE(run.checkpoint->'planning_constraints',spec.audience_profile->'planning_constraints','{}'::jsonb)),
+	'provider_suggestions',COALESCE(run.checkpoint->'provider_suggestions','[]'::jsonb),
   'scope_chapters',COALESCE((SELECT jsonb_agg(jsonb_build_object('chapter_id',chapter_id,'include_mode',include_mode) ORDER BY chapter_id)
     FROM drama.adaptation_scope_chapters WHERE adaptation_spec_version_id=spec.adaptation_spec_version_id),'[]'::jsonb),
   'scope_arcs',COALESCE((SELECT jsonb_agg(jsonb_build_object('story_arc_revision_id',story_arc_revision_id,'include_mode',include_mode) ORDER BY story_arc_revision_id)
@@ -73,7 +79,8 @@ SELECT jsonb_build_object(
     ORDER BY priority DESC,adaptation_rule_id) FROM drama.adaptation_rules WHERE adaptation_spec_version_id=spec.adaptation_spec_version_id),'[]'::jsonb),
   'events',COALESCE((SELECT jsonb_agg(jsonb_build_object('event_revision_id',event.event_revision_id,
     'fact_revision_id',event.fact_revision_id,'chapter_id',fact.chapter_id,'source_span_id',fact.primary_source_span_id,
-    'chapter_ordinal',version_chapter.ordinal,'summary',event.summary,'narrative_order',event.narrative_order,'importance',event.importance,
+    'chapter_ordinal',version_chapter.ordinal,'summary',event.summary,'event_type',event.event_type,
+    'narrative_order',event.narrative_order,'importance',event.importance,
     'story_arc_revision_ids',COALESCE((SELECT jsonb_agg(arc.story_arc_revision_id ORDER BY arc.story_arc_revision_id)
       FROM drama.story_arc_events arc WHERE arc.event_revision_id=event.event_revision_id),'[]'::jsonb),
     'participant_entity_revision_ids',COALESCE((SELECT jsonb_agg(DISTINCT participant.entity_revision_id ORDER BY participant.entity_revision_id)
@@ -178,18 +185,24 @@ guard AS MATERIALIZED (SELECT 1 AS ok FROM payload CROSS JOIN run_row run CROSS 
     WHERE NOT EXISTS (SELECT 1 FROM drama.adaptation_rules rule WHERE rule.adaptation_rule_id=rule_id
       AND rule.adaptation_spec_version_id=spec.adaptation_spec_version_id AND rule.rule_type='transform_required'))),
 inserted_plan AS (INSERT INTO drama.adaptation_plans(adaptation_plan_id,compiler_run_id,project_id,adaptation_spec_version_id,
-  version_number,status,is_current,content_hash,quality_report)
+  version_number,status,is_current,content_hash,quality_report,plan_name,strategy_label,workbench_snapshot,creative_suggestions)
   SELECT 'ap_'||replace(gen_random_uuid()::text,'-',''),run.compiler_run_id,run.project_id,run.adaptation_spec_version_id,
     COALESCE((SELECT max(version_number)+1 FROM drama.adaptation_plans WHERE project_id=run.project_id),1),
-    'waiting_review',false,payload.output_hash,jsonb_build_object('validation',payload.plan->'validation','diagnostics',payload.plan->'diagnostics')
+    'waiting_review',false,payload.output_hash,jsonb_build_object('validation',payload.plan->'validation','diagnostics',payload.plan->'diagnostics'),
+    '编译方案 '||COALESCE((SELECT max(version_number)+1 FROM drama.adaptation_plans WHERE project_id=run.project_id),1)::text,
+    'narrative_constraint_dp',payload.plan,COALESCE(payload.plan->'creative_suggestions','[]'::jsonb)
   FROM payload CROSS JOIN run_row run JOIN guard ON guard.ok=1 RETURNING *),
 inserted_episodes AS (INSERT INTO drama.adaptation_episode_plans(adaptation_episode_plan_id,adaptation_plan_id,episode_number,title,
   logline,estimated_duration_seconds,opening_hook,ending_hook,continuity_in,continuity_out,validation_report,content_hash,
-  source_event_ids,source_chapter_ids,added_adaptation_content,merged_content,deviation_notes)
+  source_event_ids,source_chapter_ids,added_adaptation_content,merged_content,deviation_notes,
+  three_second_opening,first_thirty_seconds_goal,core_conflict,climax,emotion_curve,information_reveal_amount,
+  character_arc_entity_ids,story_arc_revision_ids)
   SELECT 'aep_'||replace(gen_random_uuid()::text,'-',''),plan.adaptation_plan_id,(episode->>'episode_number')::integer,
     episode->>'title',episode->>'logline',(episode->>'estimated_duration_seconds')::integer,episode->>'opening_hook',episode->>'ending_hook',
     episode->'continuity_in',episode->'continuity_out',payload.plan->'validation',encode(drama.digest(convert_to(episode::text,'UTF8'),'sha256'),'hex'),
-    episode->'source_event_ids',episode->'source_chapter_ids',episode->'added_adaptation_content',episode->'merged_content',episode->'deviation_notes'
+    episode->'source_event_ids',episode->'source_chapter_ids',episode->'added_adaptation_content',episode->'merged_content',episode->'deviation_notes',
+    episode->>'three_second_opening',episode->>'first_thirty_seconds_goal',episode->>'core_conflict',episode->>'climax',
+    episode->'emotion_curve',(episode->>'information_reveal_amount')::numeric,episode->'character_arc_entity_ids',episode->'story_arc_revision_ids'
   FROM payload CROSS JOIN inserted_plan plan CROSS JOIN LATERAL jsonb_array_elements(payload.plan->'episodes') episode RETURNING *),
 inserted_assignments AS (INSERT INTO drama.episode_event_assignments(episode_event_assignment_id,adaptation_episode_plan_id,
   event_revision_id,sequence_number,usage_mode,merge_group_id,rule_trace,idempotency_key)
