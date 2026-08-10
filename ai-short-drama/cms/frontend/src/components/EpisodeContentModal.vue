@@ -1,12 +1,18 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
-  AlertCircle, AlertTriangle, CheckCircle2, Clock3, Eye, FileText, GitCompareArrows,
-  LoaderCircle, MapPin, MessageSquareText, Pencil, Play, Save, ScrollText,
-  ShieldCheck, X,
+	AlertCircle, AlertTriangle, ArrowDown, ArrowUp, Bot, CheckCircle2, Clock3, Copy,
+	Eye, FileText, GitCompareArrows, History, LoaderCircle, MapPin, MessageSquareText,
+	Pencil, Play, Plus, RotateCcw, Save, Scissors, Search, ScrollText, ShieldCheck,
+	Trash2, X,
 } from 'lucide-vue-next'
 import { api } from '../services/api'
-import { buildEpisodeContentPayload, cloneEpisodeContent, episodeContentChanged } from '../services/episodeContent'
+import {
+	batchReplaceScript, buildEpisodeContentPayload, calculateScriptMetrics, cloneEpisodeContent,
+	copyScene, deleteAction, deleteDialogue, deleteScene, episodeContentChanged, insertAction,
+	insertDialogue, insertScene, mergeSceneWithNext, moveAction, moveDialogue, moveScene,
+	searchScript, splitScene, structuredScriptDiff, validateStructuredScript,
+} from '../services/episodeContent'
 import StatusBadge from './StatusBadge.vue'
 
 const props = defineProps({
@@ -24,17 +30,38 @@ const editing = ref(false)
 const activeTab = ref('outline')
 const savedNotice = ref('')
 const pendingPlan = ref(null)
+const pendingPlanOrigin = ref('draft')
 const selectedRebuildTasks = ref([])
+const selectedBlocks = ref([])
+const aiOperation = ref('compress_dialogue')
+const aiConvertTo = ref('dialogue')
+const aiInstruction = ref('')
+const searchText = ref('')
+const replacementText = ref('')
+const replaceNotice = ref('')
+const versions = ref([])
+const leftVersionId = ref('')
+const rightVersionId = ref('')
+const selectedRestorePaths = ref([])
 
 const changed = computed(() => content.value && draft.value && episodeContentChanged(content.value, draft.value))
 const current = computed(() => editing.value ? draft.value : content.value)
 const script = computed(() => current.value?.script || null)
 const planDiff = computed(() => pendingPlan.value?.plan?.expected_changes || [])
 const rebuildSelectionChanged = computed(() => {
+	if (pendingPlanOrigin.value !== 'draft') return false
   const planned = pendingPlan.value?.plan?.impact?.rebuild_tasks || []
   return planned.length !== selectedRebuildTasks.value.length ||
     planned.some(item => !selectedRebuildTasks.value.includes(item))
 })
+const referenceContext = computed(() => content.value?.reference_context || {})
+const metrics = computed(() => calculateScriptMetrics(current.value))
+const diagnostics = computed(() => validateStructuredScript(current.value, referenceContext.value))
+const searchMatches = computed(() => searchScript(current.value, searchText.value))
+const leftVersion = computed(() => versions.value.find(item => item.entity_version_id === leftVersionId.value))
+const rightVersion = computed(() => versions.value.find(item => item.entity_version_id === rightVersionId.value))
+const versionDiff = computed(() => leftVersion.value && rightVersion.value
+	? structuredScriptDiff(leftVersion.value.content, rightVersion.value.content) : [])
 
 function formatDuration(seconds) {
   const value = Number(seconds || 0)
@@ -57,8 +84,11 @@ async function loadContent() {
   loading.value = true
   error.value = ''
   try {
-    content.value = await api.getEpisodeContent(props.projectId, props.episodeRun.episode_run_id)
-    draft.value = cloneEpisodeContent(content.value)
+		content.value = await api.getEpisodeContent(props.projectId, props.episodeRun.episode_run_id)
+		draft.value = cloneEpisodeContent(content.value)
+		versions.value = await api.getEntityVersions(props.projectId, 'episode_content', content.value.episode_id)
+		rightVersionId.value = versions.value.find(item => item.is_current)?.entity_version_id || versions.value[0]?.entity_version_id || ''
+		leftVersionId.value = versions.value.find(item => !item.is_current)?.entity_version_id || versions.value[1]?.entity_version_id || rightVersionId.value
   } catch (err) {
     error.value = err.message
   } finally {
@@ -77,8 +107,10 @@ function cancelEdit() {
   draft.value = cloneEpisodeContent(content.value)
   editing.value = false
   error.value = ''
-  pendingPlan.value = null
-  selectedRebuildTasks.value = []
+	pendingPlan.value = null
+	pendingPlanOrigin.value = 'draft'
+	selectedRebuildTasks.value = []
+	selectedBlocks.value = []
 }
 
 function requestClose() {
@@ -102,6 +134,7 @@ async function saveContent() {
         locks: ['character'],
       },
     )
+    pendingPlanOrigin.value = 'draft'
     selectedRebuildTasks.value = [...(pendingPlan.value.plan?.impact?.rebuild_tasks || [])]
     savedNotice.value = '修改计划已生成；正式内容尚未改变。'
   } catch (err) {
@@ -109,6 +142,112 @@ async function saveContent() {
   } finally {
     saving.value = false
   }
+}
+
+function sceneMetric(sceneId) {
+	return metrics.value.scenes.find(item => item.scene_id === sceneId) || {}
+}
+
+function selectValue(type, id) {
+	return `${type}:${id}`
+}
+
+function addSceneAfter(index) {
+	const scene = insertScene(draft.value, index)
+	selectedBlocks.value = [selectValue('scene', scene.scene_id)]
+}
+
+function removeScene(scene) {
+	if (window.confirm(`删除场景 ${scene.scene_number}？正式剧本会在 change plan 执行后才改变。`)) deleteScene(draft.value, scene.scene_id)
+}
+
+function duplicateScene(scene) {
+	copyScene(draft.value, scene.scene_id)
+}
+
+function splitSceneAt(scene, dialogueIndex) {
+	splitScene(draft.value, scene.scene_id, dialogueIndex)
+}
+
+function mergeScene(scene) {
+	mergeSceneWithNext(draft.value, scene.scene_id)
+}
+
+function addDialogue(scene, type = 'dialogue') {
+	const dialogue = insertDialogue(scene, scene.dialogues.length - 1, type)
+	selectedBlocks.value = [selectValue('dialogue', dialogue.dialogue_id)]
+}
+
+function addAction(scene) {
+	const action = insertAction(scene, scene.actions.length - 1)
+	selectedBlocks.value = [selectValue('action', action.action_id)]
+}
+
+function syncDialogueCharacter(dialogue) {
+	const character = referenceContext.value.characters?.find(item => item.character_id === dialogue.character_id)
+	if (character) dialogue.speaker_name = character.name
+}
+
+async function runAI() {
+	if (!selectedBlocks.value.length || saving.value) {
+		error.value = '请先勾选场景、动作或台词范围。'
+		return
+	}
+	saving.value = true
+	error.value = ''
+	try {
+		const selection = { scene_ids: [], dialogue_ids: [], action_ids: [] }
+		for (const value of selectedBlocks.value) {
+			const [type, ...rest] = value.split(':')
+			const id = rest.join(':')
+			if (type === 'scene') selection.scene_ids.push(id)
+			if (type === 'dialogue') selection.dialogue_ids.push(id)
+			if (type === 'action') selection.action_ids.push(id)
+		}
+		pendingPlan.value = await api.createEpisodeContentAIChangePlan(
+			props.projectId, props.episodeRun.episode_run_id, {
+				draft: {
+					...buildEpisodeContentPayload(draft.value),
+					must_preserve: ['原著事件', 'Source Span', '人物状态', 'must_preserve'],
+					locks: ['character'], requested_by: 'structured-script-editor',
+				},
+				selection, operation: aiOperation.value,
+				convert_to: aiOperation.value === 'convert' ? aiConvertTo.value : '',
+				instruction: aiInstruction.value,
+			},
+		)
+		pendingPlanOrigin.value = 'ai'
+		selectedRebuildTasks.value = [...(pendingPlan.value.plan?.impact?.rebuild_tasks || [])]
+		savedNotice.value = 'AI 已返回结构化 diff；正式剧本尚未改变。'
+	} catch (err) {
+		error.value = err.message
+	} finally {
+		saving.value = false
+	}
+}
+
+function replaceAll() {
+	const count = batchReplaceScript(draft.value, searchText.value, replacementText.value)
+	replaceNotice.value = count ? `已在草稿替换 ${count} 处；保存后进入 change plan。` : '没有找到匹配内容。'
+}
+
+async function restoreVersion() {
+	if (!leftVersion.value || !selectedRestorePaths.value.length || saving.value) return
+	saving.value = true
+	error.value = ''
+	try {
+		pendingPlan.value = await api.createVersionRestorePlan(
+			props.projectId, leftVersion.value.entity_version_id,
+			{ mode: 'rollback', paths: selectedRestorePaths.value, requested_by: 'structured-script-editor' },
+		)
+		pendingPlanOrigin.value = 'restore'
+		selectedRebuildTasks.value = [...(pendingPlan.value.plan?.impact?.rebuild_tasks || [])]
+		savedNotice.value = '局部恢复计划已生成；确认与执行前 current 版本不变。'
+	} catch (err) {
+		error.value = err.message
+	} finally {
+		saving.value = false
+	}
 }
 
 async function confirmPlan(executeImmediately = false) {
@@ -153,8 +292,9 @@ async function executePlan(nested = false) {
     editing.value = false
     savedNotice.value = '已创建新版本并切换 current；重建任务已进入 pending。'
     emit('saved', content.value)
-    pendingPlan.value = null
-    selectedRebuildTasks.value = []
+		pendingPlan.value = null
+		pendingPlanOrigin.value = 'draft'
+		selectedRebuildTasks.value = []
   } catch (err) {
     error.value = err.message
   } finally {
@@ -224,7 +364,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <article><b>must_preserve</b><span v-for="item in pendingPlan.plan.must_preserve" :key="item"><ShieldCheck :size="12" />{{ item }}</span></article>
             <article><b>锁定项</b><span v-for="item in pendingPlan.plan.locks" :key="item">锁定 {{ item }}</span><span v-if="!pendingPlan.plan.locks.length">无</span></article>
             <article><b>影响 artifact</b><span v-for="item in pendingPlan.impacts" :key="item.artifact_id">{{ item.artifact_type }} · {{ item.native_entity_id }}</span><span v-for="item in pendingPlan.plan.impact.downstream" :key="`planned:${item}`">{{ item }} · 计划范围</span><span v-if="!pendingPlan.impacts.length && !pendingPlan.plan.impact.downstream.length">无现存下游 artifact</span></article>
-            <article><b>重建范围 / 选择</b><label v-for="item in pendingPlan.plan.impact.rebuild_tasks" :key="item"><input v-model="selectedRebuildTasks" type="checkbox" :value="item" :disabled="pendingPlan.status !== 'validated' || saving" />{{ item }} · 选中后执行状态为 pending</label><span v-if="rebuildSelectionChanged">未选任务对应 artifact 将保持 stale，不会被伪标记为已完成。</span><span v-if="!pendingPlan.plan.impact.rebuild_tasks.length">无需重建，可保存并确认</span></article>
+            <article><b>重建范围 / 选择</b><label v-for="item in pendingPlan.plan.impact.rebuild_tasks" :key="item"><input v-model="selectedRebuildTasks" type="checkbox" :value="item" :disabled="pendingPlan.status !== 'validated' || saving || pendingPlanOrigin !== 'draft'" />{{ item }} · 选中后执行状态为 pending</label><span v-if="pendingPlanOrigin !== 'draft'">AI 与恢复计划锁定其精确重建范围。</span><span v-if="rebuildSelectionChanged">未选任务对应 artifact 将保持 stale，不会被伪标记为已完成。</span><span v-if="!pendingPlan.plan.impact.rebuild_tasks.length">无需重建，可保存并确认</span></article>
           </div>
           <div class="episode-plan-diff">
             <div class="episode-plan-diff-head"><b>字段</b><b>修改前</b><b>修改后</b></div>
@@ -240,10 +380,11 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
         </section>
 
         <template v-else>
-        <nav class="episode-content-tabs" aria-label="单集内容类型">
-          <button :class="{ active: activeTab === 'outline' }" @click="activeTab = 'outline'"><FileText :size="15" />分集大纲</button>
-          <button :class="{ active: activeTab === 'script' }" @click="activeTab = 'script'"><ScrollText :size="15" />单集剧本<i>{{ content.script ? content.script.scenes.length : 0 }}</i></button>
-        </nav>
+		<nav class="episode-content-tabs" aria-label="单集内容类型">
+			<button :class="{ active: activeTab === 'outline' }" @click="activeTab = 'outline'"><FileText :size="15" />分集大纲</button>
+			<button :class="{ active: activeTab === 'script' }" @click="activeTab = 'script'"><ScrollText :size="15" />单集剧本<i>{{ content.script ? content.script.scenes.length : 0 }}</i></button>
+			<button :class="{ active: activeTab === 'versions' }" @click="activeTab = 'versions'"><History :size="15" />版本比较<i>{{ versions.length }}</i></button>
+		</nav>
 
         <main class="episode-content-body">
           <section v-if="activeTab === 'outline'" class="episode-outline-content">
@@ -272,12 +413,39 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             </template>
           </section>
 
-          <section v-else class="episode-script-content">
+		  <section v-else-if="activeTab === 'script'" class="episode-script-content">
             <div v-if="!script" class="episode-script-empty">
               <ScrollText :size="28" /><h4>本集剧本尚未生成</h4><p>当前仍可在“分集大纲”中查看和修改标题、冲突、钩子等内容。</p>
             </div>
-            <template v-else>
-              <div v-if="editing" class="episode-script-edit-head">
+			<template v-else>
+			  <div class="script-live-metrics">
+				<span><Clock3 :size="14" />整集 {{ formatDuration(Math.round(metrics.duration_ms / 1000)) }}</span>
+				<span>对白 {{ formatDuration(Math.round(metrics.dialogue_duration_ms / 1000)) }}</span>
+				<span>动作比例 {{ Math.round(metrics.action_ratio * 100) }}%</span>
+				<span :class="{ danger: diagnostics.some(item => item.severity === 'blocking') }">{{ diagnostics.length }} 个结构问题</span>
+			  </div>
+			  <div v-if="editing" class="script-editor-toolbar">
+				<div class="script-ai-tools">
+				  <Bot :size="17" />
+				  <select v-model="aiOperation" aria-label="AI 操作">
+					<option value="compress_dialogue">压缩对白</option><option value="colloquialize">口语化</option>
+					<option value="strengthen_conflict">加强冲突</option><option value="strengthen_hook">增强钩子</option>
+					<option value="convert">转对白 / 动作 / 旁白</option><option value="rewrite_preserve_facts">保持剧情事实改写</option>
+				  </select>
+				  <select v-if="aiOperation === 'convert'" v-model="aiConvertTo" aria-label="转换类型">
+					<option value="dialogue">对白</option><option value="action">动作</option><option value="narration">旁白</option>
+					<option value="inner_monologue">内心独白</option><option value="off_screen">画外音</option>
+				  </select>
+				  <input v-model="aiInstruction" placeholder="补充要求（可选）" />
+				  <button class="button button-primary" :disabled="saving || !selectedBlocks.length" @click="runAI">生成结构化 diff（{{ selectedBlocks.length }}）</button>
+				</div>
+				<div class="script-search-tools">
+				  <Search :size="16" /><input v-model="searchText" placeholder="人物称谓或专有名词" /><input v-model="replacementText" placeholder="替换为" />
+				  <button class="button button-secondary" :disabled="!searchText" @click="replaceAll">批量替换</button><small>{{ searchText ? `找到 ${searchMatches.reduce((sum, item) => sum + item.count, 0)} 处` : '' }} {{ replaceNotice }}</small>
+				  <div v-if="searchText && searchMatches.length" class="script-search-results"><code v-for="item in searchMatches.slice(0, 12)" :key="item.path">{{ item.path }} · {{ item.count }} 处 · {{ item.text }}</code><small v-if="searchMatches.length > 12">另有 {{ searchMatches.length - 12 }} 个字段命中</small></div>
+				</div>
+			  </div>
+			  <div v-if="editing" class="episode-script-edit-head">
                 <label class="episode-field full"><span>剧本标题</span><input v-model="draft.script.title" maxlength="400" /></label>
                 <label class="episode-field"><span>开场钩子</span><textarea v-model="draft.script.opening_hook" rows="2" /></label>
                 <label class="episode-field"><span>高潮</span><textarea v-model="draft.script.climax" rows="2" /></label>
@@ -291,13 +459,22 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <div><span>结尾钩子</span><p>{{ script.ending_hook || '—' }}</p></div>
               </div>
 
-              <div class="episode-scene-list">
-                <article v-for="scene in script.scenes" :key="scene.scene_id" class="episode-scene-card">
-                  <header>
-                    <b>场景 {{ scene.scene_number }}</b>
-                    <span><MapPin :size="13" />{{ scene.location_name || '未指定地点' }}</span>
-                    <span><Clock3 :size="13" />{{ scene.time_of_day || '未指定' }} · {{ scene.interior_exterior || '未指定' }} · {{ formatDuration(scene.estimated_duration_seconds) }}</span>
-                  </header>
+			  <div class="structured-editor-layout">
+			  <div class="episode-scene-list">
+				<button v-if="editing" class="scene-add-button" @click="addSceneAfter(-1)"><Plus :size="15" />在开头新增场景</button>
+				<article v-for="scene in script.scenes" :key="scene.scene_id" class="episode-scene-card">
+				  <header>
+					<label v-if="editing" class="block-selector" title="选择整个场景作为 AI 范围"><input v-model="selectedBlocks" type="checkbox" :value="selectValue('scene', scene.scene_id)" /></label>
+					<b>场景 {{ scene.scene_number }}</b>
+					<span><MapPin :size="13" />{{ scene.location_name || '未指定地点' }}</span>
+					<span><Clock3 :size="13" />{{ scene.time_of_day || '未指定' }} · {{ scene.interior_exterior || '未指定' }} · 实时 {{ formatDuration(Math.round((sceneMetric(scene.scene_id).duration_ms || 0) / 1000)) }} · 对白 {{ formatDuration(Math.round((sceneMetric(scene.scene_id).dialogue_duration_ms || 0) / 1000)) }} · 动作 {{ Math.round((sceneMetric(scene.scene_id).action_ratio || 0) * 100) }}%</span>
+					<div v-if="editing" class="scene-structure-actions">
+					  <button title="上移" @click="moveScene(draft, scene.scene_id, -1)"><ArrowUp :size="13" /></button><button title="下移" @click="moveScene(draft, scene.scene_id, 1)"><ArrowDown :size="13" /></button>
+					  <button title="复制场景" @click="duplicateScene(scene)"><Copy :size="13" /></button><button title="拆分场景" @click="splitSceneAt(scene, Math.ceil(scene.dialogues.length / 2))"><Scissors :size="13" /></button>
+					  <button title="与下一场合并" @click="mergeScene(scene)"><GitCompareArrows :size="13" /></button><button title="删除场景" @click="removeScene(scene)"><Trash2 :size="13" /></button>
+					  <button title="在后面新增场景" @click="addSceneAfter(scene.scene_number - 1)"><Plus :size="13" /></button>
+					</div>
+				  </header>
 
                   <div v-if="editing" class="episode-scene-editor">
                     <div class="episode-edit-grid compact">
@@ -305,14 +482,17 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                       <label class="episode-field"><span>时间</span><input v-model="scene.time_of_day" /></label>
                       <label class="episode-field"><span>内/外景</span><input v-model="scene.interior_exterior" /></label>
                       <label class="episode-field"><span>时长（秒）</span><input v-model.number="scene.estimated_duration_seconds" type="number" min="1" max="1800" /></label>
-                      <label class="episode-field full"><span>场景目的</span><textarea v-model="scene.scene_purpose" rows="2" /></label>
-                      <label class="episode-field full"><span>情绪变化</span><textarea v-model="scene.emotional_change" rows="2" /></label>
-                    </div>
-                    <div v-if="scene.actions.length" class="episode-action-editor">
-                      <strong>动作</strong>
-                      <label v-for="(action, actionIndex) in scene.actions" :key="actionIndex">
-                        <span>{{ actionIndex + 1 }}</span><textarea v-model="action.description" rows="2" />
-                      </label>
+					  <label class="episode-field full"><span>场景目的</span><textarea v-model="scene.scene_purpose" rows="2" /></label>
+					  <label class="episode-field full"><span>情绪变化</span><textarea v-model="scene.emotional_change" rows="2" /></label>
+					  <div class="scene-character-picker full"><span>在场人物</span><label v-for="character in referenceContext.characters" :key="character.character_id"><input v-model="scene.character_ids" type="checkbox" :value="character.character_id" />{{ character.name }}</label><small v-if="!referenceContext.characters?.length">暂无可绑定的人物资料。</small></div>
+					</div>
+					<div class="episode-action-editor">
+					  <strong>动作 <button type="button" @click="addAction(scene)"><Plus :size="12" />新增</button></strong>
+					  <label v-for="(action, actionIndex) in scene.actions" :key="actionIndex">
+						<input v-model="selectedBlocks" type="checkbox" :value="selectValue('action', action.action_id)" title="选择为 AI 范围" />
+						<span>{{ actionIndex + 1 }}</span><textarea v-model="action.description" rows="2" />
+						<i><button type="button" @click="moveAction(scene, action.action_id, -1)"><ArrowUp :size="12" /></button><button type="button" @click="moveAction(scene, action.action_id, 1)"><ArrowDown :size="12" /></button><button type="button" @click="deleteAction(scene, action.action_id)"><Trash2 :size="12" /></button></i>
+					  </label>
                     </div>
                   </div>
                   <div v-else class="episode-scene-copy">
@@ -321,13 +501,14 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                     <div v-if="scene.actions?.length" class="episode-action-list"><span>动作</span><ol><li v-for="(action, actionIndex) in scene.actions" :key="actionIndex">{{ actionDescription(action) }}</li></ol></div>
                   </div>
 
-                  <div class="episode-dialogue-list">
-                    <div class="episode-dialogue-heading"><MessageSquareText :size="15" /><strong>对白与旁白</strong><span>{{ scene.dialogues.length }} 条</span></div>
-                    <article v-for="dialogue in scene.dialogues" :key="dialogue.dialogue_id" class="episode-dialogue-row">
-                      <template v-if="editing">
-                        <div class="dialogue-edit-meta">
-                          <label class="episode-field"><span>类型</span><select v-model="dialogue.dialogue_type"><option value="dialogue">对白</option><option value="narration">旁白</option><option value="inner_monologue">内心独白</option><option value="off_screen">画外音</option></select></label>
-                          <label class="episode-field"><span>说话人</span><input v-model="dialogue.speaker_name" /></label>
+				  <div class="episode-dialogue-list">
+					<div class="episode-dialogue-heading"><MessageSquareText :size="15" /><strong>对白与旁白</strong><span>{{ scene.dialogues.length }} 条</span><div v-if="editing"><button @click="addDialogue(scene, 'dialogue')"><Plus :size="12" />对白</button><button @click="addDialogue(scene, 'narration')">旁白</button><button @click="addDialogue(scene, 'inner_monologue')">内心</button><button @click="addDialogue(scene, 'off_screen')">画外音</button></div></div>
+					<article v-for="dialogue in scene.dialogues" :key="dialogue.dialogue_id" class="episode-dialogue-row">
+					  <template v-if="editing">
+						<div class="dialogue-structure-actions"><label><input v-model="selectedBlocks" type="checkbox" :value="selectValue('dialogue', dialogue.dialogue_id)" />AI 选区</label><button @click="moveDialogue(scene, dialogue.dialogue_id, -1)"><ArrowUp :size="12" /></button><button @click="moveDialogue(scene, dialogue.dialogue_id, 1)"><ArrowDown :size="12" /></button><button @click="deleteDialogue(scene, dialogue.dialogue_id)"><Trash2 :size="12" /></button></div>
+						<div class="dialogue-edit-meta">
+						  <label class="episode-field"><span>类型</span><select v-model="dialogue.dialogue_type"><option value="dialogue">对白</option><option value="narration">旁白</option><option value="inner_monologue">内心独白</option><option value="off_screen">画外音</option></select></label>
+						  <label class="episode-field"><span>说话人</span><select v-model="dialogue.character_id" @change="syncDialogueCharacter(dialogue)"><option :value="null">未绑定角色</option><option v-for="character in referenceContext.characters" :key="character.character_id" :value="character.character_id">{{ character.name }}</option></select><input v-model="dialogue.speaker_name" /></label>
                           <label class="episode-field"><span>情绪</span><input v-model="dialogue.emotion" /></label>
                           <label class="episode-field"><span>时长（毫秒）</span><input v-model.number="dialogue.estimated_duration_ms" type="number" min="1" max="600000" /></label>
                         </div>
@@ -343,10 +524,28 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                     <p v-if="!scene.dialogues.length" class="episode-dialogue-empty">本场景暂无对白。</p>
                   </div>
                 </article>
-              </div>
-            </template>
-          </section>
-        </main>
+			  </div>
+			  <aside class="script-reference-sidebar">
+				<section><header><AlertTriangle :size="15" /><strong>实时校验</strong><b>{{ diagnostics.length }}</b></header><p v-if="!diagnostics.length" class="reference-empty">未发现结构问题。</p><button v-for="issue in diagnostics" :key="`${issue.code}:${issue.scene_id}:${issue.dialogue_id}:${issue.action_id}`" :class="issue.severity"><code>{{ issue.code }}</code><span>{{ issue.message }}</span></button></section>
+				<section><header><FileText :size="15" /><strong>原著事件</strong><b>{{ referenceContext.events?.length || 0 }}</b></header><article v-for="event in referenceContext.events" :key="event.event_revision_id"><code>{{ event.event_revision_id }}</code><p>{{ event.summary }}</p><small>{{ event.location_name || '地点未标注' }} · {{ event.participants?.map(item => item.name).join('、') || '无人物' }}</small></article><p v-if="!referenceContext.events?.length" class="reference-empty">当前场景未引用原著事件。</p></section>
+				<section><header><MapPin :size="15" /><strong>Source Span</strong><b>{{ referenceContext.source_spans?.length || 0 }}</b></header><article v-for="span in referenceContext.source_spans" :key="span.source_span_id"><code>{{ span.source_span_id }}</code><p>{{ span.evidence_text || '无证据摘录' }}</p><small>{{ span.chapter_id }} · {{ span.start_codepoint }}–{{ span.end_codepoint }}</small></article></section>
+				<section><header><MessageSquareText :size="15" /><strong>人物状态</strong><b>{{ referenceContext.character_states?.length || 0 }}</b></header><article v-for="state in referenceContext.character_states" :key="`${state.character_id}:${state.state_dimension}:${state.trigger_event_revision_id}`"><strong>{{ state.name }} · {{ state.state_dimension }}</strong><p>{{ JSON.stringify(state.before_state) }} → {{ JSON.stringify(state.after_state) }}</p></article></section>
+				<section><header><ShieldCheck :size="15" /><strong>must_preserve</strong><b>{{ referenceContext.must_preserve?.length || 0 }}</b></header><article v-for="rule in referenceContext.must_preserve" :key="rule.adaptation_rule_id"><code>{{ rule.enforcement }} · {{ rule.target_type }}</code><p>{{ rule.rationale || rule.target_id || JSON.stringify(rule.parameters) }}</p></article></section>
+			  </aside>
+			  </div>
+			</template>
+		  </section>
+
+		  <section v-else class="episode-version-compare">
+			<header><div><span>VERSIONED SCRIPT</span><h4>版本并排比较与局部恢复</h4><p>恢复会创建 change plan 和新版本，不覆盖历史版本及其下游产物。</p></div></header>
+			<div v-if="versions.length < 2" class="episode-script-empty"><History :size="28" /><h4>尚无可比较的历史版本</h4><p>首次执行修改后，原版本与 successor 会同时保留在这里。</p></div>
+			<template v-else>
+			  <div class="version-pickers"><label>恢复来源<select v-model="leftVersionId"><option v-for="item in versions" :key="item.entity_version_id" :value="item.entity_version_id">v{{ item.version }} · {{ item.source_type }}{{ item.is_current ? '（当前）' : '' }}</option></select></label><GitCompareArrows :size="20" /><label>比较目标<select v-model="rightVersionId"><option v-for="item in versions" :key="item.entity_version_id" :value="item.entity_version_id">v{{ item.version }} · {{ item.source_type }}{{ item.is_current ? '（当前）' : '' }}</option></select></label></div>
+			  <div class="version-diff-table"><div class="head"><b>恢复</b><b>路径</b><b>v{{ leftVersion?.version }}</b><b>v{{ rightVersion?.version }}</b></div><label v-for="row in versionDiff" :key="row.path"><input v-model="selectedRestorePaths" type="checkbox" :value="row.path" /><code>{{ row.kind }} · {{ row.path }}</code><pre>{{ formatDiffValue(row.before) }}</pre><pre>{{ formatDiffValue(row.after) }}</pre></label></div>
+			  <button class="button button-primary version-restore-button" :disabled="!selectedRestorePaths.length || saving || leftVersion?.is_current" @click="restoreVersion"><RotateCcw :size="15" />生成所选 {{ selectedRestorePaths.length }} 项的局部恢复计划</button>
+			</template>
+		  </section>
+		</main>
 
         <footer v-if="editing" class="episode-content-footer">
           <span>{{ changed ? '有未保存的修改' : '尚未修改内容' }}</span>

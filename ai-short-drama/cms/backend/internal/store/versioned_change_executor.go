@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -26,15 +27,21 @@ type pendingRebuildTarget struct {
 }
 
 func impactedNativeEntityIDs(plan localedit.Plan) []string {
-	ids := []string{plan.Target.EntityID}
 	if plan.Target.EntityType != "episode_content" {
-		return ids
+		return []string{plan.Target.EntityID}
 	}
+	ids := []string{}
+	broadEpisodeChange := false
 	for _, change := range plan.ExpectedChanges {
 		parts := strings.Split(change.Field, ".")
-		if len(parts) == 3 && (parts[0] == "scene" || parts[0] == "dialogue") {
+		if len(parts) >= 2 && (parts[0] == "scene" || parts[0] == "dialogue") {
 			ids = append(ids, parts[1])
+		} else {
+			broadEpisodeChange = true
 		}
+	}
+	if broadEpisodeChange || len(ids) == 0 {
+		ids = append(ids, plan.Target.EntityID)
 	}
 	return uniqueVersionedEntityIDs(ids)
 }
@@ -49,6 +56,9 @@ func enrichChangesWithDiff(
 	result := make([]localedit.Change, len(changes))
 	for index, change := range changes {
 		before, ok := lookupVersionedField(content, entityType, change.Field)
+		if change.Operation == "insert" {
+			before, ok = nil, true
+		}
 		if !ok && (entityType == "timeline" || change.Operation == "regenerate_segment") {
 			before, ok = nil, true
 		}
@@ -80,7 +90,7 @@ func enrichChangeTimeRanges(
 			dialogueID = entityID
 		case "episode_content":
 			parts := strings.Split(result[index].Field, ".")
-			if len(parts) == 3 && parts[0] == "dialogue" {
+			if len(parts) >= 2 && parts[0] == "dialogue" {
 				dialogueID = parts[1]
 			}
 		}
@@ -129,6 +139,9 @@ func materializeVersionedChange(
 			}
 		}
 		current, ok := lookupVersionedField(content, entityType, change.Field)
+		if change.Operation == "insert" && !ok {
+			current, ok = nil, true
+		}
 		if !ok && change.Operation == "regenerate_segment" {
 			current, ok = nil, true
 		}
@@ -152,13 +165,20 @@ func materializeVersionedChange(
 			return nil, fmt.Errorf("%w: cannot apply field %s", localedit.ErrInvalidPlan, change.Field)
 		}
 	}
+	if entityType == "episode_content" {
+		if err := validateMaterializedEpisodeStructure(content); err != nil {
+			return nil, err
+		}
+	}
 	return json.Marshal(content)
 }
 
 func changedValue(before any, change localedit.Change) (any, error) {
 	switch change.Operation {
-	case "replace", "regenerate", "manual_replace":
+	case "replace", "regenerate", "manual_replace", "insert":
 		return change.Value, nil
+	case "remove":
+		return nil, nil
 	case "adjust":
 		beforeNumber, ok := numericValue(before)
 		if !ok {
@@ -227,6 +247,12 @@ func lookupVersionedField(content map[string]any, entityType, field string) (any
 		}
 		value, exists := dialogue[parts[2]]
 		return value, exists
+	case len(parts) == 2 && parts[0] == "scene":
+		scene := findScene(content, parts[1])
+		return scene, scene != nil
+	case len(parts) == 2 && parts[0] == "dialogue":
+		dialogue := findDialogue(content, parts[1])
+		return dialogue, dialogue != nil
 	default:
 		return nil, false
 	}
@@ -260,9 +286,119 @@ func setVersionedField(content map[string]any, entityType, field string, value a
 		}
 		dialogue[parts[2]] = value
 		return true
+	case len(parts) == 2 && parts[0] == "scene":
+		return setEpisodeScene(content, parts[1], value)
+	case len(parts) == 2 && parts[0] == "dialogue":
+		return setEpisodeDialogue(content, parts[1], value)
 	default:
 		return false
 	}
+}
+
+func setEpisodeScene(content map[string]any, sceneID string, value any) bool {
+	script, _ := content["script"].(map[string]any)
+	if script == nil {
+		return false
+	}
+	scenes, _ := script["scenes"].([]any)
+	index := -1
+	for i, item := range scenes {
+		scene, _ := item.(map[string]any)
+		if fmt.Sprint(scene["scene_id"]) == sceneID {
+			index = i
+			break
+		}
+	}
+	if value == nil {
+		if index < 0 {
+			return false
+		}
+		script["scenes"] = append(scenes[:index], scenes[index+1:]...)
+		return true
+	}
+	next, ok := value.(map[string]any)
+	if !ok || fmt.Sprint(next["scene_id"]) != sceneID || index >= 0 {
+		return false
+	}
+	if _, exists := next["dialogues"]; !exists {
+		next["dialogues"] = []any{}
+	}
+	script["scenes"] = append(scenes, next)
+	return true
+}
+
+func setEpisodeDialogue(content map[string]any, dialogueID string, value any) bool {
+	script, _ := content["script"].(map[string]any)
+	scenes, _ := script["scenes"].([]any)
+	foundScene, foundIndex := -1, -1
+	for sceneIndex, sceneItem := range scenes {
+		scene, _ := sceneItem.(map[string]any)
+		dialogues, _ := scene["dialogues"].([]any)
+		for dialogueIndex, dialogueItem := range dialogues {
+			dialogue, _ := dialogueItem.(map[string]any)
+			if fmt.Sprint(dialogue["dialogue_id"]) == dialogueID {
+				foundScene, foundIndex = sceneIndex, dialogueIndex
+				break
+			}
+		}
+	}
+	if value == nil {
+		if foundScene < 0 {
+			return false
+		}
+		scene, _ := scenes[foundScene].(map[string]any)
+		dialogues, _ := scene["dialogues"].([]any)
+		scene["dialogues"] = append(dialogues[:foundIndex], dialogues[foundIndex+1:]...)
+		return true
+	}
+	next, ok := value.(map[string]any)
+	if !ok || fmt.Sprint(next["dialogue_id"]) != dialogueID || foundScene >= 0 {
+		return false
+	}
+	sceneID := strings.TrimSpace(fmt.Sprint(next["scene_id"]))
+	target := findScene(content, sceneID)
+	if target == nil {
+		return false
+	}
+	dialogues, _ := target["dialogues"].([]any)
+	target["dialogues"] = append(dialogues, next)
+	return true
+}
+
+func validateMaterializedEpisodeStructure(content map[string]any) error {
+	script, _ := content["script"].(map[string]any)
+	if script == nil {
+		return nil
+	}
+	scenes, _ := script["scenes"].([]any)
+	sceneNumbers := map[int]bool{}
+	dialogueIDs := map[string]bool{}
+	for _, sceneItem := range scenes {
+		scene, ok := sceneItem.(map[string]any)
+		if !ok || strings.TrimSpace(fmt.Sprint(scene["scene_id"])) == "" {
+			return fmt.Errorf("%w: invalid scene in materialized script", ErrInvalidEpisodeContent)
+		}
+		numberValue, ok := numericValue(scene["scene_number"])
+		number := int(numberValue)
+		if !ok || number < 1 || sceneNumbers[number] || numberValue != float64(number) {
+			return fmt.Errorf("%w: scene_number must be a unique positive integer", ErrInvalidEpisodeContent)
+		}
+		sceneNumbers[number] = true
+		sequences := map[int]bool{}
+		dialogues, _ := scene["dialogues"].([]any)
+		for _, dialogueItem := range dialogues {
+			dialogue, ok := dialogueItem.(map[string]any)
+			id := strings.TrimSpace(fmt.Sprint(dialogue["dialogue_id"]))
+			sequenceValue, sequenceOK := numericValue(dialogue["sequence_number"])
+			sequence := int(sequenceValue)
+			if !ok || id == "" || dialogueIDs[id] || !sequenceOK || sequence < 1 ||
+				sequences[sequence] || sequenceValue != float64(sequence) {
+				return fmt.Errorf("%w: dialogue ids and sequence numbers must be unique", ErrInvalidEpisodeContent)
+			}
+			dialogueIDs[id], sequences[sequence] = true, true
+		}
+	}
+	return nil
 }
 
 func findScene(content map[string]any, sceneID string) map[string]any {
@@ -303,16 +439,70 @@ func restoreEpisodeContentChanges(
 		"script.climax", "script.ending_hook",
 	}
 	sourceScript, _ := source["script"].(map[string]any)
+	currentScript, _ := current["script"].(map[string]any)
 	sourceScenes, _ := sourceScript["scenes"].([]any)
+	currentScenes, _ := currentScript["scenes"].([]any)
+	sourceSceneByID, currentSceneByID := map[string]map[string]any{}, map[string]map[string]any{}
+	sourceDialogueByID, currentDialogueByID := map[string]map[string]any{}, map[string]map[string]any{}
 	for _, sceneItem := range sourceScenes {
 		scene, _ := sceneItem.(map[string]any)
 		sceneID := fmt.Sprint(scene["scene_id"])
-		if sceneID == "" || findScene(current, sceneID) == nil {
+		sourceSceneByID[sceneID] = scene
+		for _, dialogueItem := range anySlice(scene["dialogues"]) {
+			dialogue, _ := dialogueItem.(map[string]any)
+			copy := cloneJSONMap(dialogue)
+			copy["scene_id"] = sceneID
+			sourceDialogueByID[fmt.Sprint(dialogue["dialogue_id"])] = copy
+		}
+	}
+	for _, sceneItem := range currentScenes {
+		scene, _ := sceneItem.(map[string]any)
+		sceneID := fmt.Sprint(scene["scene_id"])
+		currentSceneByID[sceneID] = scene
+		for _, dialogueItem := range anySlice(scene["dialogues"]) {
+			dialogue, _ := dialogueItem.(map[string]any)
+			copy := cloneJSONMap(dialogue)
+			copy["scene_id"] = sceneID
+			currentDialogueByID[fmt.Sprint(dialogue["dialogue_id"])] = copy
+		}
+	}
+	changes := make([]localedit.Change, 0)
+	for _, id := range sortedJSONMapKeys(currentDialogueByID) {
+		dialogue := currentDialogueByID[id]
+		sourceDialogue := sourceDialogueByID[id]
+		if sourceDialogue == nil || sourceDialogue["scene_id"] != dialogue["scene_id"] {
+			changes = append(changes, localedit.Change{Operation: "remove", Field: "dialogue." + id})
+		}
+	}
+	for _, id := range sortedJSONMapKeys(currentSceneByID) {
+		if sourceSceneByID[id] == nil {
+			changes = append(changes, localedit.Change{Operation: "remove", Field: "scene." + id})
+		}
+	}
+	for _, id := range sortedJSONMapKeys(sourceSceneByID) {
+		scene := sourceSceneByID[id]
+		if currentSceneByID[id] == nil {
+			value := cloneJSONMap(scene)
+			value["dialogues"] = []any{}
+			changes = append(changes, localedit.Change{Operation: "insert", Field: "scene." + id, Value: value})
+		}
+	}
+	for _, id := range sortedJSONMapKeys(sourceDialogueByID) {
+		dialogue := sourceDialogueByID[id]
+		currentDialogue := currentDialogueByID[id]
+		if currentDialogue == nil || currentDialogue["scene_id"] != dialogue["scene_id"] {
+			changes = append(changes, localedit.Change{Operation: "insert", Field: "dialogue." + id, Value: dialogue})
+		}
+	}
+	for _, sceneItem := range sourceScenes {
+		scene, _ := sceneItem.(map[string]any)
+		sceneID := fmt.Sprint(scene["scene_id"])
+		if sceneID == "" || currentSceneByID[sceneID] == nil {
 			continue
 		}
 		for _, field := range []string{
 			"scene_number", "location_name", "time_of_day", "interior_exterior",
-			"scene_purpose", "actions", "emotional_change", "estimated_duration_seconds",
+			"character_ids", "scene_purpose", "actions", "emotional_change", "estimated_duration_seconds",
 		} {
 			paths = append(paths, "scene."+sceneID+"."+field)
 		}
@@ -320,18 +510,19 @@ func restoreEpisodeContentChanges(
 		for _, dialogueItem := range dialogues {
 			dialogue, _ := dialogueItem.(map[string]any)
 			dialogueID := fmt.Sprint(dialogue["dialogue_id"])
-			if dialogueID == "" || findDialogue(current, dialogueID) == nil {
+			currentDialogue := currentDialogueByID[dialogueID]
+			if dialogueID == "" || currentDialogue == nil ||
+				currentDialogue["scene_id"] != sceneID {
 				continue
 			}
 			for _, field := range []string{
-				"dialogue_type", "speaker_name", "text", "emotion",
+				"sequence_number", "dialogue_type", "speaker_name", "text", "emotion",
 				"performance_instruction", "estimated_duration_ms",
 			} {
 				paths = append(paths, "dialogue."+dialogueID+"."+field)
 			}
 		}
 	}
-	changes := make([]localedit.Change, 0)
 	for _, path := range paths {
 		sourceValue, sourceOK := lookupVersionedField(source, "episode_content", path)
 		currentValue, currentOK := lookupVersionedField(current, "episode_content", path)
@@ -343,6 +534,27 @@ func restoreEpisodeContentChanges(
 		}
 	}
 	return changes, nil
+}
+
+func anySlice(value any) []any {
+	result, _ := value.([]any)
+	return result
+}
+
+func cloneJSONMap(value map[string]any) map[string]any {
+	raw, _ := json.Marshal(value)
+	result := map[string]any{}
+	_ = json.Unmarshal(raw, &result)
+	return result
+}
+
+func sortedJSONMapKeys(values map[string]map[string]any) []string {
+	result := make([]string, 0, len(values))
+	for key := range values {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func readNativeEpisodeContentSnapshot(
@@ -753,40 +965,40 @@ func resolvePendingRebuildTargets(
 		broadEpisodeChange := false
 		for _, change := range changes {
 			parts := strings.Split(change.Field, ".")
-			if len(parts) == 3 && parts[0] == "dialogue" {
+			if len(parts) >= 2 && parts[0] == "dialogue" {
 				dialogueIDs = append(dialogueIDs, parts[1])
 			}
-			if len(parts) == 3 && parts[0] == "scene" {
+			if len(parts) >= 2 && parts[0] == "scene" {
 				sceneIDs = append(sceneIDs, parts[1])
 			}
-			if len(parts) != 3 || (parts[0] != "scene" && parts[0] != "dialogue") {
+			if len(parts) < 2 || (parts[0] != "scene" && parts[0] != "dialogue") {
 				broadEpisodeChange = true
 			}
 		}
 		dialogueIDs, sceneIDs = uniqueVersionedEntityIDs(dialogueIDs), uniqueVersionedEntityIDs(sceneIDs)
-		switch {
-		case !broadEpisodeChange && len(dialogueIDs) > 0 && len(sceneIDs) == 0:
+		if !broadEpisodeChange && (len(dialogueIDs) > 0 || len(sceneIDs) > 0) {
 			targets = nil
-			for _, id := range dialogueIDs {
-				resolved, err := resolvePendingRebuildTargets(
-					ctx, tx, action, "dialogue", id, changes, fallbackStart, fallbackEnd,
-				)
-				if err != nil {
-					return nil, err
+			if action != "update_continuity" && action != "regenerate_image" {
+				for _, id := range dialogueIDs {
+					resolved, err := resolvePendingRebuildTargets(
+						ctx, tx, action, "dialogue", id, changes, fallbackStart, fallbackEnd,
+					)
+					if err != nil {
+						return nil, err
+					}
+					targets = append(targets, resolved...)
 				}
-				targets = append(targets, resolved...)
 			}
-			return dedupePendingTargets(targets), nil
-		case !broadEpisodeChange && len(sceneIDs) > 0 && len(dialogueIDs) == 0:
-			targets = nil
-			for _, id := range sceneIDs {
-				resolved, err := resolvePendingRebuildTargets(
-					ctx, tx, action, "scene", id, changes, fallbackStart, fallbackEnd,
-				)
-				if err != nil {
-					return nil, err
+			if action != "regenerate_voice" && action != "update_subtitle" {
+				for _, id := range sceneIDs {
+					resolved, err := resolvePendingRebuildTargets(
+						ctx, tx, action, "scene", id, changes, fallbackStart, fallbackEnd,
+					)
+					if err != nil {
+						return nil, err
+					}
+					targets = append(targets, resolved...)
 				}
-				targets = append(targets, resolved...)
 			}
 			return dedupePendingTargets(targets), nil
 		}
@@ -875,6 +1087,11 @@ func resolvePendingRebuildTargets(
 			var scriptID string
 			err := tx.QueryRow(ctx, `SELECT script_id FROM drama.script_scenes
 				WHERE scene_id=$1`, entityID).Scan(&scriptID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return []pendingRebuildTarget{{
+					EntityType: "scene_continuity", EntityID: entityID,
+				}}, nil
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -983,7 +1200,7 @@ func matchingChangeRange(
 		matches := entityType != "dialogue"
 		if entityType == "dialogue" {
 			parts := strings.Split(change.Field, ".")
-			matches = len(parts) != 3 || parts[0] != "dialogue" || parts[1] == entityID
+			matches = len(parts) < 2 || parts[0] != "dialogue" || parts[1] == entityID
 		}
 		if matches && change.StartMS != nil && change.EndMS != nil {
 			return change.StartMS, change.EndMS

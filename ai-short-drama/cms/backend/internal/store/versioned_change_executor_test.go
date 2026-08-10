@@ -82,9 +82,9 @@ func TestEpisodeNestedDiffOnlyChangesRequestedDialogue(t *testing.T) {
 	before := json.RawMessage(`{
 		"outline":{"title":"Episode"},
 		"script":{"scenes":[
-			{"scene_id":"scene-1","dialogues":[
-				{"dialogue_id":"dialogue-1","text":"old line"},
-				{"dialogue_id":"dialogue-2","text":"untouched"}
+			{"scene_id":"scene-1","scene_number":1,"dialogues":[
+				{"dialogue_id":"dialogue-1","sequence_number":1,"text":"old line"},
+				{"dialogue_id":"dialogue-2","sequence_number":2,"text":"untouched"}
 			]}
 		]}
 	}`)
@@ -110,6 +110,95 @@ func TestEpisodeNestedDiffOnlyChangesRequestedDialogue(t *testing.T) {
 	}
 	if value, _ := lookupVersionedField(content, "episode_content", "dialogue.dialogue-2.text"); value != "untouched" {
 		t.Fatalf("unrelated dialogue changed: %v", value)
+	}
+}
+
+func TestEpisodeStructuralDiffDeletesDialogueWithoutMutatingOriginal(t *testing.T) {
+	before := json.RawMessage(`{
+		"outline":{"title":"Episode"},
+		"script":{"scenes":[
+			{"scene_id":"scene-1","scene_number":1,"dialogues":[
+				{"dialogue_id":"dialogue-1","sequence_number":1,"text":"delete me"},
+				{"dialogue_id":"dialogue-2","sequence_number":2,"text":"keep me"}
+			]}
+		]}
+	}`)
+	changes, err := enrichChangesWithDiff(before, "episode_content", []localedit.Change{
+		{Operation: "remove", Field: "dialogue.dialogue-1"},
+		{Operation: "reorder", Field: "dialogue.dialogue-2.sequence_number", Value: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := materializeVersionedChange(
+		context.Background(), nil, "project-1", "episode_content", "episode-1",
+		before, changes, "fingerprint",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original, successor map[string]any
+	_ = json.Unmarshal(before, &original)
+	_ = json.Unmarshal(after, &successor)
+	if findDialogue(original, "dialogue-1") == nil || findDialogue(successor, "dialogue-1") != nil {
+		t.Fatalf("dialogue deletion was not isolated: before=%s after=%s", before, after)
+	}
+	if value, _ := lookupVersionedField(successor, "episode_content", "dialogue.dialogue-2.sequence_number"); value != float64(1) {
+		t.Fatalf("remaining dialogue was not renumbered: %v", value)
+	}
+}
+
+func TestEpisodeStructuralDiffCanMoveDialogueBetweenScenes(t *testing.T) {
+	before := json.RawMessage(`{"outline":{},"script":{"scenes":[
+		{"scene_id":"scene-1","scene_number":1,"dialogues":[{"dialogue_id":"dialogue-1","sequence_number":1,"text":"move"}]},
+		{"scene_id":"scene-2","scene_number":2,"dialogues":[]}
+	]}}`)
+	changes, err := enrichChangesWithDiff(before, "episode_content", []localedit.Change{
+		{Operation: "remove", Field: "dialogue.dialogue-1"},
+		{Operation: "insert", Field: "dialogue.dialogue-1", Value: map[string]any{
+			"dialogue_id": "dialogue-1", "scene_id": "scene-2", "sequence_number": 1, "text": "move",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := materializeVersionedChange(context.Background(), nil, "project-1",
+		"episode_content", "episode-1", before, changes, "fingerprint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]any
+	_ = json.Unmarshal(after, &content)
+	first, second := findScene(content, "scene-1"), findScene(content, "scene-2")
+	if len(anySlice(first["dialogues"])) != 0 || len(anySlice(second["dialogues"])) != 1 {
+		t.Fatalf("dialogue was not moved: %s", after)
+	}
+}
+
+func TestEpisodeNestedImpactDoesNotExpandToWholeEpisode(t *testing.T) {
+	plan := localedit.Plan{Target: localedit.Target{EntityType: "episode_content", EntityID: "episode-1"},
+		ExpectedChanges: []localedit.Change{{Operation: "remove", Field: "dialogue.dialogue-1"}}}
+	if got := impactedNativeEntityIDs(plan); !reflect.DeepEqual(got, []string{"dialogue-1"}) {
+		t.Fatalf("dialogue impact expanded beyond exact entity: %v", got)
+	}
+	plan.ExpectedChanges = append(plan.ExpectedChanges, localedit.Change{
+		Operation: "replace", Field: "script.title", Value: "new title",
+	})
+	if got := impactedNativeEntityIDs(plan); !reflect.DeepEqual(got, []string{"dialogue-1", "episode-1"}) {
+		t.Fatalf("broad episode impact missing target: %v", got)
+	}
+}
+
+func TestMatchingChangeRangeUsesExactStructuralDialogueID(t *testing.T) {
+	firstStart, firstEnd := int64(100), int64(900)
+	secondStart, secondEnd := int64(1500), int64(2600)
+	changes := []localedit.Change{
+		{Operation: "remove", Field: "dialogue.dialogue-1", StartMS: &firstStart, EndMS: &firstEnd},
+		{Operation: "remove", Field: "dialogue.dialogue-2", StartMS: &secondStart, EndMS: &secondEnd},
+	}
+	start, end := matchingChangeRange(changes, "dialogue", "dialogue-2")
+	if start == nil || end == nil || *start != secondStart || *end != secondEnd {
+		t.Fatalf("wrong dialogue range: %v-%v", start, end)
 	}
 }
 
@@ -143,5 +232,27 @@ func TestSceneReorderRangeSupportsDirectAndEpisodeFields(t *testing.T) {
 				t.Fatalf("range=%v want=%v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSceneRestoreSelectionIncludesStructuralDialogueChildren(t *testing.T) {
+	source := json.RawMessage(`{"script":{"scenes":[{"scene_id":"scene-1","dialogues":[{"dialogue_id":"dialogue-1"}]}]}}`)
+	current := json.RawMessage(`{"script":{"scenes":[]}}`)
+	changes := []localedit.Change{
+		{Operation: "insert", Field: "scene.scene-1"},
+		{Operation: "insert", Field: "dialogue.dialogue-1"},
+	}
+
+	selectedScene := selectRestoreChanges(
+		"episode_content", changes, []string{"scene.scene-1"}, source, current,
+	)
+	if !reflect.DeepEqual(selectedScene, changes) {
+		t.Fatalf("scene restore omitted dialogue children: %+v", selectedScene)
+	}
+	selectedDialogue := selectRestoreChanges(
+		"episode_content", changes, []string{"dialogue.dialogue-1"}, source, current,
+	)
+	if len(selectedDialogue) != 1 || selectedDialogue[0].Field != "dialogue.dialogue-1" {
+		t.Fatalf("dialogue restore expanded beyond exact child: %+v", selectedDialogue)
 	}
 }

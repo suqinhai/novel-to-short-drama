@@ -31,8 +31,9 @@ type actorRequest struct {
 }
 
 type restoreVersionRequest struct {
-	Mode        string  `json:"mode"`
-	RequestedBy *string `json:"requested_by,omitempty"`
+	Mode        string   `json:"mode"`
+	Paths       []string `json:"paths,omitempty"`
+	RequestedBy *string  `json:"requested_by,omitempty"`
 }
 
 type changeCommentRequest struct {
@@ -173,7 +174,7 @@ func (h *Handler) createVersionRestorePlan(c *gin.Context) {
 	}
 	result, err := h.store.CreateVersionRestorePlan(
 		c.Request.Context(), c.Param("projectID"), c.Param("entityVersionID"),
-		strings.TrimSpace(input.Mode), input.RequestedBy,
+		strings.TrimSpace(input.Mode), input.Paths, input.RequestedBy,
 	)
 	switch {
 	case errors.Is(err, store.ErrNotFound):

@@ -115,6 +115,25 @@ func TestEpisodeNestedFieldAndExplicitRebuildSelection(t *testing.T) {
 	}
 }
 
+func TestEpisodeStructuralDialogueRemovalKeepsPreciseImpact(t *testing.T) {
+	plan, err := Build(Request{
+		Instruction: "delete one dialogue",
+		Target:      Target{EntityType: "episode_content", EntityID: "episode-1", Version: 2},
+		Changes: []Change{{
+			Operation: "remove", Field: "dialogue.dialogue-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Rebuild.Voice || !plan.Rebuild.Subtitle || !plan.Rebuild.Video || !plan.Rebuild.Edit || plan.Rebuild.Image {
+		t.Fatalf("structural dialogue removal has wrong impact: %+v", plan.Rebuild)
+	}
+	if !contains(plan.AllowedFields, "dialogue.dialogue-1") {
+		t.Fatalf("structural path missing from allowed fields: %+v", plan.AllowedFields)
+	}
+}
+
 func TestRejectsRebuildOutsideCalculatedImpact(t *testing.T) {
 	_, err := Build(Request{
 		Instruction:  "replace one timeline item",

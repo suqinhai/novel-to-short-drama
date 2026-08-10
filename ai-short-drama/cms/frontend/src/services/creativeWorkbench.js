@@ -47,6 +47,73 @@ export function shotsForScene(workbench, sceneId) {
   return (workbench?.shots || []).filter((item) => item.scene_id === sceneId)
 }
 
+export function reorderedShotIds(shots, sourceId, targetId) {
+  const result = [...(shots || [])].sort((left, right) => left.shot_order - right.shot_order)
+  const sourceIndex = result.findIndex(item => item.shot_id === sourceId)
+  const targetIndex = result.findIndex(item => item.shot_id === targetId)
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return result.map(item => item.shot_id)
+  const [source] = result.splice(sourceIndex, 1)
+  result.splice(result.findIndex(item => item.shot_id === targetId), 0, source)
+  return result.map(item => item.shot_id)
+}
+
+export function shotReorderRequest(workbench, sourceId, targetId) {
+  return {
+    operation: 'reorder',
+    base_sequence_version: Number(workbench?.shot_sequence_version || 1),
+    ordered_shot_ids: reorderedShotIds(workbench?.shots, sourceId, targetId),
+    requested_by: 'creative-workbench',
+  }
+}
+
+export function shotUpdateRequest(workbench, shot, patch) {
+  return {
+    operation: 'update', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
+    shot_id: shot.shot_id, patch, requested_by: 'creative-workbench',
+  }
+}
+
+export function shotSplitRequest(workbench, shot, form) {
+  const first = structuredClone(shot)
+  const second = structuredClone(shot)
+  const bridge = form.bridge_state || {}
+  Object.assign(first, {
+    action_description: String(form.first_action || '').trim(), duration_seconds: Number(form.first_duration),
+    dialogue_ids: form.first_dialogue_ids || [], tail_state: bridge,
+    action_phase: { ...(shot.action_phase || {}), end: String(form.bridge_phase || 'bridge') },
+    coverage_role: form.first_coverage_role || shot.coverage_role || '',
+  })
+  Object.assign(second, {
+    action_description: String(form.second_action || '').trim(), duration_seconds: Number(form.second_duration),
+    dialogue_ids: form.second_dialogue_ids || [], head_state: bridge,
+    action_phase: { ...(shot.action_phase || {}), start: String(form.bridge_phase || 'bridge') },
+    coverage_role: form.second_coverage_role || shot.coverage_role || '',
+  })
+  return {
+    operation: 'split', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
+    shot_id: shot.shot_id, shots: [first, second], requested_by: 'creative-workbench',
+  }
+}
+
+export function shotMergeRequest(workbench, left, right, form = {}) {
+  const merged = structuredClone(left)
+  Object.assign(merged, {
+    action_description: String(form.action_description || `${left.action_description}；${right.action_description}`).trim(),
+    duration_seconds: Number(form.duration_seconds ?? (Number(left.duration_seconds) + Number(right.duration_seconds))),
+    shot_size: form.shot_size || left.shot_size, camera_angle: form.camera_angle || left.camera_angle,
+    composition: form.composition || left.composition, camera_motion: form.camera_motion || left.camera_motion,
+    character_ids: [...new Set([...(left.character_ids || []), ...(right.character_ids || [])])],
+    dialogue_ids: [...(left.dialogue_ids || []), ...(right.dialogue_ids || [])],
+    head_state: left.head_state || {}, tail_state: right.tail_state || {},
+    action_phase: { start: left.action_phase?.start || '', end: right.action_phase?.end || '' },
+    coverage_role: form.coverage_role || left.coverage_role || '',
+  })
+  return {
+    operation: 'merge', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
+    shot_ids: [left.shot_id, right.shot_id], shots: [merged], requested_by: 'creative-workbench',
+  }
+}
+
 export function sceneDragPlan(scene, targetNumber) {
   return {
     instruction: `将场景换序到第 ${targetNumber} 场，保留人物、剧情事实与连续性`,

@@ -297,7 +297,7 @@ func (s *Store) ListShotHandoffs(ctx context.Context, projectID, episodeID strin
 	rows, err := s.pool.Query(ctx, `SELECT shot_handoff_id,episode_id,from_shot_id,to_shot_id,
 		target_tail_frame_ref,reference_head_frame_ref,pose_constraints,gaze_constraint,motion_direction,
 		from_action_phase,to_action_phase,shot_size_constraint,composition_constraint,version,status,diagnostics
-		FROM drama.shot_handoffs WHERE project_id=$1 AND ($2='' OR episode_id=$2)
+		FROM drama.shot_handoffs WHERE project_id=$1 AND ($2='' OR episode_id=$2) AND is_current
 		ORDER BY episode_id,from_shot_id,to_shot_id,version DESC`, projectID, episodeID)
 	if err != nil {
 		return nil, err

@@ -183,7 +183,7 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 				editedID = version.EntityVersionID
 			}
 		}
-		rollback, err := database.CreateVersionRestorePlan(ctx, projectID, originalID, "rollback", nil)
+		rollback, err := database.CreateVersionRestorePlan(ctx, projectID, originalID, "rollback", nil, nil)
 		if err != nil || rollback.Status != "validated" {
 			t.Fatalf("rollback preview: %+v err=%v", rollback, err)
 		}
@@ -202,7 +202,7 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 		if emotion != "tense" {
 			t.Fatalf("rollback did not restore v1: %s", emotion)
 		}
-		reapply, err := database.CreateVersionRestorePlan(ctx, projectID, editedID, "reapply", nil)
+		reapply, err := database.CreateVersionRestorePlan(ctx, projectID, editedID, "reapply", nil, nil)
 		if err != nil || reapply.Status != "validated" {
 			t.Fatalf("reapply preview: %+v err=%v", reapply, err)
 		}

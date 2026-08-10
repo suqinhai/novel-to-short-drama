@@ -80,12 +80,13 @@ var allowedFields = map[string]map[string]bool{
 	"dialogue": {
 		"text": true, "emotion": true, "performance_instruction": true,
 		"estimated_duration_ms": true, "requested_speed": true, "production_mode": true,
-		"dialogue_type": true, "speaker_name": true,
+		"dialogue_type": true, "speaker_name": true, "sequence_number": true,
 	},
 	"scene": {
 		"scene_purpose": true, "actions": true, "emotional_change": true,
 		"estimated_duration_seconds": true, "scene_number": true,
 		"location_name": true, "time_of_day": true, "interior_exterior": true,
+		"character_ids": true,
 	},
 	"shot": {
 		"action_description": true, "facial_expression": true, "composition": true,
@@ -330,7 +331,7 @@ func validateChange(entityType string, change Change, allowed []string) error {
 		return fmt.Errorf("%w: change field %s is not allowed", ErrInvalidPlan, change.Field)
 	}
 	switch change.Operation {
-	case "replace", "adjust", "reorder", "regenerate", "manual_replace":
+	case "replace", "adjust", "reorder", "regenerate", "manual_replace", "insert", "remove":
 	case "regenerate_segment":
 		if change.StartMS == nil || change.EndMS == nil || *change.StartMS < 0 || *change.EndMS <= *change.StartMS {
 			return fmt.Errorf("%w: a valid video time range is required", ErrInvalidPlan)
@@ -461,6 +462,9 @@ func isAllowedField(entityType, field string) bool {
 	if len(parts) == 3 && parts[0] == "dialogue" {
 		return strings.TrimSpace(parts[1]) != "" && (allowedFields["dialogue"][parts[2]] ||
 			parts[2] == "dialogue_type" || parts[2] == "speaker_name")
+	}
+	if len(parts) == 2 && (parts[0] == "scene" || parts[0] == "dialogue") {
+		return strings.TrimSpace(parts[1]) != ""
 	}
 	return false
 }

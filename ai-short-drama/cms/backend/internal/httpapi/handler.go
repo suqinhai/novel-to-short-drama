@@ -25,6 +25,7 @@ import (
 	"short-drama-cms/backend/internal/datacleanup"
 	systemdiagnostics "short-drama-cms/backend/internal/diagnostics"
 	"short-drama-cms/backend/internal/effectiveinput"
+	"short-drama-cms/backend/internal/scripteditor"
 	"short-drama-cms/backend/internal/store"
 )
 
@@ -42,6 +43,7 @@ type Handler struct {
 	diagnosticsRunner      *systemdiagnostics.Runner
 	dataCleaner            dataCleaner
 	effectiveInputResolver *effectiveinput.Resolver
+	scriptRewriter         scripteditor.Rewriter
 }
 
 func New(store *store.Store, cfg config.Config) *Handler {
@@ -50,6 +52,7 @@ func New(store *store.Store, cfg config.Config) *Handler {
 		client:          &http.Client{Timeout: cfg.ProbeTimeout},
 		webhookClient:   &http.Client{Timeout: cfg.WebhookTimeout},
 		aiConfigManager: aiconfig.New(cfg.ManagedEnvFile, cfg.N8NContainer, cfg.VideoAdapterContainer),
+		scriptRewriter:  scripteditor.NewFromEnvironment(),
 		diagnosticsRunner: systemdiagnostics.New(
 			cfg.N8NContainer, cfg.PostgresContainer, cfg.MediaContainer,
 			cfg.MediaWorkerContainer, cfg.LiteLLMContainer, cfg.WorkflowDirectory,
@@ -83,6 +86,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/projects/:projectID/episode-runs/:episodeRunID/activate", h.activateEpisodeRun)
 	api.GET("/projects/:projectID/episode-runs/:episodeRunID/content", h.getEpisodeRunContent)
 	api.POST("/projects/:projectID/episode-runs/:episodeRunID/content/change-plan", h.createEpisodeContentChangePlan)
+	api.POST("/projects/:projectID/episode-runs/:episodeRunID/content/ai-change-plan", h.createEpisodeContentAIChangePlan)
 	api.GET("/reviews", h.listReviews)
 	api.GET("/reviews/:reviewID/content", h.getReviewContent)
 	api.POST("/reviews/:reviewID/decision", h.decideReview)
@@ -107,6 +111,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/data-reset", h.resetAllData)
 	registerPerformanceContinuityRoutes(api, h)
 	registerPostProductionRoutes(api, h)
+	registerShotEditorRoutes(api, h)
 	registerEffectiveInputRoutes(api, h)
 	registerSourceV2(router, h.store)
 	return router

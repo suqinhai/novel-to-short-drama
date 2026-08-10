@@ -54,11 +54,16 @@ export const api = {
   getEpisodeContent(projectId, episodeRunId) {
     return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content`)
   },
-  createEpisodeContentChangePlan(projectId, episodeRunId, payload) {
+	createEpisodeContentChangePlan(projectId, episodeRunId, payload) {
     return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content/change-plan`, {
       method: 'POST', body: JSON.stringify(payload),
     })
-  },
+	},
+	createEpisodeContentAIChangePlan(projectId, episodeRunId, payload) {
+		return request(`/projects/${encodeURIComponent(projectId)}/episode-runs/${encodeURIComponent(episodeRunId)}/content/ai-change-plan`, {
+			method: 'POST', body: JSON.stringify(payload),
+		})
+	},
   getReviews(params = {}) {
     const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null))
     return request(`/reviews?${query}`)
@@ -118,6 +123,27 @@ export const api = {
   },
   getCreativeWorkbench(projectId, episodeId) {
     return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/creative-workbench`)
+  },
+  createShotEditPlan(projectId, episodeId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/shot-edit-plans`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  getShotEditPlan(projectId, episodeId, planId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/shot-edit-plans/${encodeURIComponent(planId)}`)
+  },
+  confirmShotEditPlan(projectId, episodeId, planId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/shot-edit-plans/${encodeURIComponent(planId)}/confirm`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  executeShotEditPlan(projectId, episodeId, planId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/shot-edit-plans/${encodeURIComponent(planId)}/execute`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
+  getShotSequenceVersions(projectId, episodeId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/shot-sequence-versions`)
   },
   getEditingTemplates(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}/editing-templates`)

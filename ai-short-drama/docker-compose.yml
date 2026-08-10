@@ -55,6 +55,8 @@ services:
       - ./database/24-verify-authoritative-production-inputs.sql:/opt/drama/24-verify-authoritative-production-inputs.sql:ro
       - ./database/25-season-planning-workbench.sql:/opt/drama/25-season-planning-workbench.sql:ro
       - ./database/25-verify-season-planning-workbench.sql:/opt/drama/25-verify-season-planning-workbench.sql:ro
+      - ./database/26-atomic-multi-shot-editor.sql:/opt/drama/26-atomic-multi-shot-editor.sql:ro
+      - ./database/26-verify-atomic-multi-shot-editor.sql:/opt/drama/26-verify-atomic-multi-shot-editor.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

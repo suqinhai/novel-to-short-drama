@@ -783,7 +783,7 @@ func (s *Store) ListEntityVersions(ctx context.Context, projectID, entityType, e
 }
 
 func (s *Store) CreateVersionRestorePlan(
-	ctx context.Context, projectID, entityVersionID, mode string, requestedBy *string,
+	ctx context.Context, projectID, entityVersionID, mode string, paths []string, requestedBy *string,
 ) (ChangePlan, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode != "rollback" && mode != "reapply" {
@@ -817,6 +817,12 @@ func (s *Store) CreateVersionRestorePlan(
 	if len(changes) == 0 {
 		return ChangePlan{}, fmt.Errorf("%w: selected version has no supported field differences", ErrConflict)
 	}
+	if len(paths) > 0 {
+		changes = selectRestoreChanges(entityType, changes, paths, sourceContent, currentContent)
+		if len(changes) == 0 {
+			return ChangePlan{}, fmt.Errorf("%w: selected paths have no restorable differences", ErrConflict)
+		}
+	}
 	verb := "撤销到"
 	if mode == "reapply" {
 		verb = "重新应用"
@@ -835,6 +841,63 @@ func (s *Store) CreateVersionRestorePlan(
 		return ChangePlan{}, err
 	}
 	return s.CreateChangePlan(ctx, projectID, plan, requestedBy)
+}
+
+func selectRestoreChanges(
+	entityType string, changes []localedit.Change, paths []string,
+	sourceJSON, currentJSON json.RawMessage,
+) []localedit.Change {
+	selected := map[string]bool{}
+	selectedSceneIDs := map[string]bool{}
+	for _, path := range paths {
+		if path = strings.TrimSpace(path); path == "" {
+			continue
+		}
+		selected[path] = true
+		parts := strings.Split(path, ".")
+		if entityType == "episode_content" && len(parts) == 2 && parts[0] == "scene" {
+			selectedSceneIDs[parts[1]] = true
+		}
+	}
+	dialogueScenes := map[string]map[string]bool{}
+	if len(selectedSceneIDs) > 0 {
+		for _, raw := range []json.RawMessage{sourceJSON, currentJSON} {
+			var content map[string]any
+			if json.Unmarshal(raw, &content) != nil {
+				continue
+			}
+			script, _ := content["script"].(map[string]any)
+			for _, sceneItem := range anySlice(script["scenes"]) {
+				scene, _ := sceneItem.(map[string]any)
+				sceneID := fmt.Sprint(scene["scene_id"])
+				for _, dialogueItem := range anySlice(scene["dialogues"]) {
+					dialogue, _ := dialogueItem.(map[string]any)
+					dialogueID := fmt.Sprint(dialogue["dialogue_id"])
+					if dialogueScenes[dialogueID] == nil {
+						dialogueScenes[dialogueID] = map[string]bool{}
+					}
+					dialogueScenes[dialogueID][sceneID] = true
+				}
+			}
+		}
+	}
+	filtered := make([]localedit.Change, 0, len(changes))
+	for _, change := range changes {
+		include := selected[change.Field]
+		parts := strings.Split(change.Field, ".")
+		if !include && len(parts) >= 2 && parts[0] == "dialogue" {
+			for sceneID := range dialogueScenes[parts[1]] {
+				if selectedSceneIDs[sceneID] {
+					include = true
+					break
+				}
+			}
+		}
+		if include {
+			filtered = append(filtered, change)
+		}
+	}
+	return filtered
 }
 
 func restoreChanges(entityType string, sourceJSON, currentJSON json.RawMessage) ([]localedit.Change, error) {
@@ -869,7 +932,7 @@ func restoreChanges(entityType string, sourceJSON, currentJSON json.RawMessage) 
 		},
 		"scene": {
 			"scene_purpose", "actions", "emotional_change", "estimated_duration_seconds",
-			"location_name", "time_of_day", "interior_exterior", "scene_number",
+			"location_name", "time_of_day", "interior_exterior", "scene_number", "character_ids",
 		},
 		"shot": {
 			"action_description", "facial_expression", "composition", "shot_size",

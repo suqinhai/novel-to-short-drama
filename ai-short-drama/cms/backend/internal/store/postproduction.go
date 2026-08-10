@@ -37,6 +37,7 @@ type CreativeWorkbench struct {
 	WorkspaceVersions    json.RawMessage `json:"workspace_versions"`
 	TemplateBindings     json.RawMessage `json:"template_bindings"`
 	EffectiveInputs      json.RawMessage `json:"effective_inputs"`
+	ShotSequenceVersion  int             `json:"shot_sequence_version"`
 }
 
 type EditingTemplateRecord struct {
@@ -128,9 +129,16 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 			WHERE dialogue.project_id=$1 AND dialogue.episode_id=$2`},
 		{&result.Shots, `SELECT COALESCE(jsonb_agg((to_jsonb(shot)-'id')||jsonb_build_object(
 				'thumbnail_url',(SELECT image.storage_url FROM drama.storyboard_images image
-					WHERE image.shot_id=shot.shot_id AND image.is_current ORDER BY image.generation_version DESC LIMIT 1))
+					WHERE image.shot_id=shot.shot_id AND image.is_current
+					  AND image.shot_entity_version_id IS NOT DISTINCT FROM (SELECT entity_version_id
+					    FROM drama.entity_versions WHERE entity_type='shot' AND entity_id=shot.shot_id AND is_current)
+					ORDER BY image.generation_version DESC LIMIT 1),
+				'head_frame_ref',(SELECT handoff.reference_head_frame_ref FROM drama.shot_handoffs handoff
+				  WHERE handoff.to_shot_id=shot.shot_id AND handoff.is_current ORDER BY handoff.version DESC LIMIT 1),
+				'tail_frame_ref',(SELECT handoff.target_tail_frame_ref FROM drama.shot_handoffs handoff
+				  WHERE handoff.from_shot_id=shot.shot_id AND handoff.is_current ORDER BY handoff.version DESC LIMIT 1))
 				ORDER BY shot.shot_order),'[]')
-			FROM drama.storyboard_shots shot WHERE shot.project_id=$1 AND shot.episode_id=$2`},
+			FROM drama.storyboard_shots shot WHERE shot.project_id=$1 AND shot.episode_id=$2 AND shot.is_current`},
 		{&result.DialogueTimings, `SELECT COALESCE(jsonb_agg(to_jsonb(timing)-'id' ORDER BY timing.start_ms),'[]')
 			FROM drama.dialogue_timing_versions timing WHERE timing.project_id=$1 AND timing.episode_id=$2 AND timing.is_current`},
 		{&result.SoundCues, `SELECT COALESCE(jsonb_agg((to_jsonb(cue)-'id')||jsonb_build_object(
@@ -149,7 +157,7 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 			FROM drama.character_performance_bibles bible WHERE bible.project_id=$1 AND bible.status IN('approved','locked')
 			  AND $2::text IS NOT NULL`},
 		{&result.Continuity, `SELECT COALESCE(jsonb_agg(to_jsonb(entry)-'id' ORDER BY entry.sequence_number),'[]')
-			FROM drama.continuity_ledger_entries entry WHERE entry.project_id=$1 AND entry.episode_id=$2`},
+			FROM drama.continuity_ledger_entries entry WHERE entry.project_id=$1 AND entry.episode_id=$2 AND entry.is_current`},
 		{&result.QualityIssues, `SELECT COALESCE(jsonb_agg((to_jsonb(issue)-'id')||jsonb_build_object(
 				'editor_link',to_jsonb(link)-'id') ORDER BY issue.severity DESC,issue.episode_number),'[]')
 			FROM drama.quality_issues issue JOIN drama.quality_score_reports report USING(quality_score_report_id)
@@ -188,6 +196,10 @@ func (s *Store) GetCreativeWorkbench(ctx context.Context, projectID, episodeID s
 		}
 	}
 	if err = s.overlayCreativeWorkbenchVersions(ctx, &result); err != nil {
+		return CreativeWorkbench{}, err
+	}
+	if err = s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT version FROM drama.shot_sequence_versions
+		WHERE project_id=$1 AND episode_id=$2 AND is_current),1)`, projectID, episodeID).Scan(&result.ShotSequenceVersion); err != nil {
 		return CreativeWorkbench{}, err
 	}
 	return result, nil

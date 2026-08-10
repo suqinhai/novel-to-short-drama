@@ -90,6 +90,7 @@ type EpisodeContent struct {
 	HasDownstreamAssets bool                  `json:"has_downstream_assets"`
 	Outline             EpisodeOutlineContent `json:"outline"`
 	Script              *EpisodeScriptContent `json:"script,omitempty"`
+	ReferenceContext    json.RawMessage       `json:"reference_context"`
 }
 
 type EpisodeOutlineUpdate struct {
@@ -104,24 +105,30 @@ type EpisodeOutlineUpdate struct {
 }
 
 type EpisodeDialogueUpdate struct {
-	DialogueID             string `json:"dialogue_id"`
-	DialogueType           string `json:"dialogue_type"`
-	SpeakerName            string `json:"speaker_name"`
-	Text                   string `json:"text"`
-	Emotion                string `json:"emotion"`
-	PerformanceInstruction string `json:"performance_instruction"`
-	EstimatedDurationMS    int    `json:"estimated_duration_ms"`
+	DialogueID             string  `json:"dialogue_id"`
+	SequenceNumber         int     `json:"sequence_number"`
+	DialogueType           string  `json:"dialogue_type"`
+	CharacterID            *string `json:"character_id,omitempty"`
+	SpeakerName            string  `json:"speaker_name"`
+	Text                   string  `json:"text"`
+	Emotion                string  `json:"emotion"`
+	PerformanceInstruction string  `json:"performance_instruction"`
+	EstimatedDurationMS    int     `json:"estimated_duration_ms"`
 }
 
 type EpisodeSceneUpdate struct {
 	SceneID                  string                  `json:"scene_id"`
+	SceneNumber              int                     `json:"scene_number"`
+	LocationID               *string                 `json:"location_id,omitempty"`
 	LocationName             string                  `json:"location_name"`
 	TimeOfDay                string                  `json:"time_of_day"`
 	InteriorExterior         string                  `json:"interior_exterior"`
+	CharacterIDs             json.RawMessage         `json:"character_ids"`
 	ScenePurpose             string                  `json:"scene_purpose"`
 	Actions                  json.RawMessage         `json:"actions"`
 	EmotionalChange          string                  `json:"emotional_change"`
 	EstimatedDurationSeconds int                     `json:"estimated_duration_seconds"`
+	SourceEventIDs           json.RawMessage         `json:"source_event_ids"`
 	Dialogues                []EpisodeDialogueUpdate `json:"dialogues"`
 }
 
@@ -136,6 +143,7 @@ type EpisodeScriptUpdate struct {
 
 type EpisodeContentChangePlanInput struct {
 	ExpectedVersion int                  `json:"expected_version"`
+	Instruction     string               `json:"instruction,omitempty"`
 	Outline         EpisodeOutlineUpdate `json:"outline"`
 	Script          *EpisodeScriptUpdate `json:"script,omitempty"`
 	MustPreserve    []string             `json:"must_preserve,omitempty"`
@@ -279,6 +287,105 @@ func (s *Store) GetEpisodeContent(ctx context.Context, projectID, episodeRunID s
 		return EpisodeContent{}, err
 	}
 	result.Outline, result.Script = finalSnapshot.Outline, finalSnapshot.Script
+	result.ReferenceContext, err = s.loadEpisodeEditorReferenceContext(
+		ctx, result.ProjectID, result.Script,
+	)
+	if err != nil {
+		return EpisodeContent{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) loadEpisodeEditorReferenceContext(
+	ctx context.Context, projectID string, script *EpisodeScriptContent,
+) (json.RawMessage, error) {
+	eventIDs := make([]string, 0)
+	seen := map[string]bool{}
+	if script != nil {
+		for _, scene := range script.Scenes {
+			var values []string
+			if json.Unmarshal(scene.SourceEventIDs, &values) != nil {
+				continue
+			}
+			for _, value := range values {
+				value = strings.TrimSpace(value)
+				if value != "" && !seen[value] {
+					seen[value] = true
+					eventIDs = append(eventIDs, value)
+				}
+			}
+		}
+	}
+	var result json.RawMessage
+	err := s.pool.QueryRow(ctx, `SELECT jsonb_build_object(
+		'events',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'event_revision_id',event.event_revision_id,'event_type',event.event_type,
+			'summary',event.summary,'importance',event.importance,
+			'location_name',COALESCE(location.canonical_name,''),
+			'source_span_ids',COALESCE((SELECT jsonb_agg(DISTINCT span_id)
+				FROM (SELECT fact.primary_source_span_id AS span_id
+					UNION ALL SELECT participant.source_span_id FROM drama.event_participants participant
+					WHERE participant.event_revision_id=event.event_revision_id) spans),'[]'::jsonb),
+			'participants',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+				'character_id',entity.entity_id,'character_revision_id',revision.entity_revision_id,
+				'name',revision.canonical_name,'role',participant.participant_role,
+				'participation_state',participant.participation_state))
+				FROM drama.event_participants participant
+				JOIN drama.narrative_entity_revisions revision
+				  ON revision.entity_revision_id=participant.entity_revision_id
+				JOIN drama.narrative_entities entity ON entity.entity_id=revision.entity_id
+				WHERE participant.event_revision_id=event.event_revision_id),'[]'::jsonb)
+		) ORDER BY event.narrative_order)
+		FROM drama.narrative_event_revisions event
+		JOIN drama.narrative_fact_revisions fact ON fact.fact_revision_id=event.fact_revision_id
+		LEFT JOIN drama.narrative_entity_revisions location
+		  ON location.entity_revision_id=event.location_entity_revision_id
+		WHERE event.event_revision_id=ANY($2::text[])),'[]'::jsonb),
+		'source_spans',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'source_span_id',span.source_span_id,'chapter_id',span.chapter_id,
+			'start_codepoint',span.start_codepoint,'end_codepoint',span.end_codepoint,
+			'start_paragraph',span.start_paragraph,'end_paragraph',span.end_paragraph,
+			'evidence_text',span.evidence_text) ORDER BY span.chapter_id,span.start_codepoint)
+		FROM drama.source_spans span WHERE span.source_span_id IN (
+			SELECT fact.primary_source_span_id FROM drama.narrative_event_revisions event
+			JOIN drama.narrative_fact_revisions fact ON fact.fact_revision_id=event.fact_revision_id
+			WHERE event.event_revision_id=ANY($2::text[])
+			UNION SELECT participant.source_span_id FROM drama.event_participants participant
+			WHERE participant.event_revision_id=ANY($2::text[])
+		)),'[]'::jsonb),
+		'character_states',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'character_id',entity.entity_id,'name',revision.canonical_name,
+			'state_dimension',state.state_dimension,'before_state',state.before_state,
+			'after_state',state.after_state,'trigger_event_revision_id',state.trigger_event_revision_id)
+			ORDER BY state.sequence_number)
+		FROM drama.character_state_changes state
+		JOIN drama.narrative_entity_revisions revision
+		  ON revision.entity_revision_id=state.character_entity_revision_id
+		JOIN drama.narrative_entities entity ON entity.entity_id=revision.entity_id
+		WHERE state.trigger_event_revision_id=ANY($2::text[])),'[]'::jsonb),
+		'must_preserve',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'adaptation_rule_id',rule.adaptation_rule_id,'enforcement',rule.enforcement,
+			'target_type',rule.target_type,'target_id',rule.target_id,
+			'parameters',rule.parameters,'rationale',rule.rationale,'priority',rule.priority)
+			ORDER BY rule.priority DESC,rule.adaptation_rule_id)
+		FROM drama.projects project
+		JOIN drama.adaptation_rules rule
+		  ON rule.adaptation_spec_version_id=project.current_adaptation_spec_version_id
+		WHERE project.project_id=$1 AND rule.rule_type='must_preserve'),'[]'::jsonb),
+		'characters',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'character_id',entity.entity_id,'character_revision_id',revision.entity_revision_id,
+			'name',revision.canonical_name,'attributes',revision.attributes)
+			ORDER BY revision.canonical_name)
+		FROM drama.projects project
+		JOIN drama.adaptation_spec_versions spec
+		  ON spec.adaptation_spec_version_id=project.current_adaptation_spec_version_id
+		JOIN drama.narrative_entity_revisions revision ON revision.ir_revision_id=spec.ir_revision_id
+		JOIN drama.narrative_entities entity ON entity.entity_id=revision.entity_id
+		WHERE project.project_id=$1 AND entity.entity_type='character'),'[]'::jsonb)
+	)`, projectID, eventIDs).Scan(&result)
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -313,8 +420,12 @@ func (s *Store) CreateEpisodeContentChangePlan(
 	if err != nil {
 		return ChangePlan{}, err
 	}
+	instruction := strings.TrimSpace(input.Instruction)
+	if instruction == "" {
+		instruction = fmt.Sprintf("版本化修改第 %d 集大纲与剧本内容", current.Outline.EpisodeNumber)
+	}
 	request := localedit.Request{
-		Instruction: fmt.Sprintf("版本化修改第 %d 集大纲与剧本内容", current.Outline.EpisodeNumber),
+		Instruction: instruction,
 		Target: localedit.Target{
 			EntityType: "episode_content", EntityID: current.EpisodeID, Version: current.Revision,
 		},
@@ -373,21 +484,85 @@ func episodeContentChanges(
 	add("script.ending_hook", current.Script.EndingHook, strings.TrimSpace(script.EndingHook))
 
 	currentScenes := make(map[string]EpisodeSceneContent, len(current.Script.Scenes))
+	nextScenes := make(map[string]EpisodeSceneUpdate, len(script.Scenes))
 	for _, scene := range current.Script.Scenes {
 		currentScenes[scene.SceneID] = scene
 	}
-	if len(currentScenes) != len(script.Scenes) {
-		return nil, fmt.Errorf("%w: scene set changed, reload before preview", ErrConflict)
+	for _, scene := range script.Scenes {
+		nextScenes[scene.SceneID] = scene
 	}
+
+	// Children are removed before their scene so each deleted dialogue keeps an
+	// exact invalidation target and its subtitle time range can be captured.
+	for _, beforeScene := range current.Script.Scenes {
+		if _, exists := nextScenes[beforeScene.SceneID]; exists {
+			continue
+		}
+		for _, dialogue := range beforeScene.Dialogues {
+			changes = append(changes, localedit.Change{
+				Operation: "remove", Field: "dialogue." + dialogue.DialogueID,
+			})
+		}
+		changes = append(changes, localedit.Change{
+			Operation: "remove", Field: "scene." + beforeScene.SceneID,
+		})
+	}
+
+	// Dialogue moves are represented as remove + insert. Collect every removal
+	// before walking the draft order so moving from a later scene into an earlier
+	// scene never attempts to insert an ID that still exists in the snapshot.
+	for _, beforeScene := range current.Script.Scenes {
+		if _, sceneStillExists := nextScenes[beforeScene.SceneID]; !sceneStillExists {
+			continue
+		}
+		nextDialogues := make(map[string]struct{})
+		for _, dialogue := range nextScenes[beforeScene.SceneID].Dialogues {
+			nextDialogues[dialogue.DialogueID] = struct{}{}
+		}
+		for _, beforeDialogue := range beforeScene.Dialogues {
+			if _, stillInScene := nextDialogues[beforeDialogue.DialogueID]; !stillInScene {
+				changes = append(changes, localedit.Change{
+					Operation: "remove", Field: "dialogue." + beforeDialogue.DialogueID,
+				})
+			}
+		}
+	}
+
 	for _, nextScene := range script.Scenes {
-		beforeScene, ok := currentScenes[nextScene.SceneID]
-		if !ok {
-			return nil, fmt.Errorf("%w: unknown scene %s", ErrConflict, nextScene.SceneID)
+		beforeScene, exists := currentScenes[nextScene.SceneID]
+		if !exists {
+			sceneValue, valueErr := episodeSceneInsertValue(nextScene)
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			changes = append(changes, localedit.Change{
+				Operation: "insert", Field: "scene." + nextScene.SceneID, Value: sceneValue,
+			})
+			for _, dialogue := range nextScene.Dialogues {
+				changes = append(changes, localedit.Change{
+					Operation: "insert", Field: "dialogue." + dialogue.DialogueID,
+					Value: episodeDialogueInsertValue(nextScene.SceneID, dialogue),
+				})
+			}
+			continue
+		}
+		if !reflect.DeepEqual(normalizeJSONValue(beforeScene.LocationID), normalizeJSONValue(nextScene.LocationID)) ||
+			!rawJSONEqual(beforeScene.SourceEventIDs, nextScene.SourceEventIDs) {
+			return nil, fmt.Errorf("%w: source and location ids are preserved on existing scenes", ErrConflict)
 		}
 		prefix := "scene." + nextScene.SceneID + "."
+		if beforeScene.SceneNumber != nextScene.SceneNumber {
+			changes = append(changes, localedit.Change{
+				Operation: "reorder", Field: prefix + "scene_number", Value: nextScene.SceneNumber,
+			})
+		}
 		add(prefix+"location_name", beforeScene.LocationName, strings.TrimSpace(nextScene.LocationName))
 		add(prefix+"time_of_day", beforeScene.TimeOfDay, strings.TrimSpace(nextScene.TimeOfDay))
 		add(prefix+"interior_exterior", beforeScene.InteriorExterior, strings.TrimSpace(nextScene.InteriorExterior))
+		var beforeCharacters, afterCharacters any
+		_ = json.Unmarshal(beforeScene.CharacterIDs, &beforeCharacters)
+		_ = json.Unmarshal(nextScene.CharacterIDs, &afterCharacters)
+		add(prefix+"character_ids", beforeCharacters, afterCharacters)
 		add(prefix+"scene_purpose", beforeScene.ScenePurpose, strings.TrimSpace(nextScene.ScenePurpose))
 		add(prefix+"emotional_change", beforeScene.EmotionalChange, strings.TrimSpace(nextScene.EmotionalChange))
 		add(prefix+"estimated_duration_seconds", beforeScene.EstimatedDurationSeconds, nextScene.EstimatedDurationSeconds)
@@ -401,18 +576,31 @@ func episodeContentChanges(
 		add(prefix+"actions", beforeActions, afterActions)
 
 		currentDialogues := make(map[string]EpisodeDialogueContent, len(beforeScene.Dialogues))
+		nextDialogues := make(map[string]EpisodeDialogueUpdate, len(nextScene.Dialogues))
 		for _, dialogue := range beforeScene.Dialogues {
 			currentDialogues[dialogue.DialogueID] = dialogue
 		}
-		if len(currentDialogues) != len(nextScene.Dialogues) {
-			return nil, fmt.Errorf("%w: dialogue set changed for scene %s", ErrConflict, nextScene.SceneID)
+		for _, dialogue := range nextScene.Dialogues {
+			nextDialogues[dialogue.DialogueID] = dialogue
 		}
 		for _, nextDialogue := range nextScene.Dialogues {
-			beforeDialogue, exists := currentDialogues[nextDialogue.DialogueID]
-			if !exists {
-				return nil, fmt.Errorf("%w: unknown dialogue %s", ErrConflict, nextDialogue.DialogueID)
+			beforeDialogue, ok := currentDialogues[nextDialogue.DialogueID]
+			if !ok {
+				changes = append(changes, localedit.Change{
+					Operation: "insert", Field: "dialogue." + nextDialogue.DialogueID,
+					Value: episodeDialogueInsertValue(nextScene.SceneID, nextDialogue),
+				})
+				continue
+			}
+			if !reflect.DeepEqual(normalizeJSONValue(beforeDialogue.CharacterID), normalizeJSONValue(nextDialogue.CharacterID)) {
+				return nil, fmt.Errorf("%w: character_id is preserved on existing dialogues", ErrConflict)
 			}
 			dialoguePrefix := "dialogue." + nextDialogue.DialogueID + "."
+			if beforeDialogue.SequenceNumber != nextDialogue.SequenceNumber {
+				changes = append(changes, localedit.Change{
+					Operation: "reorder", Field: dialoguePrefix + "sequence_number", Value: nextDialogue.SequenceNumber,
+				})
+			}
 			add(dialoguePrefix+"dialogue_type", beforeDialogue.DialogueType, nextDialogue.DialogueType)
 			add(dialoguePrefix+"speaker_name", beforeDialogue.SpeakerName, strings.TrimSpace(nextDialogue.SpeakerName))
 			add(dialoguePrefix+"text", beforeDialogue.Text, strings.TrimSpace(nextDialogue.Text))
@@ -424,6 +612,35 @@ func episodeContentChanges(
 		}
 	}
 	return changes, nil
+}
+
+func episodeSceneInsertValue(scene EpisodeSceneUpdate) (map[string]any, error) {
+	raw, err := json.Marshal(scene)
+	if err != nil {
+		return nil, err
+	}
+	var value map[string]any
+	if err = json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	value["dialogues"] = []any{}
+	return value, nil
+}
+
+func episodeDialogueInsertValue(sceneID string, dialogue EpisodeDialogueUpdate) map[string]any {
+	raw, _ := json.Marshal(dialogue)
+	value := map[string]any{}
+	_ = json.Unmarshal(raw, &value)
+	value["scene_id"] = sceneID
+	return value
+}
+
+func rawJSONEqual(left, right json.RawMessage) bool {
+	var a, b any
+	if json.Unmarshal(left, &a) != nil || json.Unmarshal(right, &b) != nil {
+		return false
+	}
+	return reflect.DeepEqual(normalizeJSONValue(a), normalizeJSONValue(b))
 }
 
 func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) error {
@@ -450,10 +667,9 @@ func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) 
 	if strings.TrimSpace(script.ScriptID) == "" || strings.TrimSpace(script.Title) == "" {
 		return fmt.Errorf("%w: script id and title are required", ErrInvalidEpisodeContent)
 	}
-	if len(script.Scenes) == 0 {
-		return fmt.Errorf("%w: script must contain at least one scene", ErrInvalidEpisodeContent)
-	}
 	seenScenes := make(map[string]struct{}, len(script.Scenes))
+	seenSceneNumbers := make(map[int]struct{}, len(script.Scenes))
+	seenDialogues := make(map[string]struct{})
 	allowedDialogueTypes := map[string]bool{
 		"dialogue": true, "narration": true, "inner_monologue": true, "off_screen": true,
 	}
@@ -465,6 +681,13 @@ func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) 
 			return fmt.Errorf("%w: duplicate scene id", ErrInvalidEpisodeContent)
 		}
 		seenScenes[scene.SceneID] = struct{}{}
+		if scene.SceneNumber < 1 {
+			return fmt.Errorf("%w: scene_number must be positive", ErrInvalidEpisodeContent)
+		}
+		if _, exists := seenSceneNumbers[scene.SceneNumber]; exists {
+			return fmt.Errorf("%w: duplicate scene_number %d", ErrInvalidEpisodeContent, scene.SceneNumber)
+		}
+		seenSceneNumbers[scene.SceneNumber] = struct{}{}
 		if scene.EstimatedDurationSeconds < 1 || scene.EstimatedDurationSeconds > 1800 {
 			return fmt.Errorf("%w: scene duration must be between 1 and 1800 seconds", ErrInvalidEpisodeContent)
 		}
@@ -475,7 +698,15 @@ func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) 
 		if len(scene.Actions) == 0 || json.Unmarshal(scene.Actions, &actions) != nil {
 			return fmt.Errorf("%w: scene actions must be a JSON array", ErrInvalidEpisodeContent)
 		}
-		seenDialogues := make(map[string]struct{}, len(scene.Dialogues))
+		for name, raw := range map[string]json.RawMessage{
+			"character_ids": scene.CharacterIDs, "source_event_ids": scene.SourceEventIDs,
+		} {
+			var values []string
+			if len(raw) == 0 || json.Unmarshal(raw, &values) != nil {
+				return fmt.Errorf("%w: %s must be a string array", ErrInvalidEpisodeContent, name)
+			}
+		}
+		seenSequences := make(map[int]struct{}, len(scene.Dialogues))
 		for _, dialogue := range scene.Dialogues {
 			if strings.TrimSpace(dialogue.DialogueID) == "" || strings.TrimSpace(dialogue.Text) == "" {
 				return fmt.Errorf("%w: dialogue id and text are required", ErrInvalidEpisodeContent)
@@ -484,6 +715,13 @@ func validateEpisodeContentChangePlanInput(input EpisodeContentChangePlanInput) 
 				return fmt.Errorf("%w: duplicate dialogue id", ErrInvalidEpisodeContent)
 			}
 			seenDialogues[dialogue.DialogueID] = struct{}{}
+			if dialogue.SequenceNumber < 1 {
+				return fmt.Errorf("%w: dialogue sequence_number must be positive", ErrInvalidEpisodeContent)
+			}
+			if _, exists := seenSequences[dialogue.SequenceNumber]; exists {
+				return fmt.Errorf("%w: duplicate dialogue sequence_number in scene %s", ErrInvalidEpisodeContent, scene.SceneID)
+			}
+			seenSequences[dialogue.SequenceNumber] = struct{}{}
 			if !allowedDialogueTypes[dialogue.DialogueType] {
 				return fmt.Errorf("%w: unsupported dialogue type", ErrInvalidEpisodeContent)
 			}
