@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/schemas/quality-gate-benchmark.v1.json",
+  "title": "Frozen cross-layer gate regression benchmark",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_id", "version", "frozen", "thresholds", "cases"],
+  "properties": {
+    "schema_version": {"const": "quality-gate-benchmark.v1"},
+    "suite_id": {"type": "string", "minLength": 1}, "version": {"type": "integer", "minimum": 1}, "frozen": {"const": true},
+    "thresholds": {"type": "object", "additionalProperties": false, "required": ["min_precision", "min_recall", "min_f1", "min_blocking_recall"], "properties": {"min_precision": {"type": "number", "minimum": 0, "maximum": 1}, "min_recall": {"type": "number", "minimum": 0, "maximum": 1}, "min_f1": {"type": "number", "minimum": 0, "maximum": 1}, "min_blocking_recall": {"type": "number", "minimum": 0, "maximum": 1}}},
+    "cases": {"type": "array", "minItems": 2, "items": {"type": "object", "additionalProperties": false, "required": ["case_id", "kind", "description", "snapshot", "expected_codes"], "properties": {"case_id": {"type": "string", "minLength": 1}, "kind": {"enum": ["positive", "negative"]}, "description": {"type": "string", "minLength": 1}, "snapshot": {"type": "object"}, "expected_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "expected_blocking_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "forbidden_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}}}
+  }
+}

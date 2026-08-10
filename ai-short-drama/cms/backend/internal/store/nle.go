@@ -277,7 +277,7 @@ func (s *Store) CreateNLEItemDraft(
 		fadeOut = *patch.FadeOutMS
 	}
 	duration := end - start
-	if start < 0 || duration <= 0 || sourceIn < 0 || volume < 0 || fadeIn < 0 || fadeOut < 0 || fadeIn+fadeOut > duration {
+	if start < 0 || duration <= 0 || sourceIn < 0 || volume < 0 || volume > 4 || fadeIn < 0 || fadeOut < 0 || fadeIn+fadeOut > duration {
 		return NLEDraftResult{}, fmt.Errorf("%w: invalid millisecond trim, volume or fade values", ErrConflict)
 	}
 	if sourceOut != nil && *sourceOut <= sourceIn {
@@ -301,7 +301,7 @@ func (s *Store) CreateNLEItemDraft(
 
 	var newItemID string
 	err = tx.QueryRow(ctx, `UPDATE drama.edit_timeline_items SET
-		timeline_start_ms=$3,timeline_end_ms=$4,source_in_ms=$5,source_out_ms=$6,duration_ms=$4-$3,
+		timeline_start_ms=$3,timeline_end_ms=$4,source_in_ms=$5,source_out_ms=$6,duration_ms=$4::bigint-$3::bigint,
 		volume=$7,fade_in_ms=$8,fade_out_ms=$9,
 		transform_config=transform_config||COALESCE($10::jsonb,'{}'::jsonb),
 		effect_config=effect_config||COALESCE($11::jsonb,'{}'::jsonb),updated_at=CURRENT_TIMESTAMP
@@ -367,7 +367,9 @@ func (s *Store) RestoreNLETimelineDraft(ctx context.Context, projectID, episodeI
 	return NLEDraftResult{Timeline: summary}, nil
 }
 
-func (s *Store) ConfirmNLETimelineRender(ctx context.Context, projectID, episodeID, timelineID string) (NLERenderJob, error) {
+func (s *Store) ConfirmNLETimelineRender(
+	ctx context.Context, projectID, episodeID, timelineID string, storageDirectory ...string,
+) (NLERenderJob, error) {
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
 		return NLERenderJob{}, err
@@ -404,8 +406,25 @@ func (s *Store) ConfirmNLETimelineRender(ctx context.Context, projectID, episode
 	if err != nil {
 		return NLERenderJob{}, err
 	}
-	manifestPath := fmt.Sprintf("/data/results/nle/%s.manifest.json", renderID)
-	outputPath := fmt.Sprintf("/data/results/nle/%s/%s.mp4", episodeID, timelineID)
+	manifestPath := fmt.Sprintf("/data/storage/results/nle/manifests/%s.json", renderID)
+	outputPath := fmt.Sprintf("/data/storage/results/nle/renders/%s.mp4", renderID)
+	artifacts := []string(nil)
+	if len(storageDirectory) > 0 && strings.TrimSpace(storageDirectory[0]) != "" {
+		artifacts, err = writeNLERenderArtifacts(ctx, tx, strings.TrimSpace(storageDirectory[0]), nleRenderArtifactInput{
+			RenderJobID: renderID, ProjectID: projectID, EpisodeID: episodeID,
+			TimelineID: timelineID, TimelineVersion: version, RenderType: "preview",
+			ManifestPath: manifestPath, OutputPath: outputPath,
+		})
+		if err != nil {
+			return NLERenderJob{}, err
+		}
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			removeNLERenderArtifacts(artifacts)
+		}
+	}()
 	_, err = tx.Exec(ctx, `INSERT INTO drama.render_jobs(render_job_id,idempotency_key,trace_id,project_id,episode_id,
 		timeline_id,timeline_version,render_type,status,command_template_id,input_manifest_path,output_path,max_retries)
 		VALUES($1,$2,$3,$4,$5,$6,$7,'preview','pending','nle-preview-v1',$8,$9,2)`, renderID, "nle-confirm:"+timelineID+":"+renderID, traceID, projectID, episodeID, timelineID, version, manifestPath, outputPath)
@@ -419,5 +438,6 @@ func (s *Store) ConfirmNLETimelineRender(ctx context.Context, projectID, episode
 	if err = tx.Commit(ctx); err != nil {
 		return NLERenderJob{}, err
 	}
+	committed = true
 	return NLERenderJob{RenderJobID: renderID, TimelineID: timelineID, Status: "pending", Progress: 0, CreatedAt: time.Now()}, nil
 }

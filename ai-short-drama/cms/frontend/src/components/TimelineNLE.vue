@@ -21,6 +21,7 @@ const viewport = ref(null)
 const video = ref(null)
 const page = ref(null)
 const loading = ref(true)
+const loadingMore = ref(false)
 const saving = ref(false)
 const playing = ref(false)
 const currentMS = ref(0)
@@ -113,6 +114,32 @@ async function loadWindow(timelineID = timeline.value?.timeline_id || '', forced
   }
 }
 
+async function loadMore() {
+  if (!page.value?.has_more || loadingMore.value) return
+  const expectedTimelineID = timeline.value.timeline_id
+  const expectedStartMS = page.value.window_start_ms
+  const expectedEndMS = page.value.window_end_ms
+  const offset = items.value.length
+  loadingMore.value = true
+  try {
+    const result = await api.getNLETimeline(props.projectId, props.episodeId, {
+      timeline_id: expectedTimelineID, start_ms: expectedStartMS,
+      end_ms: expectedEndMS, limit: 500, offset,
+    })
+    if (timeline.value?.timeline_id !== expectedTimelineID ||
+      page.value?.window_start_ms !== expectedStartMS || page.value?.window_end_ms !== expectedEndMS) return
+    const seen = new Set(items.value.map(item => item.timeline_item_id))
+    page.value = {
+      ...result,
+      items: [...items.value, ...result.items.filter(item => !seen.has(item.timeline_item_id))],
+    }
+  } catch (error) {
+    emit('error', error.message)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
 function scheduleWindowLoad() {
   clearTimeout(scrollTimer)
   scrollTimer = setTimeout(() => loadWindow(), 120)
@@ -125,8 +152,8 @@ function ensureTimeVisible(timeMS) {
   const visibleRight = visibleLeft + viewport.value.clientWidth - 96
   if (left < visibleLeft + 80 || left > visibleRight - 80) {
     viewport.value.scrollLeft = Math.max(0, left - (viewport.value.clientWidth - 96) / 2)
+    scheduleWindowLoad()
   }
-  scheduleWindowLoad()
 }
 
 function setPlayhead(value, keepVisible = true) {
@@ -156,7 +183,7 @@ function tick() {
   currentMS.value = Math.min(durationMS.value, Math.round(performance.now() - clockOrigin))
   syncMedia()
   if (currentMS.value >= durationMS.value) { pausePlayback(); return }
-  if (currentMS.value > (page.value?.window_end_ms || 0) - 1500) scheduleWindowLoad()
+  ensureTimeVisible(currentMS.value)
   animationFrame = requestAnimationFrame(tick)
 }
 
@@ -215,7 +242,12 @@ function step(direction) {
   setPlayhead(stepPlayhead(currentMS.value, direction, stepMode.value, fps.value, durationMS.value))
 }
 
-function selectClip(item) { selectedItemID.value = item.timeline_item_id }
+function selectClip(item) {
+  selectedItemID.value = item.timeline_item_id
+  if (currentMS.value < Number(item.timeline_start_ms) || currentMS.value >= Number(item.timeline_end_ms)) {
+    setPlayhead(item.timeline_start_ms)
+  }
+}
 
 function beginGesture(event, item, mode) {
   if (saving.value || timeline.value?.approval_state === 'rendering') return
@@ -422,6 +454,7 @@ onBeforeUnmount(() => {
             <div v-if="NLE_TRACKS.find(track => track.type === selectedItem.track_type)?.kind === 'audio'" class="cut-buttons"><button :disabled="saving" @click="applyJCut">J-cut −100ms</button><button :disabled="saving" @click="applyLCut">L-cut +100ms</button></div>
             <div v-if="selectedItem.track_type === 'subtitle'" class="subtitle-controls">
               <label>垂直位置<input :value="objectConfig(selectedItem.transform_config).position_y_pct ?? 84" type="range" min="10" max="92" @change="updateSubtitleTransform({position_y_pct:Number($event.target.value)},'subtitle_position')" /></label>
+              <label>水平位置<input :value="objectConfig(selectedItem.transform_config).position_x_pct ?? 50" type="range" min="8" max="92" @change="updateSubtitleTransform({position_x_pct:Number($event.target.value)},'subtitle_position')" /></label>
               <label>字号<input :value="objectConfig(selectedItem.transform_config).font_size_px ?? 28" type="number" min="12" max="72" @change="updateSubtitleTransform({font_size_px:Number($event.target.value)},'subtitle_font_size')" /></label>
               <label><input :checked="objectConfig(selectedItem.transform_config).safe_area_enabled !== false" type="checkbox" @change="updateSubtitleTransform({safe_area_enabled:$event.target.checked},'subtitle_safe_area')" />限制在字幕安全区</label>
               <select :value="objectConfig(selectedItem.effect_config).subtitle_style || 'clean'" @change="updateSubtitleStyle($event.target.value)"><option value="clean">清爽底条</option><option value="outline">描边</option><option value="emphasis">重点强调</option></select>
@@ -437,7 +470,7 @@ onBeforeUnmount(() => {
         <button title="前进" @click="step(1)"><StepForward :size="15" /></button>
         <select v-model="stepMode" aria-label="定位步长"><option value="frame">逐帧（{{ Math.round(1000/fps) }}ms）</option><option value="100ms">逐 100ms</option></select>
         <strong>{{ formatNLETimecode(currentMS) }}</strong><span>/ {{ formatNLETimecode(durationMS) }}</span>
-        <input class="scrub-range" :value="currentMS" type="range" min="0" :max="durationMS" step="1" @input="setPlayhead($event.target.value,false)" />
+        <input class="scrub-range" :value="currentMS" type="range" min="0" :max="durationMS" step="1" @input="setPlayhead($event.target.value)" />
       </div>
 
       <div class="nle-tools">
@@ -467,7 +500,8 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="nle-status">
-        <span><Check :size="13" />可视窗口 {{ formatNLETimecode(page.window_start_ms) }}–{{ formatNLETimecode(page.window_end_ms) }} · {{ page.total }} 个片段{{ page.has_more?'（可继续分页）':'' }}</span>
+        <span><Check :size="13" />可视窗口 {{ formatNLETimecode(page.window_start_ms) }}–{{ formatNLETimecode(page.window_end_ms) }} · 已载入 {{ items.length }}/{{ page.total }} 个片段</span>
+        <button v-if="page.has_more" class="load-page-button" :disabled="loadingMore" @click="loadMore"><LoaderCircle v-if="loadingMore" :size="12" class="spin" />加载当前窗口下一页</button>
         <span v-if="renderStatus" :class="renderStatus">渲染 {{ renderStatus }}<template v-if="page.render_job"> · {{ Math.round(page.render_job.progress) }}%</template><template v-if="page.render_job?.error_message"> · {{ page.render_job.error_message }}</template></span>
         <span v-if="timeline.approval_state==='render_failed'" class="failed">渲染失败，旧 current 未被替换</span>
       </footer>
@@ -477,4 +511,5 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .nle-shell{overflow:hidden;border:1px solid #dce2eb!important;background:#0d1422!important;color:#dce6f7}.nle-head{background:#141e30;border-color:#27334a!important}.nle-head h3{color:#f3f6fb}.nle-head>div:first-child span{color:#7f95b7}.nle-version-state{margin-left:auto;display:grid;text-align:right}.nle-version-state b{font-size:11px}.nle-version-state b.draft{color:#f0c76e}.nle-version-state b.rendering{color:#7eb9ff}.nle-version-state b.render_failed{color:#ff8989}.nle-version-state b.approved{color:#7be0b3}.nle-version-state small{color:#8290a6;font-size:9px}.render-button{height:32px;display:flex;align-items:center;gap:5px;border:0;border-radius:6px;padding:0 10px;color:#fff;background:#496dde;font-size:10px}.render-button:disabled{opacity:.38}.nle-loading{height:180px;display:flex;place-items:center;justify-content:center;gap:8px;color:#9cabc1}.nle-preview-grid{display:grid;grid-template-columns:minmax(0,1fr) 265px;gap:1px;background:#27334a}.nle-monitor{position:relative;aspect-ratio:16/9;max-height:385px;display:grid;place-items:center;overflow:hidden;background:#03070e}.nle-monitor video{width:100%;height:100%;object-fit:contain}.proxy-placeholder{display:grid;justify-items:center;gap:7px;color:#7e8ba0}.proxy-placeholder strong{font-size:12px}.proxy-placeholder small{font-size:9px}.proxy-badge{position:absolute;right:9px;top:9px;padding:3px 5px;border:1px solid #7c8da7;border-radius:4px;color:#b9c5d8;background:#101827cc;font-size:8px}.safe-area{position:absolute;pointer-events:none;border:1px dashed #f1c96c66}.safe-action{inset:5%}.safe-title{inset:10%}.subtitle-preview{position:absolute;max-width:76%;transform:translate(-50%,-50%);border-radius:4px;padding:4px 10px;text-align:center;line-height:1.3;text-shadow:0 1px 2px #000;white-space:pre-wrap}.subtitle-preview.outline{background:transparent!important;text-shadow:-1px -1px #000,1px -1px #000,-1px 1px #000,1px 1px #000}.subtitle-preview.emphasis{letter-spacing:.04em}.nle-inspector{padding:12px;background:#111a29}.nle-inspector h4{margin:0 0 8px;font-size:11px}.nle-inspector>strong{display:block;overflow:hidden;color:#b9c9e2;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.nle-inspector>p{color:#77869e;font-size:10px;line-height:1.6}.inspector-fields{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:9px}.inspector-fields label,.subtitle-controls label{display:grid;gap:3px;color:#8190a7;font-size:8px}.inspector-fields input,.subtitle-controls input,.subtitle-controls select{min-width:0;border:1px solid #334159;border-radius:4px;padding:5px;color:#dce6f7;background:#182336;font:9px inherit}.cut-buttons{display:flex;gap:5px;margin-top:7px}.cut-buttons button,.version-restore button{border:1px solid #3a4a66;border-radius:5px;padding:5px;color:#b9c9e3;background:#1a2840;font-size:9px}.subtitle-controls{display:grid;gap:6px;margin-top:8px}.nle-transport{display:flex;align-items:center;gap:5px;padding:8px 10px;border-top:1px solid #2b3548;border-bottom:1px solid #2b3548;background:#111a28}.nle-transport button{width:28px;height:28px;display:grid;place-items:center;border:1px solid #35415a;border-radius:5px;color:#bdc8da;background:#1b2639}.nle-transport .play-button{color:#fff;background:#486ad6}.nle-transport select{border:1px solid #35415a;border-radius:5px;padding:5px;color:#c2cde0;background:#182236;font-size:9px}.nle-transport strong{margin-left:6px;color:#fff;font:12px ui-monospace,monospace}.nle-transport>span{color:#77869b;font:10px ui-monospace,monospace}.scrub-range{min-width:90px;flex:1;accent-color:#6f8cff}.nle-tools{min-height:38px;display:flex;align-items:center;gap:6px;padding:5px 10px;color:#91a0b5;background:#151f30;font-size:9px}.nle-tools>button{display:flex;align-items:center;gap:4px;border:1px solid #33415a;border-radius:5px;padding:5px 7px;color:#9cacc4;background:#1a2639}.nle-tools>button.active{color:#91a9ff;border-color:#5573d3;background:#1d2c4e}.nle-tools>input{width:120px;accent-color:#6f8cff}.nle-tools code{color:#8392aa}.nle-tools>span{margin-left:8px;color:#e1bd6a}.version-restore{margin-left:auto;display:flex;gap:4px}.version-restore select{max-width:165px;border:1px solid #33415a;border-radius:5px;color:#afbdd1;background:#182235;font-size:9px}.nle-timeline-viewport{max-height:390px;overflow:auto;background:#0d1420;scrollbar-color:#3b4860 #131d2c}.nle-timeline-content{position:relative;min-width:100%;user-select:none}.nle-ruler,.nle-lane{display:grid;grid-template-columns:96px 1fr}.nle-ruler{position:sticky;top:0;z-index:8;height:30px;border-bottom:1px solid #334057;background:#121b2a}.nle-ruler>b,.nle-lane>b{position:sticky;left:0;z-index:6;display:flex;align-items:center;gap:5px;padding-left:9px;border-right:1px solid #303c52;color:#8e9db3;background:#151f2f;font-size:9px}.ruler-canvas,.lane-canvas{position:relative}.ruler-canvas span{position:absolute;top:8px;color:#77879e;font:8px ui-monospace,monospace;transform:translateX(3px)}.ruler-canvas span:before{content:'';position:absolute;left:-3px;top:13px;height:7px;border-left:1px solid #40506b}.nle-lane{height:48px;border-bottom:1px solid #202b3d}.lane-canvas{background:repeating-linear-gradient(90deg,#101827 0,#101827 calc(1s),#111b2b calc(1s));background-size:calc(v-bind(zoom) * 1px) 100%}.nle-clip{position:absolute;top:5px;bottom:5px;display:flex;align-items:center;overflow:hidden;border:1px solid #5572c8;border-radius:5px;color:#dbe5f6;background:#334f9a;cursor:grab}.nle-clip.dialogue{border-color:#3a9b78;background:#276f58}.nle-clip.narration{border-color:#59a1a6;background:#347176}.nle-clip.bgm{border-color:#8c66be;background:#65418e}.nle-clip.ambience{border-color:#a37652;background:#76523a}.nle-clip.sound_effect{border-color:#c27c47;background:#8a522c}.nle-clip.subtitle{border-color:#818fa4;background:#48576c}.nle-clip.selected{outline:2px solid #eef4ff;outline-offset:1px;z-index:3}.nle-clip.pending{background:repeating-linear-gradient(135deg,#35435c,#35435c 6px,#2b364b 6px,#2b364b 12px)}.nle-clip img{position:absolute;width:100%;height:100%;object-fit:cover;opacity:.35}.nle-clip>span{position:relative;z-index:1;min-width:0;padding:0 8px}.nle-clip strong,.nle-clip small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nle-clip strong{font-size:8px}.nle-clip small{color:#d4def0aa;font-size:7px}.trim-handle{position:absolute;z-index:3;top:0;bottom:0;width:6px;cursor:ew-resize}.trim-handle.left{left:0}.trim-handle.right{right:0}.trim-handle:hover{background:#fff8}.playhead{position:absolute;z-index:7;top:0;bottom:0;width:1px;background:#ff6b65;pointer-events:none}.playhead i{position:absolute;left:-4px;top:0;width:9px;height:9px;clip-path:polygon(0 0,100% 0,50% 100%);background:#ff6b65}.range-selection{position:absolute;z-index:2;top:30px;bottom:0;border:1px solid #e4c26388;background:#e4c2631f;pointer-events:none}.nle-status{min-height:31px;display:flex;align-items:center;gap:14px;padding:5px 10px;color:#78879e;background:#111a28;font-size:8px}.nle-status span{display:flex;align-items:center;gap:4px}.nle-status .succeeded{color:#6fdaae}.nle-status .failed,.nle-status .timeout{color:#ff8c8c}.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:900px){.nle-preview-grid{grid-template-columns:1fr}.nle-inspector{max-height:240px;overflow:auto}.nle-tools{flex-wrap:wrap}.version-restore{margin-left:0;width:100%}.nle-status{align-items:flex-start;flex-direction:column}}
+.load-page-button{display:flex;align-items:center;gap:4px;border:1px solid #3a4962;border-radius:4px;padding:4px 6px;color:#aebbd0;background:#172337;font-size:8px}.load-page-button:disabled{opacity:.5}
 </style>

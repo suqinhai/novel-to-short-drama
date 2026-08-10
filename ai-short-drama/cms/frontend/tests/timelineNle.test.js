@@ -47,4 +47,13 @@ test('subtitle preview keeps safe-area positioning and style', () => {
     text: '安全区字幕', x: 45, y: 80, fontSize: 32, color: '#ff0',
     background: 'rgba(0,0,0,.64)', fontWeight: 700, safeArea: true, style: 'outline',
   })
+  assert.equal(subtitlePreviewConfig({
+    transform_config: { position_x_pct: 2, position_y_pct: 98, safe_area_enabled: true },
+  }).x, 10)
+  assert.equal(subtitlePreviewConfig({
+    transform_config: { position_x_pct: 2, position_y_pct: 98, safe_area_enabled: true },
+  }).y, 90)
+  assert.equal(subtitlePreviewConfig({
+    transform_config: { position_x_pct: 2, safe_area_enabled: false },
+  }).x, 2)
 })

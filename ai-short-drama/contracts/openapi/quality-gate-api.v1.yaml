@@ -1,0 +1,224 @@
+openapi: 3.1.0
+info:
+  title: Source-to-Master Cross-layer Quality Gate API
+  version: 1.0.0
+  description: >-
+    Runs deterministic rules separately from evidence-backed model review. Blocking findings
+    must be resolved or individually overridden before a master can receive gate approval.
+    Remediation endpoints create local plans and never mutate creative artifacts directly.
+servers:
+  - url: /api/v1
+tags:
+  - name: QualityGate
+paths:
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/rule-runs:
+    post:
+      tags: [QualityGate]
+      operationId: runCrossLayerRules
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [snapshot]
+              properties:
+                snapshot: {$ref: '#/components/schemas/Snapshot'}
+                config: {$ref: '#/components/schemas/RuleConfig'}
+                model_review_required: {type: boolean, default: true}
+                actor: {type: string}
+      responses:
+        '201': {$ref: '#/components/responses/GateRun'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}:
+    get:
+      tags: [QualityGate]
+      operationId: getQualityGateRun
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}]
+      responses:
+        '200': {$ref: '#/components/responses/GateRun'}
+        '404': {description: Gate run not found.}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/model-review:
+    post:
+      tags: [QualityGate]
+      operationId: submitQualityGateModelReview
+      summary: Submit a separately executed model review. Every model finding must cite an artifact in the frozen snapshot.
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelReview'}
+      responses:
+        '201': {$ref: '#/components/responses/GateRun'}
+        '409': {description: Model review is already closed or the run is immutable.}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/findings/{finding_id}/override:
+    post:
+      tags: [QualityGate]
+      operationId: overrideQualityGateFinding
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}, {$ref: '#/components/parameters/FindingID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
+      responses:
+        '201': {description: Immutable risk acceptance audit created.}
+        '409': {description: Finding is already closed.}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/findings/{finding_id}/resolve:
+    post:
+      tags: [QualityGate]
+      operationId: resolveQualityGateFinding
+      summary: Mark fixed only after a local change plan has been generated for this finding.
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}, {$ref: '#/components/parameters/FindingID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/GateRun'}
+        '409': {description: Finding is already closed, the gate is approved, or no local change plan exists.}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/findings/{finding_id}/change-plan:
+    post:
+      tags: [QualityGate]
+      operationId: createQualityGateChangePlan
+      summary: Generate a local, confirmation-required remediation plan without updating the target artifact.
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}, {$ref: '#/components/parameters/FindingID'}]
+      requestBody: {content: {application/json: {schema: {type: object, additionalProperties: false, properties: {actor: {type: string}}}}}}
+      responses:
+        '201': {description: Local change plan, content: {application/json: {schema: {$ref: '#/components/schemas/ChangePlanResponse'}}}}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/approve-master:
+    post:
+      tags: [QualityGate]
+      operationId: approveQualityGateMaster
+      summary: Approve only when rules and required model review are complete and no blocking finding remains open.
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [actor], properties: {actor: {type: string, minLength: 1}}}}}}
+      responses:
+        '201': {description: Master gate approval created.}
+        '409': {description: Rules/model review incomplete or blocking issues remain open.}
+components:
+  parameters:
+    ProjectID: {name: project_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    EpisodeID: {name: episode_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    GateRunID: {name: gate_run_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    FindingID: {name: finding_id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+  schemas:
+    ID: {type: string, minLength: 1, maxLength: 300}
+    Stage: {enum: [source_ir, adaptation_plan, episode_outline, script, storyboard, media, edit_timeline, master]}
+    RuleConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        required_stages: {type: array, items: {$ref: '#/components/schemas/Stage'}}
+        max_reveals_per_10_seconds: {type: integer, minimum: 1}
+        max_black_gap_ms: {type: integer, minimum: 1}
+        max_silence_gap_ms: {type: integer, minimum: 1}
+        ending_hook_window_ms: {type: integer, minimum: 1}
+    Snapshot:
+      type: object
+      required: [schema_version, project_id, episode_id, artifacts]
+      properties:
+        schema_version: {const: cross-layer-quality-gate.v1}
+        project_id: {$ref: '#/components/schemas/ID'}
+        episode_id: {$ref: '#/components/schemas/ID'}
+        master_id: {$ref: '#/components/schemas/ID'}
+        duration_ms: {type: integer, minimum: 0}
+        artifacts:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            type: object
+            required: [stage, artifact_id, version]
+            properties:
+              stage: {$ref: '#/components/schemas/Stage'}
+              artifact_id: {$ref: '#/components/schemas/ID'}
+              version: {type: integer, minimum: 1}
+              duration_ms: {type: integer, minimum: 0}
+              facts: {type: array, items: {type: object}}
+              characters: {type: array, items: {type: object}}
+              events: {type: array, items: {type: object}}
+              foreshadows: {type: array, items: {type: object}}
+              hooks: {type: array, items: {type: object}}
+              reveals: {type: array, items: {type: object}}
+              actions: {type: array, items: {type: object}}
+              av_bindings: {type: array, items: {type: object}}
+              timeline: {type: array, items: {type: object}}
+              signals: {type: array, items: {type: object}}
+              constraints: {type: array, items: {type: object}}
+    Locator:
+      type: object
+      required: [stage, artifact_id, entity_type, entity_id]
+      properties:
+        stage: {$ref: '#/components/schemas/Stage'}
+        artifact_id: {$ref: '#/components/schemas/ID'}
+        entity_type: {type: string, minLength: 1}
+        entity_id: {$ref: '#/components/schemas/ID'}
+        field_path: {type: string}
+        source_span_id: {type: string}
+        start_ms: {type: integer, minimum: 0}
+        end_ms: {type: integer, minimum: 1}
+        frame: {type: integer, minimum: 0}
+    Finding:
+      type: object
+      required: [schema_version, finding_id, detector_type, dimension, code, severity, message, evidence, locators, recommendation, status]
+      properties:
+        schema_version: {const: quality-gate-finding.v1}
+        finding_id: {$ref: '#/components/schemas/ID'}
+        detector_type: {enum: [rule, model]}
+        dimension: {enum: [source_fidelity, character_continuity, causality, foreshadowing, hooks, information_density, dialogue_visual_consistency, action_coverage, av_sync_identity, edit_integrity, constraint_compliance]}
+        code: {type: string, minLength: 1}
+        severity: {enum: [info, warning, major, blocking]}
+        message: {type: string, minLength: 1}
+        evidence: {type: array, minItems: 1, items: {type: object, required: [locator, observed], properties: {locator: {$ref: '#/components/schemas/Locator'}, observed: {type: string, minLength: 1}, expected: {type: string}, quote: {type: string}}}}
+        locators: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Locator'}}
+        recommendation: {type: string, minLength: 1}
+        status: {enum: [open, resolved, overridden]}
+        metadata: {type: object}
+    ModelReview:
+      type: object
+      additionalProperties: false
+      required: [schema_version, provider, model, prompt_version, findings]
+      properties:
+        schema_version: {const: cross-layer-quality-gate.v1}
+        provider: {type: string, minLength: 1}
+        model: {type: string, minLength: 1}
+        prompt_version: {type: string, minLength: 1}
+        findings: {type: array, items: {$ref: '#/components/schemas/Finding'}}
+    Decision:
+      type: object
+      additionalProperties: false
+      required: [reason, actor]
+      properties: {reason: {type: string, minLength: 1}, actor: {type: string, minLength: 1}}
+    GateRunResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [gate_run_id, ruleset_version, rule_score, rules_status, model_status, status, findings]
+          properties:
+            gate_run_id: {$ref: '#/components/schemas/ID'}
+            ruleset_version: {type: string}
+            rule_score: {type: number, minimum: 0, maximum: 100}
+            rules_status: {enum: [processing, completed, failed]}
+            model_status: {enum: [not_required, pending, completed, failed]}
+            status: {enum: [review_pending, review_ready, approved, rejected, superseded]}
+            findings: {type: array, items: {$ref: '#/components/schemas/Finding'}}
+    ChangePlanResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          required: [schema_version, change_plan_id, finding_id, target, operations, requires_confirmation, direct_mutation_allowed]
+          properties:
+            schema_version: {const: quality-gate-change-plan.v1}
+            change_plan_id: {$ref: '#/components/schemas/ID'}
+            finding_id: {$ref: '#/components/schemas/ID'}
+            target: {type: object}
+            operations: {type: array, minItems: 1, items: {type: object}}
+            requires_confirmation: {const: true}
+            direct_mutation_allowed: {const: false}
+  responses:
+    GateRun:
+      description: Current immutable gate run and all rule/model findings.
+      content: {application/json: {schema: {$ref: '#/components/schemas/GateRunResponse'}}}
+    ValidationError:
+      description: Snapshot, evidence, locator, or review contract failed validation.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -285,6 +286,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 	})
 
 	t.Run("NLE drafts never replace current until render succeeds and failed render rolls back", func(t *testing.T) {
+		renderStorage := t.TempDir()
 		base := latestTimeline(t, ctx, database, projectID, episodeID)
 		var itemID, approvedBefore string
 		if err = database.pool.QueryRow(ctx, `SELECT timeline_item_id FROM drama.edit_timeline_items
@@ -306,9 +308,13 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		if draft.Timeline.IsCurrent || draft.Timeline.ApprovalState != "draft" || draft.Item == nil {
 			t.Fatalf("edit must create a non-current item-linked draft: %#v", draft)
 		}
-		job, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, draft.Timeline.TimelineID)
+		job, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, draft.Timeline.TimelineID, renderStorage)
 		if renderErr != nil {
 			t.Fatal(renderErr)
+		}
+		manifests, globErr := filepath.Glob(filepath.Join(renderStorage, "results", "nle", "manifests", "*.json"))
+		if globErr != nil || len(manifests) != 1 {
+			t.Fatalf("explicit render must materialize one worker manifest: paths=%v err=%v", manifests, globErr)
 		}
 		if _, err = database.writer.Exec(ctx, `UPDATE drama.render_jobs
 			SET status='failed',completed_at=now(),error_code='ACCEPTANCE_FAILURE',error_message='fixture failure'
@@ -333,7 +339,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 			*restored.Timeline.ParentTimelineID != "timeline_phase5_v1" {
 			t.Fatalf("restore must create a successor draft: %#v", restored)
 		}
-		successJob, successErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, restored.Timeline.TimelineID)
+		successJob, successErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, restored.Timeline.TimelineID, renderStorage)
 		if successErr != nil {
 			t.Fatal(successErr)
 		}

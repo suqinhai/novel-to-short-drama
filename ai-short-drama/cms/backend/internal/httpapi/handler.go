@@ -113,6 +113,7 @@ func (h *Handler) Router() *gin.Engine {
 	registerPostProductionRoutes(api, h)
 	registerShotEditorRoutes(api, h)
 	registerEffectiveInputRoutes(api, h)
+	registerQualityGateRoutes(api, h)
 	registerSourceV2(router, h.store)
 	return router
 }

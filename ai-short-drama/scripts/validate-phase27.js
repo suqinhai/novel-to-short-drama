@@ -8,6 +8,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8')
 
 const migration = read('database/27-lightweight-nle.sql')
 const store = read('cms/backend/internal/store/nle.go')
+const manifest = read('cms/backend/internal/store/nle_manifest.go')
 const handler = read('cms/backend/internal/httpapi/postproduction.go')
 const component = read('cms/frontend/src/components/TimelineNLE.vue')
 const service = read('cms/frontend/src/services/timelineNle.js')
@@ -20,8 +21,13 @@ for (const marker of [
 
 for (const marker of [
   'CreateNLEItemDraft', 'RestoreNLETimelineDraft', 'ConfirmNLETimelineRender',
-  'LIMIT $4 OFFSET $5', "item.track_type='video'", 'nle-confirm:',
+  'LIMIT $4 OFFSET $5', "item.track_type='video'", 'nle-confirm:', '/data/storage/results/nle/',
 ]) assert(store.includes(marker), `NLE store missing ${marker}`)
+
+for (const marker of [
+  'writeNLERenderArtifacts', 'buildNLEASS', 'safe_area_enabled', 'source_path',
+  'timeline_start_ms', 'timeline_end_ms', 'source_in_ms', 'source_out_ms',
+]) assert(manifest.includes(marker), `NLE render manifest missing ${marker}`)
 
 for (const marker of ['nle-timeline', 'restore-draft', '/render', 'createNLEItemDraft']) {
   assert(handler.includes(marker), `NLE HTTP API missing ${marker}`)
@@ -29,7 +35,7 @@ for (const marker of ['nle-timeline', 'restore-draft', '/render', 'createNLEItem
 
 for (const marker of [
   '可播放多轨时间线', '确认并重编', 'J-cut', 'L-cut', '代理媒体生成中',
-  '波形生成中', '限制在字幕安全区', 'visibleTimelineWindow',
+  '波形生成中', '限制在字幕安全区', 'visibleTimelineWindow', '加载当前窗口下一页',
 ]) assert(component.includes(marker), `NLE UI missing ${marker}`)
 
 assert.deepEqual([...service.matchAll(/type: '([^']+)'/g)].slice(0, 7).map(match => match[1]),

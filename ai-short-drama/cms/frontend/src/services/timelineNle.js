@@ -103,15 +103,21 @@ export function activeItemsAt(items = [], timeMS, trackTypes = []) {
 export function subtitlePreviewConfig(item, timelineConfig = {}) {
   const transform = item?.transform_config || {}
   const effect = item?.effect_config || {}
+  const safeArea = transform.safe_area_enabled !== false
+  const position = (value, fallback) => {
+    const parsed = Number(value ?? fallback)
+    const normalized = Number.isFinite(parsed) ? parsed : fallback
+    return safeArea ? Math.max(10, Math.min(90, normalized)) : Math.max(0, Math.min(100, normalized))
+  }
   return {
     text: item?.subtitle_text || transform.text || '',
-    x: Number(transform.position_x_pct ?? timelineConfig.position_x_pct ?? 50),
-    y: Number(transform.position_y_pct ?? timelineConfig.position_y_pct ?? 84),
+    x: position(transform.position_x_pct ?? timelineConfig.position_x_pct, 50),
+    y: position(transform.position_y_pct ?? timelineConfig.position_y_pct, 84),
     fontSize: Number(transform.font_size_px ?? timelineConfig.font_size_px ?? 28),
     color: effect.color || timelineConfig.color || '#ffffff',
     background: effect.background || timelineConfig.background || 'rgba(0,0,0,.64)',
     fontWeight: effect.font_weight || timelineConfig.font_weight || 700,
-    safeArea: transform.safe_area_enabled !== false,
+    safeArea,
     style: effect.subtitle_style || timelineConfig.style || 'clean',
   }
 }

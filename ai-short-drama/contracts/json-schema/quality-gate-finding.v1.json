@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://short-drama.local/schemas/quality-gate-finding.v1.json",
+  "title": "Evidence-backed cross-layer quality finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "finding_id", "detector_type", "dimension", "code", "severity", "message", "evidence", "locators", "recommendation", "status"],
+  "properties": {
+    "schema_version": {"const": "quality-gate-finding.v1"},
+    "finding_id": {"type": "string", "minLength": 1},
+    "detector_type": {"enum": ["rule", "model"]},
+    "dimension": {"enum": ["source_fidelity", "character_continuity", "causality", "foreshadowing", "hooks", "information_density", "dialogue_visual_consistency", "action_coverage", "av_sync_identity", "edit_integrity", "constraint_compliance"]},
+    "code": {"type": "string", "minLength": 1},
+    "severity": {"enum": ["info", "warning", "major", "blocking"]},
+    "message": {"type": "string", "minLength": 1},
+    "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+    "locators": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/locator"}},
+    "recommendation": {"type": "string", "minLength": 1},
+    "status": {"enum": ["open", "resolved", "overridden"]},
+    "metadata": {"type": "object"}
+  },
+  "$defs": {
+    "stage": {"enum": ["source_ir", "adaptation_plan", "episode_outline", "script", "storyboard", "media", "edit_timeline", "master"]},
+    "locator": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage", "artifact_id", "entity_type", "entity_id"],
+      "properties": {
+        "stage": {"$ref": "#/$defs/stage"}, "artifact_id": {"type": "string", "minLength": 1},
+        "entity_type": {"type": "string", "minLength": 1}, "entity_id": {"type": "string", "minLength": 1},
+        "field_path": {"type": "string"}, "source_span_id": {"type": "string"},
+        "start_ms": {"type": "integer", "minimum": 0}, "end_ms": {"type": "integer", "minimum": 1},
+        "frame": {"type": "integer", "minimum": 0}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["locator", "observed"],
+      "properties": {"locator": {"$ref": "#/$defs/locator"}, "observed": {"type": "string", "minLength": 1}, "expected": {"type": "string"}, "quote": {"type": "string"}}
+    }
+  }
+}

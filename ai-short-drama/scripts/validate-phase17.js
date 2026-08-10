@@ -74,7 +74,8 @@ for (const marker of [
   'sound-style', 'timeline-versions/{timeline_id}/restore',
 ]) assert(openapi.includes(marker), `post-production OpenAPI missing ${marker}`)
 
-const cms = read('cms/frontend/src/views/CreativeWorkbenchView.vue')
+const cms = read('cms/frontend/src/views/CreativeWorkbenchView.vue') +
+  read('cms/frontend/src/components/TimelineNLE.vue')
 assert(cms.includes('replaceSoundStyle') && cms.includes('submitComment'),
   'unified workbench must support versioned sound replacement and bound comments')
 for (const marker of [
@@ -82,9 +83,9 @@ for (const marker of [
   'createChangePlan',
 ]) assert(cms.includes(marker), `unified workbench change-plan entry missing ${marker}`)
 for (const marker of [
-  '场景卡片', '剧情节拍时间轴', '逐句对白', '分镜缩略图故事板',
+  '场景卡片', '剧情节拍时间轴', '逐句对白', '原子多镜头分镜编辑器',
   '转为旁白', '转为动作', '口型校验', 'BGM / SFX / 环境声',
-  '图片、视频、音频和字幕时间线', '跳转编辑', '恢复为新版本',
+  '可播放多轨时间线', '跳转编辑', '恢复为新版本',
 ]) assert(cms.includes(marker), `unified workbench UI missing ${marker}`)
 
 const fixture = read('test-data/phase5-postproduction-fixture.sql')

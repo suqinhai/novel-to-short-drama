@@ -115,6 +115,10 @@ func (h *Handler) getNLETimeline(c *gin.Context) {
 		writePostProductionError(c, err)
 		return
 	}
+	for index := range result.Items {
+		result.Items[index].ProxyURL = resolvePublicMediaURL(h.config.MediaPublicURL, result.Items[index].ProxyURL)
+		result.Items[index].WaveformURL = resolvePublicMediaURL(h.config.MediaPublicURL, result.Items[index].WaveformURL)
+	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
@@ -159,7 +163,7 @@ func (h *Handler) restoreNLETimelineDraft(c *gin.Context) {
 
 func (h *Handler) confirmNLETimelineRender(c *gin.Context) {
 	result, err := h.store.ConfirmNLETimelineRender(c.Request.Context(), c.Param("projectID"),
-		c.Param("episodeID"), c.Param("timelineID"))
+		c.Param("episodeID"), c.Param("timelineID"), h.config.StorageDirectory)
 	if err != nil {
 		writePostProductionError(c, err)
 		return
