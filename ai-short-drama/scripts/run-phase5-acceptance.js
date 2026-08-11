@@ -39,6 +39,10 @@ const migrationFiles = [
   'database/25-season-planning-workbench.sql',
   'database/26-atomic-multi-shot-editor.sql',
   'database/27-lightweight-nle.sql',
+  'database/28-cross-layer-quality-gate.sql',
+  'database/29-prompt-lab-professional-export.sql',
+  'database/30-step-0-7-p0-p1-closure.sql',
+  'database/31-step-8-10-p0-p1-closure.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -58,6 +62,9 @@ const verifyFiles = [
   'database/25-verify-season-planning-workbench.sql',
   'database/26-verify-atomic-multi-shot-editor.sql',
   'database/27-verify-lightweight-nle.sql',
+  'database/28-verify-cross-layer-quality-gate.sql',
+  'database/29-verify-prompt-lab-professional-export.sql',
+  'database/31-verify-step-8-10-p0-p1-closure.sql',
 ];
 
 function loadEnv() {
@@ -202,7 +209,8 @@ try {
     'validate-phase5.js', 'validate-phase13.js', 'validate-phase14.js', 'validate-phase15.js',
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
-    'validate-phase20.js', 'validate-phase21.js', 'validate-phase27.js',
+    'validate-phase20.js', 'validate-phase21.js', 'validate-phase27.js', 'validate-phase28.js',
+    'validate-phase29.js', 'validate-phase31.js',
     'validate-video-provider-retry-idempotency.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);

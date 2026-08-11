@@ -148,6 +148,7 @@ type PromptExperimentResult struct {
 	EstimatedCost             float64         `json:"estimated_cost"`
 	AutomaticMetrics          json.RawMessage `json:"automatic_metrics"`
 	Status                    string          `json:"status"`
+	ErrorMessage              *string         `json:"error_message,omitempty"`
 }
 
 type PromptBlindEvaluation struct {
@@ -186,6 +187,8 @@ type SavePromptExperimentResultInput struct {
 	LatencyMS                 *int            `json:"latency_ms"`
 	EstimatedCost             float64         `json:"estimated_cost"`
 	AutomaticMetrics          json.RawMessage `json:"automatic_metrics"`
+	Status                    string          `json:"status"`
+	ErrorMessage              string          `json:"error_message"`
 }
 
 type SaveBlindEvaluationInput struct {
@@ -563,7 +566,7 @@ func (s *Store) CreatePromptExperiment(ctx context.Context, input CreatePromptEx
 		return PromptExperiment{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO drama.prompt_experiments(prompt_experiment_id,category,display_name,
-		prompt_test_suite_id,suite_hash,blind_review,status,created_by) VALUES($1,$2,$3,$4,$5,$6,'evaluation',NULLIF($7,''))`,
+		prompt_test_suite_id,suite_hash,blind_review,status,created_by) VALUES($1,$2,$3,$4,$5,$6,'draft',NULLIF($7,''))`,
 		experimentID, input.Category, input.DisplayName, input.PromptTestSuiteID, suiteHash, input.BlindReview,
 		strings.TrimSpace(input.CreatedBy)); err != nil {
 		return PromptExperiment{}, err
@@ -669,7 +672,8 @@ func (s *Store) GetPromptExperiment(ctx context.Context, experimentID string, bl
 	variantRows.Close()
 	resultRows, err := s.pool.Query(ctx, `SELECT result.prompt_experiment_result_id,result.prompt_experiment_variant_id,
 		result.prompt_fixture_id,variant.blind_label,result.rendered_input,result.rendered_input_hash,result.output,result.output_hash,
-		result.token_estimate,result.token_usage,result.latency_ms,result.estimated_cost::float8,result.automatic_metrics,result.status
+		result.token_estimate,result.token_usage,result.latency_ms,result.estimated_cost::float8,result.automatic_metrics,result.status,
+		result.error_message
 		FROM drama.prompt_experiment_results result JOIN drama.prompt_experiment_variants variant USING(prompt_experiment_variant_id)
 		WHERE result.prompt_experiment_id=$1 ORDER BY result.prompt_fixture_id,variant.blind_label`, experimentID)
 	if err != nil {
@@ -680,7 +684,8 @@ func (s *Store) GetPromptExperiment(ctx context.Context, experimentID string, bl
 		var value PromptExperimentResult
 		if err = resultRows.Scan(&value.PromptExperimentResultID, &value.PromptExperimentVariantID,
 			&value.PromptFixtureID, &value.BlindLabel, &value.RenderedInput, &value.RenderedInputHash, &value.Output, &value.OutputHash,
-			&value.TokenEstimate, &value.TokenUsage, &value.LatencyMS, &value.EstimatedCost, &value.AutomaticMetrics, &value.Status); err != nil {
+			&value.TokenEstimate, &value.TokenUsage, &value.LatencyMS, &value.EstimatedCost, &value.AutomaticMetrics, &value.Status,
+			&value.ErrorMessage); err != nil {
 			resultRows.Close()
 			return PromptExperiment{}, err
 		}
@@ -711,8 +716,21 @@ func (s *Store) GetPromptExperiment(ctx context.Context, experimentID string, bl
 }
 
 func (s *Store) SavePromptExperimentResult(ctx context.Context, experimentID string, input SavePromptExperimentResultInput) (PromptExperiment, error) {
-	if strings.TrimSpace(input.RenderedInput) == "" || len(input.Output) == 0 || !json.Valid(input.Output) {
-		return PromptExperiment{}, fmt.Errorf("%w: rendered_input and valid JSON output are required", ErrValidation)
+	input.Status = strings.TrimSpace(input.Status)
+	if input.Status == "" {
+		input.Status = "completed"
+	}
+	if input.Status != "completed" && input.Status != "failed" {
+		return PromptExperiment{}, fmt.Errorf("%w: result status must be completed or failed", ErrValidation)
+	}
+	if input.Status == "completed" && (strings.TrimSpace(input.RenderedInput) == "" || len(input.Output) == 0 || !json.Valid(input.Output)) {
+		return PromptExperiment{}, fmt.Errorf("%w: completed result requires rendered_input and valid JSON output", ErrValidation)
+	}
+	if input.Status == "failed" && strings.TrimSpace(input.ErrorMessage) == "" {
+		return PromptExperiment{}, fmt.Errorf("%w: failed result requires error_message", ErrValidation)
+	}
+	if len(input.Output) == 0 || !json.Valid(input.Output) {
+		input.Output = json.RawMessage(`{}`)
 	}
 	if input.RenderedInputHash == "" {
 		sum := sha256.Sum256([]byte(input.RenderedInput))
@@ -731,19 +749,78 @@ func (s *Store) SavePromptExperimentResult(ctx context.Context, experimentID str
 	}
 	command, err := s.writer.Exec(ctx, `INSERT INTO drama.prompt_experiment_results(prompt_experiment_result_id,prompt_experiment_id,
 		prompt_experiment_variant_id,prompt_fixture_id,rendered_input,rendered_input_hash,output,output_hash,token_estimate,
-		token_usage,latency_ms,estimated_cost,automatic_metrics,status)
-		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'completed'
+		token_usage,latency_ms,estimated_cost,automatic_metrics,status,error_message)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')
 		WHERE EXISTS(SELECT 1 FROM drama.prompt_experiment_variants WHERE prompt_experiment_variant_id=$3 AND prompt_experiment_id=$2)
 		AND EXISTS(SELECT 1 FROM drama.prompt_test_suites suite JOIN drama.prompt_experiments experiment USING(prompt_test_suite_id)
 			WHERE experiment.prompt_experiment_id=$2 AND suite.fixture_ids ? $4)
 		ON CONFLICT(prompt_experiment_variant_id,prompt_fixture_id) DO NOTHING`, resultID, experimentID, input.PromptExperimentVariantID,
 		input.PromptFixtureID, input.RenderedInput, input.RenderedInputHash, input.Output, hex.EncodeToString(outputHash[:]), input.TokenEstimate,
-		input.TokenUsage, input.LatencyMS, input.EstimatedCost, input.AutomaticMetrics)
+		input.TokenUsage, input.LatencyMS, input.EstimatedCost, input.AutomaticMetrics, input.Status, strings.TrimSpace(input.ErrorMessage))
 	if err != nil {
 		return PromptExperiment{}, err
 	}
 	if command.RowsAffected() == 0 {
 		return PromptExperiment{}, fmt.Errorf("%w: result does not belong to the frozen experiment matrix", ErrConflict)
+	}
+	return s.GetPromptExperiment(ctx, experimentID, false)
+}
+
+func (s *Store) BeginPromptExperimentRun(ctx context.Context, experimentID string) (PromptExperiment, []PromptFixture, error) {
+	command, err := s.writer.Exec(ctx, `UPDATE drama.prompt_experiments experiment SET status='running'
+		WHERE prompt_experiment_id=$1 AND status IN ('draft','evaluation')
+		AND NOT EXISTS(SELECT 1 FROM drama.prompt_experiment_results result
+			WHERE result.prompt_experiment_id=experiment.prompt_experiment_id)`, experimentID)
+	if err != nil {
+		return PromptExperiment{}, nil, err
+	}
+	if command.RowsAffected() == 0 {
+		return PromptExperiment{}, nil, fmt.Errorf("%w: experiment is already running or has immutable results", ErrConflict)
+	}
+	experiment, err := s.GetPromptExperiment(ctx, experimentID, false)
+	if err != nil {
+		return PromptExperiment{}, nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT fixture.prompt_fixture_id,fixture.category,fixture.fixture_key,fixture.version,
+		fixture.display_name,fixture.variables,fixture.expected_output,fixture.input_hash,fixture.frozen,fixture.created_at
+		FROM drama.prompt_experiments experiment
+		JOIN drama.prompt_test_suites suite USING(prompt_test_suite_id)
+		JOIN drama.prompt_fixtures fixture ON suite.fixture_ids ? fixture.prompt_fixture_id
+		WHERE experiment.prompt_experiment_id=$1 ORDER BY fixture.prompt_fixture_id`, experimentID)
+	if err != nil {
+		return PromptExperiment{}, nil, err
+	}
+	defer rows.Close()
+	fixtures := []PromptFixture{}
+	for rows.Next() {
+		var item PromptFixture
+		if err = rows.Scan(&item.PromptFixtureID, &item.Category, &item.FixtureKey, &item.Version,
+			&item.DisplayName, &item.Variables, &item.ExpectedOutput, &item.InputHash, &item.Frozen, &item.CreatedAt); err != nil {
+			return PromptExperiment{}, nil, err
+		}
+		fixtures = append(fixtures, item)
+	}
+	if err = rows.Err(); err != nil {
+		return PromptExperiment{}, nil, err
+	}
+	return experiment, fixtures, nil
+}
+
+func (s *Store) FinishPromptExperimentRun(ctx context.Context, experimentID string) (PromptExperiment, error) {
+	command, err := s.writer.Exec(ctx, `UPDATE drama.prompt_experiments experiment
+		SET status=CASE WHEN blind_review THEN 'evaluation' ELSE 'completed' END,completed_at=CURRENT_TIMESTAMP
+		WHERE prompt_experiment_id=$1 AND status='running'
+		AND (SELECT count(*) FROM drama.prompt_experiment_results result
+			WHERE result.prompt_experiment_id=experiment.prompt_experiment_id)=
+			(SELECT jsonb_array_length(suite.fixture_ids)*count(variant.*)
+			 FROM drama.prompt_test_suites suite
+			 JOIN drama.prompt_experiment_variants variant ON variant.prompt_experiment_id=experiment.prompt_experiment_id
+			 WHERE suite.prompt_test_suite_id=experiment.prompt_test_suite_id GROUP BY suite.fixture_ids)`, experimentID)
+	if err != nil {
+		return PromptExperiment{}, err
+	}
+	if command.RowsAffected() == 0 {
+		return PromptExperiment{}, fmt.Errorf("%w: experiment result matrix is incomplete", ErrConflict)
 	}
 	return s.GetPromptExperiment(ctx, experimentID, false)
 }
@@ -766,7 +843,8 @@ func (s *Store) SavePromptBlindEvaluation(ctx context.Context, experimentID stri
 		SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE EXISTS(SELECT 1 FROM drama.prompt_experiment_variants
 		 WHERE prompt_experiment_id=$2 AND blind_label=$4)
 		AND EXISTS(SELECT 1 FROM drama.prompt_experiment_results result JOIN drama.prompt_experiment_variants variant
-		 USING(prompt_experiment_variant_id) WHERE result.prompt_experiment_id=$2 AND result.prompt_fixture_id=$3 AND variant.blind_label=$4)`,
+		 USING(prompt_experiment_variant_id) WHERE result.prompt_experiment_id=$2 AND result.prompt_fixture_id=$3
+		 AND variant.blind_label=$4 AND result.status='completed')`,
 		id, experimentID, input.PromptFixtureID, input.BlindLabel, input.Reviewer, input.Score, rubric, strings.TrimSpace(input.Comment))
 	if err != nil {
 		return PromptExperiment{}, err

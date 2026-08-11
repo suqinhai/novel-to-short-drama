@@ -23,14 +23,15 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [snapshot]
+              required: [master_id]
               properties:
-                snapshot: {$ref: '#/components/schemas/Snapshot'}
+                master_id: {$ref: '#/components/schemas/ID'}
                 config: {$ref: '#/components/schemas/RuleConfig'}
                 model_review_required: {type: boolean, default: true}
                 actor: {type: string}
       responses:
         '201': {$ref: '#/components/responses/GateRun'}
+        '409': {description: Effective inputs or selected master are stale or inconsistent.}
         '422': {$ref: '#/components/responses/ValidationError'}
   /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}:
     get:

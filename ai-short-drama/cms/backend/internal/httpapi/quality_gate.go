@@ -14,10 +14,10 @@ import (
 )
 
 type qualityGateRuleRunRequest struct {
-	Snapshot            qualitygate.Snapshot `json:"snapshot"`
-	Config              qualitygate.Config   `json:"config"`
-	ModelReviewRequired *bool                `json:"model_review_required,omitempty"`
-	Actor               string               `json:"actor,omitempty"`
+	MasterID            string             `json:"master_id"`
+	Config              qualitygate.Config `json:"config"`
+	ModelReviewRequired *bool              `json:"model_review_required,omitempty"`
+	Actor               string             `json:"actor,omitempty"`
 }
 
 type qualityGateDecisionRequest struct {
@@ -43,26 +43,15 @@ func registerQualityGateRoutes(api *gin.RouterGroup, handler *Handler) {
 func (h *Handler) runCrossLayerRules(c *gin.Context) {
 	var input qualityGateRuleRunRequest
 	if err := decodeQualityGateJSON(c, &input); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_QUALITY_GATE_SNAPSHOT", err.Error())
+		respondError(c, http.StatusBadRequest, "INVALID_QUALITY_GATE_REQUEST", err.Error())
 		return
 	}
-	if input.Snapshot.ProjectID != "" && input.Snapshot.ProjectID != c.Param("projectID") ||
-		input.Snapshot.EpisodeID != "" && input.Snapshot.EpisodeID != c.Param("episodeID") {
-		respondError(c, http.StatusUnprocessableEntity, "QUALITY_GATE_SCOPE_MISMATCH", "snapshot project_id and episode_id must match the route")
-		return
-	}
-	input.Snapshot.ProjectID = c.Param("projectID")
-	input.Snapshot.EpisodeID = c.Param("episodeID")
 	required := true
 	if input.ModelReviewRequired != nil {
 		required = *input.ModelReviewRequired
 	}
-	run, err := qualitygate.EvaluateRules(input.Snapshot, input.Config, required)
-	if err != nil {
-		respondError(c, http.StatusUnprocessableEntity, "QUALITY_GATE_RULE_VALIDATION_FAILED", err.Error())
-		return
-	}
-	record, err := h.store.SaveQualityGateRuleRun(c.Request.Context(), input.Snapshot, run, input.Actor)
+	record, err := h.store.RunAuthoritativeQualityGate(c.Request.Context(), c.Param("projectID"),
+		c.Param("episodeID"), input.MasterID, input.Config, required, input.Actor)
 	if err != nil {
 		writeQualityGateError(c, err)
 		return

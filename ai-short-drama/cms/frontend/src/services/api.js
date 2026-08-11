@@ -285,8 +285,8 @@ export const api = {
   getPromptExperiment(experimentId, blind = false) {
     return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}${blind ? '/blind' : ''}`)
   },
-  submitPromptExperimentResult(experimentId, payload) {
-    return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}/results`, { method: 'POST', body: JSON.stringify(payload) })
+  runPromptExperiment(experimentId) {
+    return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}/run`, { method: 'POST' })
   },
   submitPromptBlindEvaluation(experimentId, payload) {
     return request(`/prompt-lab/experiments/${encodeURIComponent(experimentId)}/blind-evaluations`, { method: 'POST', body: JSON.stringify(payload) })

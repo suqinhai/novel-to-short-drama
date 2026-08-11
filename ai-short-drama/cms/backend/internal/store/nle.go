@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -224,9 +225,10 @@ func (s *Store) CreateNLEItemDraft(
 	defer tx.Rollback(ctx)
 
 	var state string
-	if err = tx.QueryRow(ctx, `SELECT approval_state FROM drama.edit_timelines
+	var targetDurationMS int64
+	if err = tx.QueryRow(ctx, `SELECT approval_state,target_duration_ms FROM drama.edit_timelines
 		WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3 FOR UPDATE`,
-		projectID, episodeID, patch.BaseTimelineID).Scan(&state); errors.Is(err, pgx.ErrNoRows) {
+		projectID, episodeID, patch.BaseTimelineID).Scan(&state, &targetDurationMS); errors.Is(err, pgx.ErrNoRows) {
 		return NLEDraftResult{}, ErrNotFound
 	}
 	if err != nil {
@@ -283,6 +285,9 @@ func (s *Store) CreateNLEItemDraft(
 	if sourceOut != nil && *sourceOut <= sourceIn {
 		return NLEDraftResult{}, fmt.Errorf("%w: source_out_ms must exceed source_in_ms", ErrConflict)
 	}
+	if end > targetDurationMS {
+		return NLEDraftResult{}, fmt.Errorf("%w: timeline item exceeds target_duration_ms", ErrConflict)
+	}
 	transformJSON, effectJSON := json.RawMessage(nil), json.RawMessage(nil)
 	if patch.TransformConfig != nil {
 		transformJSON, _ = json.Marshal(patch.TransformConfig)
@@ -311,8 +316,7 @@ func (s *Store) CreateNLEItemDraft(
 	if err != nil {
 		return NLEDraftResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines SET target_duration_ms=(SELECT max(timeline_end_ms)
-		FROM drama.edit_timeline_items WHERE timeline_id=$1) WHERE timeline_id=$1`, draft.TimelineID); err != nil {
+	if err = validateNLETimeline(ctx, tx, draft.TimelineID, targetDurationMS); err != nil {
 		return NLEDraftResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -330,6 +334,146 @@ func (s *Store) CreateNLEItemDraft(
 		}
 	}
 	return result, nil
+}
+
+type nleValidationItem struct {
+	id, trackType, entityID, sourcePath, sourceURL string
+	trackNumber                                    int
+	startMS, endMS, sourceInMS                     int64
+	sourceOutMS                                    *int64
+}
+
+type nleQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func validateNLETimeline(ctx context.Context, queryer nleQueryer, timelineID string, targetDurationMS int64) error {
+	rows, err := queryer.Query(ctx, `SELECT timeline_item_id,track_type,track_number,entity_id,
+		timeline_start_ms,timeline_end_ms,source_in_ms,source_out_ms,COALESCE(source_path,''),COALESCE(source_url,'')
+		FROM drama.edit_timeline_items WHERE timeline_id=$1`, timelineID)
+	if err != nil {
+		return err
+	}
+	items := []nleValidationItem{}
+	for rows.Next() {
+		var item nleValidationItem
+		if err = rows.Scan(&item.id, &item.trackType, &item.trackNumber, &item.entityID,
+			&item.startMS, &item.endMS, &item.sourceInMS, &item.sourceOutMS, &item.sourcePath, &item.sourceURL); err != nil {
+			rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	byTrack := map[string][]nleValidationItem{}
+	dialogueRanges := map[string][]nleValidationItem{}
+	for _, item := range items {
+		if item.startMS < 0 || item.endMS <= item.startMS || item.endMS > targetDurationMS {
+			return fmt.Errorf("%w: timeline item %s is outside 0..target_duration_ms", ErrConflict, item.id)
+		}
+		key := fmt.Sprintf("%s:%d", item.trackType, item.trackNumber)
+		byTrack[key] = append(byTrack[key], item)
+		if item.trackType == "dialogue" || item.trackType == "narration" {
+			dialogueRanges[item.entityID] = append(dialogueRanges[item.entityID], item)
+		}
+		if item.trackType == "subtitle" {
+			continue
+		}
+		if strings.TrimSpace(item.sourcePath) == "" && strings.TrimSpace(item.sourceURL) == "" {
+			return fmt.Errorf("%w: timeline item %s has an empty media reference", ErrConflict, item.id)
+		}
+		mediaDuration, known, stale, lookupErr := nleMediaDuration(ctx, queryer, item.trackType, item.entityID)
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if stale {
+			return fmt.Errorf("%w: timeline item %s references stale or unapproved media", ErrConflict, item.id)
+		}
+		if known {
+			sourceEnd := item.sourceInMS + (item.endMS - item.startMS)
+			if item.sourceOutMS != nil {
+				sourceEnd = *item.sourceOutMS
+			}
+			if sourceEnd > mediaDuration {
+				return fmt.Errorf("%w: timeline item %s source range exceeds media duration", ErrConflict, item.id)
+			}
+		}
+	}
+	for key, trackItems := range byTrack {
+		sort.Slice(trackItems, func(i, j int) bool {
+			if trackItems[i].startMS == trackItems[j].startMS {
+				return trackItems[i].endMS < trackItems[j].endMS
+			}
+			return trackItems[i].startMS < trackItems[j].startMS
+		})
+		for index := 1; index < len(trackItems); index++ {
+			if trackItems[index].startMS < trackItems[index-1].endMS {
+				return fmt.Errorf("%w: illegal overlap on track %s between %s and %s", ErrConflict,
+					key, trackItems[index-1].id, trackItems[index].id)
+			}
+		}
+	}
+	for _, item := range items {
+		if item.trackType != "subtitle" {
+			continue
+		}
+		dialogueID := item.entityID
+		var resolvedDialogueID string
+		err = queryer.QueryRow(ctx, `SELECT dialogue_id FROM drama.subtitle_cues
+			WHERE subtitle_cue_id=$1`, item.entityID).Scan(&resolvedDialogueID)
+		if err == nil {
+			dialogueID = resolvedDialogueID
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		contained := false
+		for _, dialogue := range dialogueRanges[dialogueID] {
+			if item.startMS >= dialogue.startMS && item.endMS <= dialogue.endMS {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			return fmt.Errorf("%w: subtitle item %s is outside its dialogue range", ErrConflict, item.id)
+		}
+	}
+	return nil
+}
+
+func nleMediaDuration(ctx context.Context, queryer nleQueryer, trackType, entityID string) (duration int64, known, stale bool, err error) {
+	var total int
+	switch trackType {
+	case "video":
+		err = queryer.QueryRow(ctx, `SELECT count(*),COALESCE(max((actual_duration_seconds*1000)::bigint) FILTER(
+			WHERE is_current AND status='succeeded' AND review_status='approved'),0)
+			FROM drama.shot_videos WHERE shot_id=$1 OR shot_video_id=$1`, entityID).Scan(&total, &duration)
+	case "dialogue", "narration":
+		err = queryer.QueryRow(ctx, `SELECT count(*),COALESCE(max(actual_duration_ms) FILTER(
+			WHERE is_current AND status='succeeded' AND review_status='approved'),0)
+			FROM drama.dialogue_audio WHERE dialogue_id=$1 OR dialogue_audio_id=$1`, entityID).Scan(&total, &duration)
+	case "bgm", "sound_effect", "ambience":
+		err = queryer.QueryRow(ctx, `SELECT count(*),COALESCE(max(duration_ms) FILTER(
+			WHERE is_current AND status='approved'),0)
+			FROM drama.sound_asset_versions WHERE sound_asset_id=$1 OR sound_asset_version_id=$1`, entityID).Scan(&total, &duration)
+	default:
+		return 0, false, false, nil
+	}
+	if err != nil {
+		return 0, false, false, err
+	}
+	if total == 0 {
+		return 0, false, false, nil
+	}
+	if duration <= 0 {
+		return 0, false, true, nil
+	}
+	return duration, true, false, nil
 }
 
 func maxNLEInt64(left, right int64) int64 {
@@ -376,9 +520,10 @@ func (s *Store) ConfirmNLETimelineRender(
 	}
 	defer tx.Rollback(ctx)
 	var version int
+	var targetDurationMS int64
 	var state string
-	err = tx.QueryRow(ctx, `SELECT version,approval_state FROM drama.edit_timelines
-		WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3 FOR UPDATE`, projectID, episodeID, timelineID).Scan(&version, &state)
+	err = tx.QueryRow(ctx, `SELECT version,approval_state,target_duration_ms FROM drama.edit_timelines
+		WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3 FOR UPDATE`, projectID, episodeID, timelineID).Scan(&version, &state, &targetDurationMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NLERenderJob{}, ErrNotFound
 	}
@@ -387,6 +532,12 @@ func (s *Store) ConfirmNLETimelineRender(
 	}
 	if state != "draft" && state != "render_failed" {
 		return NLERenderJob{}, fmt.Errorf("%w: only a draft timeline can be explicitly rendered", ErrConflict)
+	}
+	if err = ensureQualityGateAllowsRender(ctx, tx, projectID, episodeID); err != nil {
+		return NLERenderJob{}, err
+	}
+	if err = validateNLETimeline(ctx, tx, timelineID, targetDurationMS); err != nil {
+		return NLERenderJob{}, err
 	}
 	var existing NLERenderJob
 	err = tx.QueryRow(ctx, `SELECT render_job_id,timeline_id,status,progress,output_url,error_code,error_message,created_at,completed_at
@@ -440,4 +591,29 @@ func (s *Store) ConfirmNLETimelineRender(
 	}
 	committed = true
 	return NLERenderJob{RenderJobID: renderID, TimelineID: timelineID, Status: "pending", Progress: 0, CreatedAt: time.Now()}, nil
+}
+
+func ensureQualityGateAllowsRender(ctx context.Context, tx pgx.Tx, projectID, episodeID string) error {
+	var runID, modelStatus string
+	err := tx.QueryRow(ctx, `SELECT gate_run_id,model_status FROM drama.quality_gate_runs
+		WHERE project_id=$1 AND episode_id=$2 AND status<>'superseded'
+		ORDER BY created_at DESC,gate_run_id DESC LIMIT 1`, projectID, episodeID).Scan(&runID, &modelStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var blockers int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM drama.quality_gate_findings
+		WHERE gate_run_id=$1 AND severity='blocking' AND status='open'`, runID).Scan(&blockers); err != nil {
+		return err
+	}
+	if blockers > 0 {
+		return fmt.Errorf("%w: QUALITY_GATE_BLOCKED: %d blocking findings remain open in %s", ErrConflict, blockers, runID)
+	}
+	if modelStatus == "pending" {
+		return fmt.Errorf("%w: QUALITY_GATE_BLOCKED: required model review is pending in %s", ErrConflict, runID)
+	}
+	return nil
 }

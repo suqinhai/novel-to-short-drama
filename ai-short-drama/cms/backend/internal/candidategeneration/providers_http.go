@@ -195,6 +195,10 @@ func generationPrompt(input GenerationInput) string {
 		"component_types": input.Request.ComponentTypes, "difference_direction": input.DifferenceDirection,
 		"must_preserve": input.Request.MustPreserve, "allowed_changes": input.Request.AllowedChanges,
 		"seed": input.Seed, "frozen_input": input.Request.FrozenInput}
+	if strings.TrimSpace(input.Request.ProductionPrompt) != "" {
+		return strings.TrimSpace(input.Request.ProductionPrompt) +
+			"\n\nRuntime frozen inputs (authoritative; do not invent replacements):\n" + contentJSON(payload)
+	}
 	return "基于且仅基于 frozen_input 生成一个短剧候选。difference_direction 必须改变正文的结构、节奏或视听执行，不得只写标签。返回 JSON：{components:[{key,type,title,content}],content:{...}}。\n" + contentJSON(payload)
 }
 

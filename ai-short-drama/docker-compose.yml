@@ -61,7 +61,10 @@ services:
       - ./database/27-verify-lightweight-nle.sql:/opt/drama/27-verify-lightweight-nle.sql:ro
       - ./database/28-cross-layer-quality-gate.sql:/opt/drama/28-cross-layer-quality-gate.sql:ro
       - ./database/29-prompt-lab-professional-export.sql:/opt/drama/29-prompt-lab-professional-export.sql:ro
+      - ./database/29-verify-prompt-lab-professional-export.sql:/opt/drama/29-verify-prompt-lab-professional-export.sql:ro
       - ./database/30-step-0-7-p0-p1-closure.sql:/opt/drama/30-step-0-7-p0-p1-closure.sql:ro
+      - ./database/31-step-8-10-p0-p1-closure.sql:/opt/drama/31-step-8-10-p0-p1-closure.sql:ro
+      - ./database/31-verify-step-8-10-p0-p1-closure.sql:/opt/drama/31-verify-step-8-10-p0-p1-closure.sql:ro
       - ./database/28-verify-cross-layer-quality-gate.sql:/opt/drama/28-verify-cross-layer-quality-gate.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

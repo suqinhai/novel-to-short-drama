@@ -11,6 +11,8 @@ const migration = read('database/29-prompt-lab-professional-export.sql')
 const verify = read('database/29-verify-prompt-lab-professional-export.sql')
 const promptStore = read('cms/backend/internal/store/prompt_lab.go')
 const promptHandler = read('cms/backend/internal/httpapi/prompt_lab.go')
+const promptExecutor = read('cms/backend/internal/promptlab/executor.go')
+const productionPrompt = read('cms/backend/internal/store/prompt_production.go')
 const exportStore = read('cms/backend/internal/store/professional_export.go')
 const exportHandler = read('cms/backend/internal/httpapi/professional_export.go')
 const exportKit = read('cms/backend/internal/exportkit/export.go')
@@ -45,8 +47,11 @@ for (const marker of [
 
 for (const marker of [
   '/prompt-lab/categories', '/preview', '/approve', '/promote', '/blind',
-  '/results', '/blind-evaluations', '/generation-provenance',
+  '/run', '/blind-evaluations', '/generation-provenance',
 ]) assert(promptHandler.includes(marker), `prompt API route missing: ${marker}`)
+assert(promptHandler.includes('PROMPT_RESULT_SUBMISSION_DISABLED'), 'caller-supplied fake result endpoint is not disabled')
+assert(promptExecutor.includes('provider response has no output'), 'real provider execution failure handling is missing')
+assert(productionPrompt.includes('prompt_production_bindings'), 'production workflow does not read active prompt binding')
 
 for (const marker of [
   'GetCreationTargetContext', 'GetProfessionalExportOptions', 'CreateProfessionalExport',
@@ -67,6 +72,7 @@ for (const format of [
 
 assert(promptView.includes('最终输入预览与 Token 估算'), 'prompt preview and token estimate UI is missing')
 assert(promptView.includes('人工盲评') && promptView.includes('自动指标'), 'evaluation UI is incomplete')
+assert(promptView.includes('服务端批量运行') && !promptView.includes('记录模型测试结果'), 'prompt lab still accepts manual fake model output')
 assert(exportView.includes('禁止 current / draft 混用'), 'snapshot selection warning is missing')
 for (const view of [candidateView, localEditView]) {
   assert(view.includes('作品') && view.includes('项目') && view.includes('场') && view.includes('镜'), 'hierarchical selector is incomplete')

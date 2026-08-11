@@ -186,6 +186,12 @@ func (s *Store) GenerateCandidateSet(ctx context.Context, projectID, key string,
 	if len(input.BaseContent) == 0 {
 		input.BaseContent = frozen.TargetContext
 	}
+	if err = s.applyProductionCandidatePrompt(ctx, &input.Request); err != nil {
+		return CandidateSet{}, false, err
+	}
+	if err = candidategeneration.ValidateRequest(input.Request); err != nil {
+		return CandidateSet{}, false, fmt.Errorf("%w: active production prompt settings: %v", ErrValidation, err)
+	}
 	requestHash, err := hashJSON(input)
 	if err != nil {
 		return CandidateSet{}, false, err

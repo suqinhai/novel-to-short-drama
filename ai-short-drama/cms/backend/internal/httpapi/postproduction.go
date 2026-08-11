@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -182,6 +183,8 @@ func writePostProductionError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"message": "record not found"}})
+	case strings.Contains(err.Error(), "QUALITY_GATE_BLOCKED"):
+		respondError(c, http.StatusConflict, "QUALITY_GATE_BLOCKED", err.Error())
 	case errors.Is(err, store.ErrConflict), errors.Is(err, postproduction.ErrInvalidTiming):
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{"message": err.Error()}})
 	default:

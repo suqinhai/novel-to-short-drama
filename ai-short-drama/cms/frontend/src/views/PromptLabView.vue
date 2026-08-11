@@ -35,7 +35,6 @@ const experimentForm = reactive({
   display_name: '', prompt_test_suite_id: '', blind_review: true,
   variants: [newVariant(), newVariant()],
 })
-const resultForm = reactive({ prompt_experiment_variant_id: '', prompt_fixture_id: '', output: '{}', latency_ms: '', estimated_cost: 0 })
 const blindForm = reactive({ prompt_fixture_id: '', blind_label: '', reviewer: '', score: 80, rubric_scores: '{}', comment: '' })
 
 const activeTemplate = computed(() => templates.value.find((item) => item.prompt_template_id === activeTemplateId.value))
@@ -154,23 +153,20 @@ async function createExperiment() {
 async function openExperiment(id) {
   try {
     ;[activeExperiment.value, blindExperiment.value] = await Promise.all([api.getPromptExperiment(id), api.getPromptExperiment(id, true)])
-    resultForm.prompt_experiment_variant_id = activeExperiment.value.variants[0]?.prompt_experiment_variant_id || ''
-    resultForm.prompt_fixture_id = activeSuiteFixtures.value[0]?.prompt_fixture_id || ''
     blindForm.blind_label = blindExperiment.value.variants[0]?.blind_label || ''
-    blindForm.prompt_fixture_id = resultForm.prompt_fixture_id
+    blindForm.prompt_fixture_id = activeSuiteFixtures.value[0]?.prompt_fixture_id || ''
   } catch (err) { error.value = err.message }
 }
 
-async function submitResult() {
+async function runExperiment() {
+  resetMessages()
+  loading.value = true
   try {
-    activeExperiment.value = await api.submitPromptExperimentResult(activeExperiment.value.prompt_experiment_id, {
-      prompt_experiment_variant_id: resultForm.prompt_experiment_variant_id,
-      prompt_fixture_id: resultForm.prompt_fixture_id, output: parseJSON(resultForm.output, '模型输出'),
-      latency_ms: resultForm.latency_ms === '' ? null : Number(resultForm.latency_ms), estimated_cost: Number(resultForm.estimated_cost || 0), token_usage: {},
-    })
+    activeExperiment.value = await api.runPromptExperiment(activeExperiment.value.prompt_experiment_id)
     blindExperiment.value = await api.getPromptExperiment(activeExperiment.value.prompt_experiment_id, true)
-    notice.value = '结果已记录，自动指标已由服务端计算。'
+    notice.value = '批量运行已完成；失败调用保留真实错误，不生成伪成功结果。'
   } catch (err) { error.value = err.message }
+  finally { loading.value = false }
 }
 
 async function submitBlindEvaluation() {
@@ -242,7 +238,7 @@ onMounted(load)
 
     <article v-if="activeExperiment" class="panel result-panel">
       <div class="panel-title"><div><small>AUTO METRICS + HUMAN BLIND REVIEW</small><h3>{{ activeExperiment.display_name }}</h3></div><span>{{ activeExperiment.suite_hash.slice(0, 12) }}…</span></div>
-      <div class="result-entry"><form @submit.prevent="submitResult"><h4>记录模型测试结果</h4><select v-model="resultForm.prompt_experiment_variant_id"><option v-for="item in activeExperiment.variants" :key="item.prompt_experiment_variant_id" :value="item.prompt_experiment_variant_id">{{ item.blind_label }}</option></select><select v-model="resultForm.prompt_fixture_id"><option v-for="item in activeSuiteFixtures" :key="item.prompt_fixture_id" :value="item.prompt_fixture_id">{{ item.display_name }}</option></select><textarea v-model="resultForm.output" rows="6" placeholder="模型输出 JSON" /><input v-model.number="resultForm.latency_ms" type="number" placeholder="延迟 ms" /><button class="button button-secondary">计算并保存自动指标</button></form><form @submit.prevent="submitBlindEvaluation"><h4>人工盲评</h4><small>评分区仅使用匿名接口返回的方案代号与输出。</small><select v-model="blindForm.blind_label"><option v-for="item in blindExperiment?.variants" :key="item.blind_label" :value="item.blind_label">{{ item.blind_label }}</option></select><select v-model="blindForm.prompt_fixture_id"><option v-for="item in activeSuiteFixtures" :key="item.prompt_fixture_id" :value="item.prompt_fixture_id">{{ item.display_name }}</option></select><input v-model="blindForm.reviewer" required placeholder="评审人" /><input v-model.number="blindForm.score" type="number" min="0" max="100" /><textarea v-model="blindForm.comment" rows="3" placeholder="评语" /><button class="button button-secondary">提交盲评</button></form></div>
+      <div class="result-entry"><section class="run-card"><h4>服务端批量运行</h4><p>按冻结测试集调用每个 Prompt / Provider / 模型组合，并保存真实输入、输出、耗时和错误。</p><button class="button button-primary" :disabled="loading || activeExperiment.results.length > 0" @click="runExperiment"><Play :size="14" />{{ loading ? '运行中…' : '运行全部组合' }}</button></section><form @submit.prevent="submitBlindEvaluation"><h4>人工盲评</h4><small>评分区仅使用匿名接口返回的方案代号与输出。</small><select v-model="blindForm.blind_label"><option v-for="item in blindExperiment?.variants" :key="item.blind_label" :value="item.blind_label">{{ item.blind_label }}</option></select><select v-model="blindForm.prompt_fixture_id"><option v-for="item in activeSuiteFixtures" :key="item.prompt_fixture_id" :value="item.prompt_fixture_id">{{ item.display_name }}</option></select><input v-model="blindForm.reviewer" required placeholder="评审人" /><input v-model.number="blindForm.score" type="number" min="0" max="100" /><textarea v-model="blindForm.comment" rows="3" placeholder="评语" /><button class="button button-secondary">提交盲评</button></form></div>
       <div class="matrix-wrap"><table><thead><tr><th>fixture</th><th>盲评方案</th><th>输出</th><th>自动指标</th><th>人工分</th></tr></thead><tbody><tr v-for="item in blindExperiment?.results" :key="`${item.prompt_fixture_id}:${item.blind_label}`"><td>{{ activeSuiteFixtures.find(f => f.prompt_fixture_id === item.prompt_fixture_id)?.display_name }}</td><td><b>{{ item.blind_label }}</b></td><td><pre>{{ JSON.stringify(item.output, null, 2) }}</pre></td><td><span v-for="(value, key) in item.automatic_metrics" :key="key">{{ key }}: {{ typeof value === 'number' ? value.toFixed(2) : value }}</span></td><td>{{ blindExperiment.evaluations.filter(e => e.prompt_fixture_id === item.prompt_fixture_id && e.blind_label === item.blind_label).map(e => e.score).join(' / ') || '待评' }}</td></tr></tbody></table></div>
     </article>
   </section>
@@ -250,4 +246,5 @@ onMounted(load)
 
 <style scoped>
 .prompt-lab{gap:18px}.lab-hero,.panel-title,.experiment-head,.experiment-form footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.lab-hero{padding:18px 22px;border-radius:14px;background:linear-gradient(120deg,#17243e,#263f6b);color:#fff}.lab-hero span,.panel-title small{letter-spacing:.12em;font-size:11px}.lab-hero p{opacity:.75}.lab-hero label{display:grid;gap:5px}.lab-hero input{padding:8px;border-radius:7px;border:1px solid #ffffff44;background:#ffffff12;color:#fff}.category-tabs{display:flex;gap:7px;overflow:auto}.category-tabs button{white-space:nowrap;border:1px solid #d7deea;background:#fff;border-radius:999px;padding:8px 14px}.category-tabs button.active{background:#2f5fb9;color:#fff;border-color:#2f5fb9}.lab-grid{display:grid;grid-template-columns:280px 1fr;gap:16px}.test-grid{grid-template-columns:1fr 1fr}.panel{background:#fff;border:1px solid #dce2eb;border-radius:13px;padding:18px}.template-list>button{width:100%;display:flex;justify-content:space-between;text-align:left;border:0;background:#f6f8fb;padding:10px;margin:7px 0;border-radius:8px}.template-list>button.active{outline:2px solid #4772c7}.template-list button span,.fixture-list span{display:grid}.template-list i,.version-strip i{font-size:10px;color:#23653a}.compact-form,.version-form{display:grid;gap:9px;margin-top:16px}.compact-form input,.compact-form textarea,.compact-form select,.version-form input,.version-form textarea,.preview-box textarea,.experiment-form input,.experiment-form select,.result-entry input,.result-entry select,.result-entry textarea{padding:9px;border:1px solid #cbd4df;border-radius:7px}.compact-form label,.version-form label{display:grid;gap:5px}.version-strip{display:flex;gap:9px;overflow:auto;padding:12px 2px}.version-strip article{min-width:190px;border:1px solid #dde3ec;border-radius:9px;padding:10px}.version-strip article.production{border-color:#3d9b62;background:#f1fbf5}.version-strip header,.version-strip footer{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.version-strip header span{font-size:11px;background:#eef2f7;padding:3px 6px;border-radius:9px}.version-strip footer button{border:0;background:#edf2fa;padding:5px;border-radius:5px;display:flex;gap:3px}.json-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}.preview-box{margin-top:16px;border-top:1px solid #e2e7ee;padding-top:14px}.preview-meta{display:flex;justify-content:space-between;gap:10px;margin:9px 0;font-size:12px;color:#526176}.preview-box pre,.matrix-wrap pre{white-space:pre-wrap;max-height:280px;overflow:auto;background:#172033;color:#edf4ff;padding:12px;border-radius:8px}.fixture-list{list-style:none;padding:0}.fixture-list li{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid #edf0f4}.check-list{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.experiment-form{display:grid;gap:9px}.variant-row{display:grid;grid-template-columns:80px 1.4fr .8fr 1fr 1.2fr 90px;gap:7px;align-items:center;background:#f6f8fb;padding:9px;border-radius:8px}.experiment-history{display:flex;gap:8px;overflow:auto;margin-top:14px}.experiment-history button{display:grid;text-align:left;min-width:190px;border:1px solid #dbe2ec;background:#fff;padding:9px;border-radius:8px}.result-entry{display:grid;grid-template-columns:1fr 1fr;gap:14px}.result-entry form{display:grid;gap:7px;background:#f7f9fc;padding:12px;border-radius:9px}.matrix-wrap{overflow:auto;margin-top:15px}.matrix-wrap table{width:100%;border-collapse:collapse}.matrix-wrap th,.matrix-wrap td{border-bottom:1px solid #e1e6ee;padding:9px;text-align:left;vertical-align:top}.matrix-wrap td span{display:block;font-size:12px}.matrix-wrap pre{max-width:360px;max-height:130px;margin:0}@media(max-width:900px){.lab-grid,.test-grid,.result-entry{grid-template-columns:1fr}.json-grid{grid-template-columns:1fr}.variant-row{grid-template-columns:1fr 1fr}.lab-hero{align-items:flex-start;display:grid}}
+.run-card{display:grid;gap:7px;background:#f7f9fc;padding:12px;border-radius:9px}
 </style>

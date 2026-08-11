@@ -64,7 +64,9 @@ type Request struct {
 	ReviewerProvider     string          `json:"reviewer_provider,omitempty"`
 	ReviewerModel        string          `json:"reviewer_model,omitempty"`
 	BlindReview          bool            `json:"blind_review"`
+	PromptKey            string          `json:"prompt_key,omitempty"`
 	PromptVersion        string          `json:"prompt_version"`
+	ProductionPrompt     string          `json:"-"`
 	RandomSeed           int64           `json:"random_seed"`
 	GenerationParameters json.RawMessage `json:"generation_parameters"`
 	BaseContent          json.RawMessage `json:"base_content,omitempty"`

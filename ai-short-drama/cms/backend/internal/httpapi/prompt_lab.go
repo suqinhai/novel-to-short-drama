@@ -45,6 +45,7 @@ func registerPromptLabRoutes(api *gin.RouterGroup, handler *Handler) {
 	api.POST("/prompt-lab/experiments", handler.createPromptExperiment)
 	api.GET("/prompt-lab/experiments/:experimentID", handler.getPromptExperiment)
 	api.GET("/prompt-lab/experiments/:experimentID/blind", handler.getPromptExperimentBlind)
+	api.POST("/prompt-lab/experiments/:experimentID/run", handler.runPromptExperiment)
 	api.POST("/prompt-lab/experiments/:experimentID/results", handler.submitPromptExperimentResult)
 	api.POST("/prompt-lab/experiments/:experimentID/blind-evaluations", handler.submitPromptBlindEvaluation)
 	api.GET("/projects/:projectID/generation-provenance", handler.listArtifactProvenance)
@@ -220,59 +221,59 @@ func (h *Handler) getPromptExperimentBlind(c *gin.Context) {
 }
 
 func (h *Handler) submitPromptExperimentResult(c *gin.Context) {
-	var input experimentResultRequest
-	if err := c.ShouldBindJSON(&input); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_PROMPT_EXPERIMENT_RESULT", err.Error())
-		return
-	}
-	experiment, err := h.store.GetPromptExperiment(c.Request.Context(), c.Param("experimentID"), false)
+	respondError(c, http.StatusGone, "PROMPT_RESULT_SUBMISSION_DISABLED",
+		"experiment results are server-executed; use the run endpoint")
+}
+
+func (h *Handler) runPromptExperiment(c *gin.Context) {
+	experimentID := c.Param("experimentID")
+	experiment, fixtures, err := h.store.BeginPromptExperimentRun(c.Request.Context(), experimentID)
 	if err != nil {
 		writePromptLabError(c, err)
 		return
 	}
-	var versionID string
 	for _, variant := range experiment.Variants {
-		if variant.PromptExperimentVariantID == input.PromptExperimentVariantID {
-			versionID = variant.PromptVersionID
-			break
+		version, versionErr := h.store.GetPromptVersion(c.Request.Context(), variant.PromptVersionID)
+		if versionErr != nil {
+			writePromptLabError(c, versionErr)
+			return
+		}
+		for _, fixture := range fixtures {
+			preview, renderErr := promptlab.Render(version.SystemTemplate, version.UserTemplate,
+				version.VariableSchema, version.DefaultVariables, fixture.Variables)
+			if renderErr != nil {
+				_, err = h.store.SavePromptExperimentResult(c.Request.Context(), experimentID, store.SavePromptExperimentResultInput{
+					PromptExperimentVariantID: variant.PromptExperimentVariantID, PromptFixtureID: fixture.PromptFixtureID,
+					Status: "failed", ErrorMessage: renderErr.Error(),
+				})
+				if err != nil {
+					writePromptLabError(c, err)
+					return
+				}
+				continue
+			}
+			execution, executionErr := promptlab.Execute(c.Request.Context(), promptlab.ExecutionRequest{
+				Provider: variant.Provider, Model: variant.Model, Parameters: variant.Parameters, Seed: variant.Seed,
+				System: preview.SystemInput, User: preview.UserInput,
+			})
+			latency := execution.LatencyMS
+			input := store.SavePromptExperimentResultInput{PromptExperimentVariantID: variant.PromptExperimentVariantID,
+				PromptFixtureID: fixture.PromptFixtureID, RenderedInput: preview.FinalInput,
+				RenderedInputHash: preview.InputHash, TokenEstimate: preview.TokenEstimate, LatencyMS: &latency}
+			if executionErr != nil {
+				input.Status, input.ErrorMessage = "failed", executionErr.Error()
+			} else {
+				metrics, _ := json.Marshal(promptlab.ScoreOutput(execution.Output, fixture.ExpectedOutput))
+				input.Status, input.Output, input.TokenUsage = "completed", execution.Output, execution.TokenUsage
+				input.EstimatedCost, input.AutomaticMetrics = execution.EstimatedCost, metrics
+			}
+			if _, err = h.store.SavePromptExperimentResult(c.Request.Context(), experimentID, input); err != nil {
+				writePromptLabError(c, err)
+				return
+			}
 		}
 	}
-	if versionID == "" {
-		respondError(c, http.StatusUnprocessableEntity, "EXPERIMENT_VARIANT_MISMATCH", "variant does not belong to experiment")
-		return
-	}
-	version, err := h.store.GetPromptVersion(c.Request.Context(), versionID)
-	if err != nil {
-		writePromptLabError(c, err)
-		return
-	}
-	fixtures, err := h.store.ListPromptFixtures(c.Request.Context(), experiment.Category)
-	if err != nil {
-		writePromptLabError(c, err)
-		return
-	}
-	var fixture *store.PromptFixture
-	for index := range fixtures {
-		if fixtures[index].PromptFixtureID == input.PromptFixtureID {
-			fixture = &fixtures[index]
-			break
-		}
-	}
-	if fixture == nil {
-		respondError(c, http.StatusUnprocessableEntity, "EXPERIMENT_FIXTURE_MISMATCH", "fixture does not belong to experiment category")
-		return
-	}
-	preview, err := promptlab.Render(version.SystemTemplate, version.UserTemplate, version.VariableSchema, version.DefaultVariables, fixture.Variables)
-	if err != nil {
-		respondError(c, http.StatusUnprocessableEntity, "EXPERIMENT_RENDER_FAILED", err.Error())
-		return
-	}
-	metrics, _ := json.Marshal(promptlab.ScoreOutput(input.Output, fixture.ExpectedOutput))
-	result, err := h.store.SavePromptExperimentResult(c.Request.Context(), c.Param("experimentID"), store.SavePromptExperimentResultInput{
-		PromptExperimentVariantID: input.PromptExperimentVariantID, PromptFixtureID: input.PromptFixtureID,
-		RenderedInput: preview.FinalInput, RenderedInputHash: preview.InputHash, Output: input.Output, TokenEstimate: preview.TokenEstimate,
-		TokenUsage: input.TokenUsage, LatencyMS: input.LatencyMS, EstimatedCost: input.EstimatedCost, AutomaticMetrics: metrics,
-	})
+	result, err := h.store.FinishPromptExperimentRun(c.Request.Context(), experimentID)
 	if err != nil {
 		writePromptLabError(c, err)
 		return

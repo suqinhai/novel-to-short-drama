@@ -163,3 +163,13 @@ func writeHTTPChoice(w http.ResponseWriter, value any) {
 		"message": map[string]any{"content": string(content)},
 	}}})
 }
+
+func TestGenerationPromptUsesActiveProductionPromptAndFrozenRuntimeInput(t *testing.T) {
+	request := mockRequest()
+	request.ProductionPrompt = "ACTIVE PROMPT VERSION TWO"
+	prompt := generationPrompt(GenerationInput{Request: request, DifferenceDirection: "紧凑节奏", Seed: 42})
+	if !strings.HasPrefix(prompt, "ACTIVE PROMPT VERSION TWO") ||
+		!strings.Contains(prompt, "Runtime frozen inputs") || !strings.Contains(prompt, request.FrozenInput.FrozenHash) {
+		t.Fatalf("production prompt was not connected to actual provider input: %s", prompt)
+	}
+}

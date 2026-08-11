@@ -370,11 +370,19 @@ func (s *Store) BuildProfessionalExportSnapshot(ctx context.Context, job Profess
 	} else {
 		snapshot.Bibles = json.RawMessage(`{}`)
 	}
-	if snapshot.PromptPackage, err = s.loadPromptPackage(ctx, job.ProjectID, job.EpisodeID, selection.StoryboardID); err != nil {
-		return snapshot, err
+	if requestedExportFormat(job.Formats, exportkit.PromptPackage) {
+		if snapshot.PromptPackage, err = s.loadPromptPackage(ctx, job.ProjectID, job.EpisodeID, selection.StoryboardID); err != nil {
+			return snapshot, err
+		}
+	} else {
+		snapshot.PromptPackage = json.RawMessage(`{}`)
 	}
-	if snapshot.Traceability, err = s.loadTraceability(ctx, job, selection); err != nil {
-		return snapshot, err
+	if requestedExportFormat(job.Formats, exportkit.Traceability) {
+		if snapshot.Traceability, err = s.loadTraceability(ctx, job, selection); err != nil {
+			return snapshot, err
+		}
+	} else {
+		snapshot.Traceability = json.RawMessage(`{}`)
 	}
 	return snapshot, nil
 }
@@ -467,7 +475,7 @@ func (s *Store) loadExportTimeline(ctx context.Context, timelineID string, snaps
 
 func (s *Store) loadExportBibles(ctx context.Context, projectID, storyBibleID string) (json.RawMessage, error) {
 	var story, characters, costumes, locations, props json.RawMessage
-	err := s.pool.QueryRow(ctx, `SELECT to_jsonb(bible)-'id' FROM drama.story_bibles bible WHERE story_bible_id=$1 AND project_id=$2`, storyBibleID, projectID).Scan(&story)
+	err := s.pool.QueryRow(ctx, `SELECT to_jsonb(story_bible_row)-'id' FROM drama.story_bibles story_bible_row WHERE story_bible_id=$1 AND project_id=$2`, storyBibleID, projectID).Scan(&story)
 	if err != nil {
 		return nil, err
 	}
@@ -504,7 +512,7 @@ func (s *Store) loadTraceability(ctx context.Context, job ProfessionalExportJob,
 	queries := []struct {
 		key, query string
 		args       []any
-	}{{"source", `SELECT COALESCE(jsonb_agg(to_jsonb(version)-'id'),'[]') FROM drama.source_versions version WHERE source_version_id=$1`, []any{selection.SourceVersionID}}, {"ir", `SELECT COALESCE(jsonb_agg(to_jsonb(ir)-'id'),'[]') FROM drama.narrative_ir_revisions ir WHERE ir_revision_id=$1`, []any{selection.IRRevisionID}}, {"spec", `SELECT COALESCE(jsonb_agg(to_jsonb(spec)-'id'),'[]') FROM drama.adaptation_spec_versions spec WHERE adaptation_spec_version_id=$1`, []any{selection.AdaptationSpecVersionID}}, {"manual_changes", `SELECT COALESCE(jsonb_agg(to_jsonb(version)-'id' ORDER BY created_at),'[]') FROM drama.entity_versions version WHERE project_id=$1 AND source_type IN('manual_upload','local_edit','rollback')`, []any{job.ProjectID}}, {"change_plans", `SELECT COALESCE(jsonb_agg(to_jsonb(plan)-'id' ORDER BY created_at),'[]') FROM drama.change_plans plan WHERE project_id=$1 AND status='applied'`, []any{job.ProjectID}}, {"generation_provenance", `SELECT COALESCE(jsonb_agg(to_jsonb(item)-'id' ORDER BY created_at),'[]') FROM drama.artifact_generation_provenance item WHERE project_id=$1 AND episode_id=$2`, []any{job.ProjectID, job.EpisodeID}}}
+	}{{"source", `SELECT COALESCE(jsonb_agg(to_jsonb(source_row)-'id'),'[]') FROM drama.source_versions source_row WHERE source_version_id=$1`, []any{selection.SourceVersionID}}, {"ir", `SELECT COALESCE(jsonb_agg(to_jsonb(ir)-'id'),'[]') FROM drama.narrative_ir_revisions ir WHERE ir_revision_id=$1`, []any{selection.IRRevisionID}}, {"spec", `SELECT COALESCE(jsonb_agg(to_jsonb(spec)-'id'),'[]') FROM drama.adaptation_spec_versions spec WHERE adaptation_spec_version_id=$1`, []any{selection.AdaptationSpecVersionID}}, {"manual_changes", `SELECT COALESCE(jsonb_agg(to_jsonb(entity_version_row)-'id' ORDER BY created_at),'[]') FROM drama.entity_versions entity_version_row WHERE project_id=$1 AND source_type IN('manual_upload','local_edit','rollback')`, []any{job.ProjectID}}, {"change_plans", `SELECT COALESCE(jsonb_agg(to_jsonb(plan)-'id' ORDER BY created_at),'[]') FROM drama.change_plans plan WHERE project_id=$1 AND status='applied'`, []any{job.ProjectID}}, {"generation_provenance", `SELECT COALESCE(jsonb_agg(to_jsonb(item)-'id' ORDER BY created_at),'[]') FROM drama.artifact_generation_provenance item WHERE project_id=$1 AND episode_id=$2`, []any{job.ProjectID, job.EpisodeID}}}
 	for _, query := range queries {
 		var raw json.RawMessage
 		if err := s.pool.QueryRow(ctx, query.query, query.args...).Scan(&raw); err != nil {
@@ -513,6 +521,15 @@ func (s *Store) loadTraceability(ctx context.Context, job ProfessionalExportJob,
 		values[query.key] = raw
 	}
 	return json.Marshal(values)
+}
+
+func requestedExportFormat(formats []string, requested string) bool {
+	for _, format := range formats {
+		if format == requested {
+			return true
+		}
+	}
+	return false
 }
 
 func ExportPackagePath(storageDirectory string, job ProfessionalExportJob) string {
