@@ -41,6 +41,10 @@ func (f *fakeSeasonV2) ValidateSeasonPlanDraft(_ context.Context, _ string, draf
 		Diagnostics:    []store.SeasonDiagnostic{{Severity: "blocking", Code: "CAUSAL_ORDER_VIOLATION", Message: "blocked", Details: map[string]any{}}},
 		RuleViolations: map[string][]store.SeasonDiagnostic{"hard": {}, "soft": {}}}, nil
 }
+func (f *fakeSeasonV2) PreviewSeasonPlanChange(_ context.Context, id string, draft store.SeasonPlanDraft) (store.SeasonPlanChangePreview, error) {
+	f.lastDraft = draft
+	return store.SeasonPlanChangePreview{BaseAdaptationPlanID: id, BaseVersion: 1, PreviewFingerprint: "preview"}, nil
+}
 func (f *fakeSeasonV2) CreateSeasonPlanVersion(_ context.Context, _ string, _ string, draft store.SeasonPlanDraft) (json.RawMessage, string, error) {
 	f.lastDraft, f.versionCreated = draft, true
 	return json.RawMessage(`{"adaptation_plan_id":"ap_v2","version_number":2,"status":"waiting_review"}`), "tr_version", nil

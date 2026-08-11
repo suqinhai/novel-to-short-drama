@@ -28,6 +28,7 @@ const originalSummary = ref('')
 const originalRationale = ref('')
 const originalEpisode = ref(0)
 const strategy = ref('hook_first')
+const pendingChange = ref(null)
 let validationTimer
 
 const localValidation = computed(() => draft.value ? validateDraftLocally(draft.value, plan.value?.rules || [],
@@ -99,6 +100,7 @@ async function loadPlan(planId) {
     draft.value = buildSeasonDraft(plan.value)
     serverValidation.value = plan.value.latest_validation?.validator_version ? plan.value.latest_validation : null
     selectedCards.value = []
+    pendingChange.value = null
   } catch (err) {
     error.value = err.message
   } finally {
@@ -108,6 +110,7 @@ async function loadPlan(planId) {
 
 function changed() {
   serverValidation.value = null
+  pendingChange.value = null
   clearTimeout(validationTimer)
   validationTimer = setTimeout(validateWithServer, 280)
 }
@@ -152,7 +155,15 @@ async function saveVersion() {
   saving.value = true
   error.value = ''
   try {
-    const response = await narrativeApi.createSeasonPlanVersion(plan.value.adaptation_plan_id, draft.value, createIdempotencyKey('season-plan-version'))
+    if (!pendingChange.value) {
+      pendingChange.value = (await narrativeApi.previewSeasonPlanChange(plan.value.adaptation_plan_id, draft.value)).data
+      serverValidation.value = pendingChange.value.validation
+      success.value = '变更计划已生成；请核对 diff、影响与 stale 范围后再次确认。'
+      return
+    }
+    const response = await narrativeApi.createSeasonPlanVersion(plan.value.adaptation_plan_id, {
+      ...draft.value, preview_fingerprint: pendingChange.value.preview_fingerprint,
+    }, createIdempotencyKey('season-plan-version'))
     success.value = '已保存为新的 adaptation plan version；原计划保持不变。'
     await loadPlans(response.data.adaptation_plan_id)
   } catch (err) { error.value = err.message } finally { saving.value = false }
@@ -236,7 +247,7 @@ onMounted(async () => {
       </div>
       <select v-model="strategy" class="season-strategy"><option value="hook_first">钩子优先</option><option value="emotion_wave">情绪波浪</option><option value="character_arc">人物弧优先</option><option value="information_control">信息控制</option></select>
       <button class="button button-secondary" :disabled="generating" @click="generateAlternative"><LoaderCircle v-if="generating" :size="15" class="spin" /><Sparkles v-else :size="15" />生成新方案</button>
-      <button class="button button-secondary" :disabled="saving || !draft" @click="saveVersion"><LoaderCircle v-if="saving" :size="15" class="spin" /><Save v-else :size="15" />保存新版本</button>
+      <button class="button button-secondary" :disabled="saving || !draft" @click="saveVersion"><LoaderCircle v-if="saving" :size="15" class="spin" /><Save v-else :size="15" />{{ pendingChange ? '确认并创建新版本' : '预览变更计划' }}</button>
       <button class="button button-primary" :disabled="approving || !canApprove" @click="approve"><LoaderCircle v-if="approving" :size="15" class="spin" /><CheckCircle2 v-else :size="15" />重新校验并批准</button>
       <button class="button button-secondary" :disabled="queueing || !canQueue" @click="createQueue"><Layers3 :size="15" />建立单集队列</button>
     </header>
@@ -244,6 +255,13 @@ onMounted(async () => {
     <div v-if="error" class="season-message error"><AlertTriangle :size="16" />{{ error }}</div>
     <div v-if="success" class="season-message success"><CheckCircle2 :size="16" />{{ success }}</div>
     <div v-if="loading" class="season-loading"><LoaderCircle :size="24" class="spin" />加载整季工作台…</div>
+    <section v-if="pendingChange" class="season-message">
+      <GitCompareArrows :size="16" />
+      <div><strong>变更计划 · base v{{ pendingChange.base_version }}</strong>
+        <p>{{ pendingChange.diff.length }} 个 diff；{{ pendingChange.stale_scope.length }} 个下游 artifact 将 stale。</p>
+        <details><summary>查看准确 diff 与 stale 范围</summary><pre>{{ JSON.stringify({ diff: pendingChange.diff, stale_scope: pendingChange.stale_scope }, null, 2) }}</pre></details>
+      </div>
+    </section>
 
     <template v-else-if="draft">
       <nav class="season-tabs">

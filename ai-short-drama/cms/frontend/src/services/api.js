@@ -98,6 +98,11 @@ export const api = {
       method: 'POST', body: JSON.stringify(payload),
     })
   },
+  rejectChangePlan(projectId, changePlanId, payload = {}) {
+    return request(`/projects/${encodeURIComponent(projectId)}/change-plans/${encodeURIComponent(changePlanId)}/reject`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
   executeChangePlan(projectId, changePlanId) {
     return request(`/projects/${encodeURIComponent(projectId)}/change-plans/${encodeURIComponent(changePlanId)}/execute`, {
       method: 'POST', body: JSON.stringify({}),

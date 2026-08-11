@@ -91,29 +91,48 @@ export function shotSplitRequest(workbench, shot, form) {
     coverage_role: form.second_coverage_role || shot.coverage_role || '',
     coverage_group: form.second_coverage_group || '', coverage_side: form.second_coverage_side || '',
   })
+  const shots = [first, second]
+  if (Number(form.part_count || 2) === 3) {
+    const third = structuredClone(shot)
+    const secondBridge = form.second_bridge_state || bridge
+    Object.assign(second, {
+      tail_state: secondBridge,
+      action_phase: { ...(shot.action_phase || {}), start: String(form.bridge_phase || 'bridge'), end: String(form.second_bridge_phase || 'bridge-2') },
+    })
+    Object.assign(third, {
+      action_description: String(form.third_action || '').trim(), duration_seconds: Number(form.third_duration),
+      dialogue_ids: form.third_dialogue_ids || [], head_state: secondBridge,
+      action_phase: { ...(shot.action_phase || {}), start: String(form.second_bridge_phase || 'bridge-2') },
+      coverage_role: form.third_coverage_role || shot.coverage_role || '',
+      coverage_group: form.third_coverage_group || '', coverage_side: form.third_coverage_side || '',
+    })
+    shots.push(third)
+  }
   return {
     operation: 'split', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
-    shot_id: shot.shot_id, shots: [first, second], requested_by: 'creative-workbench',
+    shot_id: shot.shot_id, shots, requested_by: 'creative-workbench',
   }
 }
 
 export function shotMergeRequest(workbench, left, right, form = {}) {
+  const sources = [left, right, ...(form.additional_shots || [])]
+  const last = sources[sources.length - 1]
   const merged = structuredClone(left)
   Object.assign(merged, {
     action_description: String(form.action_description || `${left.action_description}；${right.action_description}`).trim(),
-    duration_seconds: Number(form.duration_seconds ?? (Number(left.duration_seconds) + Number(right.duration_seconds))),
+    duration_seconds: Number(form.duration_seconds ?? sources.reduce((sum, item) => sum + Number(item.duration_seconds), 0)),
     shot_size: form.shot_size || left.shot_size, camera_angle: form.camera_angle || left.camera_angle,
     composition: form.composition || left.composition, camera_motion: form.camera_motion || left.camera_motion,
-    character_ids: [...new Set([...(left.character_ids || []), ...(right.character_ids || [])])],
-    dialogue_ids: [...(left.dialogue_ids || []), ...(right.dialogue_ids || [])],
-    head_state: left.head_state || {}, tail_state: right.tail_state || {},
-    action_phase: { start: left.action_phase?.start || '', end: right.action_phase?.end || '' },
+    character_ids: [...new Set(sources.flatMap(item => item.character_ids || []))],
+    dialogue_ids: sources.flatMap(item => item.dialogue_ids || []),
+    head_state: left.head_state || {}, tail_state: last.tail_state || {},
+    action_phase: { start: left.action_phase?.start || '', end: last.action_phase?.end || '' },
     coverage_role: form.coverage_role || left.coverage_role || '',
     coverage_group: form.coverage_group || left.coverage_group || '', coverage_side: form.coverage_side || left.coverage_side || '',
   })
   return {
     operation: 'merge', base_sequence_version: Number(workbench?.shot_sequence_version || 1),
-    shot_ids: [left.shot_id, right.shot_id], shots: [merged], requested_by: 'creative-workbench',
+    shot_ids: sources.map(item => item.shot_id), shots: [merged], requested_by: 'creative-workbench',
   }
 }
 

@@ -44,6 +44,41 @@ func TestSplitCreatesTwoIndependentShotsAndPreservesBoundary(t *testing.T) {
 	}
 }
 
+func TestSplitOneIntoThreeAndMergeThreeIntoOne(t *testing.T) {
+	base := editorFixture()
+	parts := CloneShots([]Shot{base[0], base[0], base[0]})
+	parts[0].DurationSeconds, parts[1].DurationSeconds, parts[2].DurationSeconds = 1, 1.25, 1.75
+	parts[0].DialogueIDs, parts[1].DialogueIDs, parts[2].DialogueIDs = []string{}, []string{}, []string{"d1"}
+	parts[0].ActionDescription, parts[1].ActionDescription, parts[2].ActionDescription = "reach", "grasp", "raise"
+	bridgeA := map[string]any{"pose": "reaching", "gaze": "bob"}
+	bridgeB := map[string]any{"pose": "grasped", "gaze": "bob"}
+	parts[0].TailState, parts[1].HeadState = bridgeA, bridgeA
+	parts[1].TailState, parts[2].HeadState = bridgeB, bridgeB
+	parts[0].ActionPhase["end"], parts[1].ActionPhase["start"] = "reach/end", "reach/end"
+	parts[1].ActionPhase["end"], parts[2].ActionPhase["start"] = "grasp/end", "grasp/end"
+	preview, err := Build(base, Request{Operation: OperationSplit, ShotID: "shot_a",
+		Shots: parts, NewShotIDs: []string{"shot_a1", "shot_a2", "shot_a3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.CreatedIDs) != 3 || len(preview.Shots) != 4 {
+		t.Fatalf("one-to-three split did not materialize three records: %#v", preview)
+	}
+	merged := CloneShots([]Shot{preview.Shots[0]})[0]
+	merged.DurationSeconds = 4
+	merged.ActionDescription = "reach, grasp and raise"
+	merged.DialogueIDs = []string{"d1"}
+	merged.HeadState, merged.TailState = base[0].HeadState, base[0].TailState
+	mergePreview, err := Build(preview.Shots, Request{Operation: OperationMerge,
+		ShotIDs: []string{"shot_a1", "shot_a2", "shot_a3"}, Shots: []Shot{merged}, NewShotIDs: []string{"shot_merged"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mergePreview.RetiredIDs) != 3 || mergePreview.Shots[0].ShotID != "shot_merged" {
+		t.Fatalf("three-to-one merge did not materialize one record: %#v", mergePreview)
+	}
+}
+
 func TestMergeValidatesSceneAxisCharactersDialogueAndDuration(t *testing.T) {
 	base := editorFixture()
 	merged := base[0]
@@ -78,6 +113,9 @@ func TestReorderRecalculatesHandoffsAndSurfacesContinuityConflict(t *testing.T) 
 	}
 	if len(preview.Conflicts) == 0 || preview.Handoffs[0].Status != "conflict" {
 		t.Fatalf("reordered incompatible states should block confirmation: %#v", preview)
+	}
+	if len(preview.ChangedIDs) != 0 {
+		t.Fatalf("pure ordering must not stale shot media payloads: %#v", preview.ChangedIDs)
 	}
 }
 

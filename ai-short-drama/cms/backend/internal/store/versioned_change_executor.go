@@ -863,7 +863,34 @@ func episodeIDForVersionedEntity(
 	var episodeID string
 	err := tx.QueryRow(ctx, query, entityID).Scan(&episodeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, ErrNotFound
+		// Newly inserted scenes/dialogues intentionally do not exist in the
+		// legacy projection yet. Resolve their owning episode from the immutable
+		// current episode_content snapshot created by the change-plan executor.
+		var snapshotQuery string
+		switch entityType {
+		case "scene":
+			snapshotQuery = `SELECT entity_id FROM drama.entity_versions version
+				WHERE version.entity_type='episode_content' AND version.is_current
+				  AND EXISTS(SELECT 1 FROM jsonb_array_elements(
+					COALESCE(version.content->'script'->'scenes','[]'::jsonb)) scene
+					WHERE scene->>'scene_id'=$1)
+				ORDER BY version.created_at DESC LIMIT 1`
+		case "dialogue":
+			snapshotQuery = `SELECT entity_id FROM drama.entity_versions version
+				WHERE version.entity_type='episode_content' AND version.is_current
+				  AND EXISTS(SELECT 1 FROM jsonb_array_elements(
+					COALESCE(version.content->'script'->'scenes','[]'::jsonb)) scene
+					CROSS JOIN LATERAL jsonb_array_elements(COALESCE(scene->'dialogues','[]'::jsonb)) dialogue
+					WHERE dialogue->>'dialogue_id'=$1)
+				ORDER BY version.created_at DESC LIMIT 1`
+		}
+		if snapshotQuery == "" {
+			return "", false, nil
+		}
+		err = tx.QueryRow(ctx, snapshotQuery, entityID).Scan(&episodeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
 	}
 	return episodeID, err == nil, err
 }

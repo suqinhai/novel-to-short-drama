@@ -415,6 +415,9 @@ func (s *Store) CreateEpisodeContentChangePlan(
 	if !current.Editable {
 		return ChangePlan{}, fmt.Errorf("%w: episode has active workflow tasks", ErrConflict)
 	}
+	if err = s.validateEpisodeContentReferences(ctx, current.ProjectID, input.Script); err != nil {
+		return ChangePlan{}, err
+	}
 
 	changes, err := episodeContentChanges(current, input)
 	if err != nil {
@@ -445,6 +448,94 @@ func (s *Store) CreateEpisodeContentChangePlan(
 		return ChangePlan{}, err
 	}
 	return s.CreateChangePlan(ctx, current.ProjectID, plan, requestedBy)
+}
+
+// validateEpisodeContentReferences closes the JSON-only escape hatch in the
+// editor contract. IDs stored inside scene/dialogue JSON must resolve to
+// narrative records owned by this project before a reviewable plan is created.
+func (s *Store) validateEpisodeContentReferences(
+	ctx context.Context, projectID string, script *EpisodeScriptUpdate,
+) error {
+	if script == nil {
+		return nil
+	}
+	characters, locations, events := []string{}, []string{}, []string{}
+	for _, scene := range script.Scenes {
+		if scene.LocationID != nil && strings.TrimSpace(*scene.LocationID) != "" {
+			locations = append(locations, strings.TrimSpace(*scene.LocationID))
+		}
+		var values []string
+		if json.Unmarshal(scene.CharacterIDs, &values) == nil {
+			characters = append(characters, values...)
+		}
+		values = nil
+		if json.Unmarshal(scene.SourceEventIDs, &values) == nil {
+			events = append(events, values...)
+		}
+		for _, dialogue := range scene.Dialogues {
+			if dialogue.CharacterID != nil && strings.TrimSpace(*dialogue.CharacterID) != "" {
+				characters = append(characters, strings.TrimSpace(*dialogue.CharacterID))
+			}
+		}
+	}
+	checkEntities := func(ids []string, entityType string) error {
+		ids = uniqueVersionedEntityIDs(ids)
+		if len(ids) == 0 {
+			return nil
+		}
+		var missing []string
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(array_agg(requested.id ORDER BY requested.id)
+			FILTER (WHERE entity.entity_id IS NULL),'{}'::text[])
+			FROM unnest($2::text[]) requested(id)
+			LEFT JOIN LATERAL (
+				SELECT candidate.entity_id FROM drama.narrative_entities candidate
+				JOIN drama.narrative_entity_revisions revision ON revision.entity_id=candidate.entity_id
+				JOIN drama.narrative_ir_revisions ir ON ir.ir_revision_id=revision.ir_revision_id
+				JOIN drama.project_source_bindings binding ON binding.work_id=candidate.work_id
+				WHERE candidate.entity_id=requested.id AND candidate.entity_type=$3
+				  AND binding.project_id=$1 AND binding.is_current
+				  AND ir.source_version_id=binding.source_version_id AND ir.is_current AND ir.status='published'
+				LIMIT 1
+			) entity ON true`, projectID, ids, entityType).Scan(&missing)
+		if err != nil {
+			return err
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("%w: unknown %s references for project %s: %s",
+				ErrInvalidEpisodeContent, entityType, projectID, strings.Join(missing, ", "))
+		}
+		return nil
+	}
+	if err := checkEntities(characters, "character"); err != nil {
+		return err
+	}
+	if err := checkEntities(locations, "location"); err != nil {
+		return err
+	}
+	events = uniqueVersionedEntityIDs(events)
+	if len(events) == 0 {
+		return nil
+	}
+	var missing []string
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(array_agg(requested.id ORDER BY requested.id)
+		FILTER (WHERE event.event_revision_id IS NULL),'{}'::text[])
+		FROM unnest($2::text[]) requested(id)
+		LEFT JOIN LATERAL (
+			SELECT candidate.event_revision_id FROM drama.narrative_event_revisions candidate
+			JOIN drama.narrative_ir_revisions ir ON ir.ir_revision_id=candidate.ir_revision_id
+			JOIN drama.project_source_bindings binding ON binding.work_id=ir.work_id
+			WHERE candidate.event_revision_id=requested.id AND binding.project_id=$1
+			  AND binding.is_current AND ir.source_version_id=binding.source_version_id
+			  AND ir.is_current AND ir.status='published' LIMIT 1
+		) event ON true`, projectID, events).Scan(&missing)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: unknown source event references for project %s: %s",
+			ErrInvalidEpisodeContent, projectID, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func episodeContentChanges(

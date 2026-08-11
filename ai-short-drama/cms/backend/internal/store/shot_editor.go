@@ -65,6 +65,11 @@ type ShotSequenceVersion struct {
 func (s *Store) CreateShotEditPlan(
 	ctx context.Context, projectID, episodeID string, request shoteditor.Request,
 ) (ShotEditPlan, error) {
+	resolverMetadata, err := s.freezeShotEditorInputs(ctx, projectID, episodeID)
+	if err != nil {
+		return ShotEditPlan{}, err
+	}
+	request.Metadata = resolverMetadata
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
 		return ShotEditPlan{}, err
@@ -78,9 +83,36 @@ func (s *Store) CreateShotEditPlan(
 		return ShotEditPlan{}, fmt.Errorf("%w: shot sequence version is %d, current is %d", ErrConflict, request.BaseSequenceVersion, version)
 	}
 	request.BaseSequenceVersion = version
-	request.DialogueDurationsMS, err = readDialogueDurations(ctx, tx, episodeID)
-	if err != nil {
-		return ShotEditPlan{}, err
+	resolvedShots, resolvedDialogueDurations, authoritative, resolveErr := resolvedShotEditorPayload(resolverMetadata)
+	if resolveErr != nil {
+		return ShotEditPlan{}, resolveErr
+	}
+	if authoritative {
+		byID := shotMap(resolvedShots)
+		authoritativeBase := make([]shoteditor.Shot, 0, len(base))
+		for index, current := range base {
+			resolved, exists := byID[current.ShotID]
+			if !exists {
+				return ShotEditPlan{}, fmt.Errorf("%w: current shot %s is absent from the Resolver snapshot",
+					ErrConflict, current.ShotID)
+			}
+			resolved.ShotOrder, resolved.ShotNumber = index+1, index+1
+			if resolved.Version == 0 {
+				resolved.Version = max(1, resolved.GenerationVersion)
+			}
+			if !sameShotPayload(current, resolved) {
+				return ShotEditPlan{}, fmt.Errorf("%w: shot %s differs from the Resolver snapshot",
+					ErrConflict, current.ShotID)
+			}
+			authoritativeBase = append(authoritativeBase, resolved)
+		}
+		base = authoritativeBase
+		request.DialogueDurationsMS = resolvedDialogueDurations
+	} else {
+		request.DialogueDurationsMS, err = readDialogueDurations(ctx, tx, episodeID)
+		if err != nil {
+			return ShotEditPlan{}, err
+		}
 	}
 	if request.Operation == shoteditor.OperationRestore {
 		request.RestoreSnapshot, err = readShotSequenceSnapshot(ctx, tx, projectID, episodeID, request.SourceSequenceVersionID)
@@ -89,7 +121,7 @@ func (s *Store) CreateShotEditPlan(
 		}
 	}
 	if request.Operation == shoteditor.OperationSplit {
-		request.NewShotIDs, err = publicIDs("shot_", 2)
+		request.NewShotIDs, err = publicIDs("shot_", len(request.Shots))
 	} else if request.Operation == shoteditor.OperationMerge {
 		request.NewShotIDs, err = publicIDs("shot_", 1)
 	}
@@ -274,6 +306,9 @@ func (s *Store) executeShotEditPlan(ctx context.Context, projectID, episodeID, p
 	if err = json.Unmarshal(requestJSON, &request); err != nil {
 		return ShotEditPlan{}, err
 	}
+	if err = s.verifyShotEditorInputs(ctx, projectID, episodeID, request.Metadata); err != nil {
+		return ShotEditPlan{}, err
+	}
 	if err = json.Unmarshal(proposedJSON, &proposed); err != nil {
 		return ShotEditPlan{}, err
 	}
@@ -317,7 +352,7 @@ func (s *Store) executeShotEditPlan(ctx context.Context, projectID, episodeID, p
 				return ShotEditPlan{}, err
 			}
 		}
-		if !wasCurrent || !sameStructuralShot(old, *shot) {
+		if !wasCurrent || !sameShotPayload(old, *shot) {
 			if wasCurrent {
 				if err = ensureShotHistoryVersion(ctx, tx, projectID, old); err != nil {
 					return ShotEditPlan{}, err
@@ -429,6 +464,46 @@ func (s *Store) ListShotSequenceVersions(ctx context.Context, projectID, episode
 }
 
 func readCurrentShotSequence(ctx context.Context, tx pgx.Tx, projectID, episodeID string, lock bool) ([]shoteditor.Shot, int, *string, error) {
+	sequenceLock := ""
+	if lock {
+		sequenceLock = " FOR UPDATE"
+	}
+	var sequenceSnapshot json.RawMessage
+	var sequenceVersion int
+	var sequenceIDValue string
+	err := tx.QueryRow(ctx, `SELECT snapshot,version,shot_sequence_version_id
+		FROM drama.shot_sequence_versions WHERE project_id=$1 AND episode_id=$2 AND is_current`+sequenceLock,
+		projectID, episodeID).Scan(&sequenceSnapshot, &sequenceVersion, &sequenceIDValue)
+	if err == nil {
+		var shots []shoteditor.Shot
+		if err = json.Unmarshal(sequenceSnapshot, &shots); err != nil {
+			return nil, 0, nil, err
+		}
+		if len(shots) == 0 {
+			return nil, 0, nil, ErrNotFound
+		}
+		// Media/frame references are projections of the currently bound shot
+		// entity version, never durable sequence content. Rehydrate them against
+		// that binding so restore cannot leak legacy media into a successor.
+		for i := range shots {
+			shots[i].ThumbnailURL, shots[i].HeadFrameRef, shots[i].TailFrameRef = "", "", ""
+			var versionID *string
+			_ = tx.QueryRow(ctx, `SELECT entity_version_id FROM drama.entity_versions
+				WHERE entity_type='shot' AND entity_id=$1 AND is_current`, shots[i].ShotID).Scan(&versionID)
+			_ = tx.QueryRow(ctx, `SELECT storage_url FROM drama.storyboard_images
+				WHERE shot_id=$1 AND is_current AND (($2::text IS NULL AND shot_entity_version_id IS NULL)
+				  OR shot_entity_version_id=$2) ORDER BY generation_version DESC LIMIT 1`,
+				shots[i].ShotID, versionID).Scan(&shots[i].ThumbnailURL)
+			_ = tx.QueryRow(ctx, `SELECT reference_head_frame_ref FROM drama.shot_handoffs
+				WHERE to_shot_id=$1 AND is_current ORDER BY version DESC LIMIT 1`, shots[i].ShotID).Scan(&shots[i].HeadFrameRef)
+			_ = tx.QueryRow(ctx, `SELECT target_tail_frame_ref FROM drama.shot_handoffs
+				WHERE from_shot_id=$1 AND is_current ORDER BY version DESC LIMIT 1`, shots[i].ShotID).Scan(&shots[i].TailFrameRef)
+		}
+		return shots, sequenceVersion, &sequenceIDValue, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, nil, err
+	}
 	lockSQL := ""
 	if lock {
 		lockSQL = " FOR UPDATE OF shot"
@@ -500,6 +575,123 @@ func readShotSequenceSnapshot(ctx context.Context, tx pgx.Tx, projectID, episode
 	var result []shoteditor.Shot
 	err = json.Unmarshal(raw, &result)
 	return result, err
+}
+
+type shotEditorResolverBypassKey struct{}
+
+// withShotEditorResolverBypass is package-private so only isolated store tests
+// whose fixture predates the Resolver graph can opt out; HTTP callers cannot.
+func withShotEditorResolverBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, shotEditorResolverBypassKey{}, true)
+}
+
+func (s *Store) freezeShotEditorInputs(
+	ctx context.Context, projectID, episodeID string,
+) (map[string]interface{}, error) {
+	if bypass, _ := ctx.Value(shotEditorResolverBypassKey{}).(bool); bypass {
+		return map[string]interface{}{"resolver_bypass": "isolated_store_integration_test"}, nil
+	}
+	raw, err := s.ResolveEffectiveInputs(ctx, projectID, episodeID, "storyboard_design")
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		ResolutionID   string          `json:"resolution_id"`
+		ContextHash    string          `json:"context_hash"`
+		ResolutionHash string          `json:"resolution_hash"`
+		Status         string          `json:"status"`
+		Ready          bool            `json:"ready"`
+		Blockers       json.RawMessage `json:"blockers"`
+		Context        struct {
+			ProductionSnapshot json.RawMessage `json:"production_snapshot"`
+		} `json:"context"`
+	}
+	if err = json.Unmarshal(raw, &envelope); err != nil || envelope.ResolutionID == "" ||
+		envelope.ContextHash == "" || envelope.ResolutionHash == "" {
+		return nil, fmt.Errorf("%w: invalid storyboard effective input resolution", ErrConflict)
+	}
+	if !envelope.Ready || envelope.Status != "ready" {
+		return nil, fmt.Errorf("%w: storyboard effective inputs status=%s ready=%t blockers=%s",
+			ErrConflict, envelope.Status, envelope.Ready, envelope.Blockers)
+	}
+	var snapshot struct {
+		State     string `json:"state"`
+		VersionID string `json:"version_id"`
+		BindingID string `json:"binding_id"`
+	}
+	if json.Unmarshal(envelope.Context.ProductionSnapshot, &snapshot) != nil ||
+		snapshot.State != "resolved" || snapshot.VersionID == "" || snapshot.BindingID == "" {
+		return nil, fmt.Errorf("%w: storyboard production snapshot is not an immutable resolved binding", ErrConflict)
+	}
+	return map[string]interface{}{
+		"source_kind": "effective_input_snapshot", "stage": "storyboard_design",
+		"resolution_id": envelope.ResolutionID, "context_hash": envelope.ContextHash,
+		"resolution_hash":     envelope.ResolutionHash,
+		"production_snapshot": json.RawMessage(envelope.Context.ProductionSnapshot),
+	}, nil
+}
+
+func (s *Store) verifyShotEditorInputs(
+	ctx context.Context, projectID, episodeID string, frozen map[string]interface{},
+) error {
+	if fmt.Sprint(frozen["resolver_bypass"]) == "isolated_store_integration_test" {
+		return nil
+	}
+	if bypass, _ := ctx.Value(shotEditorResolverBypassKey{}).(bool); bypass {
+		return nil
+	}
+	current, err := s.freezeShotEditorInputs(ctx, projectID, episodeID)
+	if err != nil {
+		return err
+	}
+	for _, key := range []string{"resolution_hash", "context_hash"} {
+		if strings.TrimSpace(fmt.Sprint(frozen[key])) == "" || fmt.Sprint(frozen[key]) != fmt.Sprint(current[key]) {
+			return fmt.Errorf("%w: effective storyboard inputs changed after preview", ErrConflict)
+		}
+	}
+	return nil
+}
+
+func resolvedShotEditorPayload(
+	metadata map[string]interface{},
+) ([]shoteditor.Shot, map[string]int64, bool, error) {
+	if fmt.Sprint(metadata["resolver_bypass"]) == "isolated_store_integration_test" {
+		return nil, nil, false, nil
+	}
+	value, exists := metadata["production_snapshot"]
+	if !exists {
+		return nil, nil, false, fmt.Errorf("%w: frozen Resolver snapshot is missing", ErrConflict)
+	}
+	raw, err := json.Marshal(value)
+	if direct, ok := value.(json.RawMessage); ok {
+		raw = direct
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var snapshot struct {
+		State   string `json:"state"`
+		Payload struct {
+			Shots     []shoteditor.Shot `json:"shots"`
+			Dialogues []struct {
+				DialogueID          string `json:"dialogue_id"`
+				EstimatedDurationMS int64  `json:"estimated_duration_ms"`
+			} `json:"dialogues"`
+		} `json:"payload"`
+	}
+	if err = json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, nil, false, fmt.Errorf("%w: decode frozen Resolver snapshot: %v", ErrConflict, err)
+	}
+	if snapshot.State != "resolved" || len(snapshot.Payload.Shots) == 0 {
+		return nil, nil, false, fmt.Errorf("%w: frozen Resolver snapshot has no resolved shots", ErrConflict)
+	}
+	durations := make(map[string]int64, len(snapshot.Payload.Dialogues))
+	for _, dialogue := range snapshot.Payload.Dialogues {
+		if id := strings.TrimSpace(dialogue.DialogueID); id != "" && dialogue.EstimatedDurationMS > 0 {
+			durations[id] = dialogue.EstimatedDurationMS
+		}
+	}
+	return snapshot.Payload.Shots, durations, true, nil
 }
 
 func readDialogueDurations(ctx context.Context, tx pgx.Tx, episodeID string) (map[string]int64, error) {
@@ -599,6 +791,39 @@ func sameStructuralShot(a, b shoteditor.Shot) bool {
 	bh, _ := shotSequenceHash([]shoteditor.Shot{b})
 	return ah == bh
 }
+func sameShotPayload(a, b shoteditor.Shot) bool {
+	normalize := func(shot *shoteditor.Shot) {
+		if shot.CharacterIDs == nil {
+			shot.CharacterIDs = []string{}
+		}
+		if shot.DialogueIDs == nil {
+			shot.DialogueIDs = []string{}
+		}
+		if shot.HeadState == nil {
+			shot.HeadState = map[string]any{}
+		}
+		if shot.TailState == nil {
+			shot.TailState = map[string]any{}
+		}
+		if shot.Performance == nil {
+			shot.Performance = map[string]any{}
+		}
+		if shot.ActionPhase == nil {
+			shot.ActionPhase = map[string]any{}
+		}
+		if shot.ContinuityNotes == nil {
+			shot.ContinuityNotes = map[string]any{}
+		}
+		if shot.SourceSceneData == nil {
+			shot.SourceSceneData = map[string]any{}
+		}
+	}
+	normalize(&a)
+	normalize(&b)
+	a.ShotOrder, a.ShotNumber = 0, 0
+	b.ShotOrder, b.ShotNumber = 0, 0
+	return sameStructuralShot(a, b)
+}
 func shotSequenceDiff(base, next []shoteditor.Shot) (changed, created, retired []string) {
 	before, after := shotMap(base), shotMap(next)
 	for id, shot := range after {
@@ -606,7 +831,7 @@ func shotSequenceDiff(base, next []shoteditor.Shot) (changed, created, retired [
 		if !ok {
 			created = append(created, id)
 			changed = append(changed, id)
-		} else if !sameStructuralShot(old, shot) {
+		} else if !sameShotPayload(old, shot) {
 			changed = append(changed, id)
 		}
 	}
@@ -922,25 +1147,8 @@ func insertShotRebuildTasks(ctx context.Context, tx pgx.Tx, projectID, episodeID
 }
 
 func switchCurrentShotSequence(ctx context.Context, tx pgx.Tx, projectID, episodeID, planID, sequenceID string, currentSequenceID *string, proposed []shoteditor.Shot, retiredIDs []string, newVersions, newArtifacts map[string]string, continuityIDs, handoffIDs []string) error {
-	proposedIDs := make([]string, len(proposed))
-	for i, shot := range proposed {
-		proposedIDs[i] = shot.ShotID
-	}
-	if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET is_current=false WHERE project_id=$1 AND episode_id=$2 AND is_current`, projectID, episodeID); err != nil {
-		return err
-	}
-	if len(retiredIDs) > 0 {
-		if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET retired_by_shot_edit_plan_id=$2 WHERE shot_id=ANY($1)`, retiredIDs, planID); err != nil {
-			return err
-		}
-	}
-	for _, shot := range proposed {
-		if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET shot_order=$2,shot_number=$3
-			WHERE shot_id=$1`, shot.ShotID, shot.ShotOrder, shot.ShotNumber); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE drama.storyboard_shots SET is_current=true,retired_by_shot_edit_plan_id=NULL WHERE shot_id=ANY($1)`, proposedIDs); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT drama.materialize_shot_sequence_projection($1,$2,$3,$4)`,
+		projectID, episodeID, planID, sequenceID); err != nil {
 		return err
 	}
 	versionIDs := mapValues(newVersions)
@@ -987,23 +1195,6 @@ func switchCurrentShotSequence(ctx context.Context, tx pgx.Tx, projectID, episod
 	}
 	if _, err := tx.Exec(ctx, `UPDATE drama.shot_sequence_versions SET is_current=true WHERE shot_sequence_version_id=$1`, sequenceID); err != nil {
 		return err
-	}
-	storyboards := map[string]struct{}{}
-	for _, shot := range proposed {
-		storyboards[shot.StoryboardID] = struct{}{}
-	}
-	for storyboardID := range storyboards {
-		count := 0
-		duration := 0.0
-		for _, shot := range proposed {
-			if shot.StoryboardID == storyboardID {
-				count++
-				duration += shot.DurationSeconds
-			}
-		}
-		if _, err := tx.Exec(ctx, `UPDATE drama.storyboards SET total_shots=$2,estimated_duration_seconds=$3,updated_at=now() WHERE storyboard_id=$1`, storyboardID, count, duration); err != nil {
-			return err
-		}
 	}
 	return nil
 }

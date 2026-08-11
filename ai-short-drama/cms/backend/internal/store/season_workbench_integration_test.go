@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,15 @@ func TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration(t *testing.T) {
 		WHERE adaptation_plan_id='adaptation_plan_phase1_001'`).Scan(&beforeHash); err != nil {
 		t.Fatal(err)
 	}
+	preview, err := database.PreviewSeasonPlanChange(ctx, "adaptation_plan_phase1_001", draft)
+	if err != nil || preview.ChangePlanID == "" || preview.Status != "validated" ||
+		preview.PreviewFingerprint == "" || len(preview.Diff) == 0 {
+		t.Fatalf("change-plan preview was not created: %#v err=%v", preview, err)
+	}
+	if _, err = database.ConfirmChangePlan(ctx, "p_phase1_legacy", preview.ChangePlanID, nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("season change plan bypassed its atomic confirmation endpoint: %v", err)
+	}
+	draft.PreviewFingerprint = preview.PreviewFingerprint
 	planRaw, _, err := database.CreateSeasonPlanVersion(ctx, "adaptation_plan_phase1_001", "phase25-save-version", draft)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +77,26 @@ func TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration(t *testing.T) {
 	}
 	if saved.AdaptationPlanID == "" || saved.VersionNumber <= 1 || saved.Status != "waiting_review" {
 		t.Fatalf("save did not create an immutable successor: %#v", saved)
+	}
+	replayRaw, _, err := database.CreateSeasonPlanVersion(ctx, "adaptation_plan_phase1_001", "phase25-save-version", draft)
+	if err != nil {
+		t.Fatalf("repeated season change confirmation was not idempotent: %v", err)
+	}
+	var replay struct {
+		AdaptationPlanID string `json:"adaptation_plan_id"`
+	}
+	if err = json.Unmarshal(replayRaw, &replay); err != nil || replay.AdaptationPlanID != saved.AdaptationPlanID {
+		t.Fatalf("repeated confirmation created a different successor: %#v err=%v", replay, err)
+	}
+	var changePlanStatus, resultPlanID string
+	if err = database.pool.QueryRow(ctx, `SELECT status,review_metadata->>'result_adaptation_plan_id'
+		FROM drama.change_plans WHERE change_plan_id=$1`, preview.ChangePlanID).
+		Scan(&changePlanStatus, &resultPlanID); err != nil || changePlanStatus != "applied" || resultPlanID != saved.AdaptationPlanID {
+		t.Fatalf("season change plan audit did not close atomically: status=%s result=%s err=%v",
+			changePlanStatus, resultPlanID, err)
+	}
+	if _, err = database.PreviewSeasonPlanChange(ctx, "adaptation_plan_phase1_001", draft); !errors.Is(err, ErrConflict) {
+		t.Fatalf("superseded base version was not rejected: %v", err)
 	}
 	var afterHash string
 	if err = database.pool.QueryRow(ctx, `SELECT content_hash FROM drama.adaptation_plans
@@ -90,6 +120,18 @@ func TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration(t *testing.T) {
 	approval, err := database.ApproveSeasonPlan(ctx, saved.AdaptationPlanID, "phase25-reviewer")
 	if err != nil || approval.Status != "approved" || approval.QueueCreated || !approval.Validation.Passed {
 		t.Fatalf("approval validation failed or created queue early: %#v err=%v", approval, err)
+	}
+	var publishedArtifacts int
+	if err = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.artifacts
+		WHERE project_id='p_phase1_legacy' AND is_current AND validity_status='valid'
+		  AND ((artifact_type='adaptation_plan' AND native_entity_id=$1)
+		    OR (artifact_type='adaptation_episode_plan' AND metadata->>'adaptation_plan_id'=$1))`,
+		saved.AdaptationPlanID).Scan(&publishedArtifacts); err != nil || publishedArtifacts < 2 {
+		t.Fatalf("approved workbench plan was not published into the resolver artifact graph: count=%d err=%v", publishedArtifacts, err)
+	}
+	resolution, err := database.ResolveEffectiveInputs(ctx, "p_phase1_legacy", "ep_phase1_legacy_001", "episode_script")
+	if err != nil || !bytes.Contains(resolution, []byte(saved.AdaptationPlanID)) {
+		t.Fatalf("effective input resolver did not consume approved workbench plan: %s err=%v", resolution, err)
 	}
 	var queueCountAfterApproval int
 	_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.story_arc_runs WHERE project_id='p_phase1_legacy'`).Scan(&queueCountAfterApproval)

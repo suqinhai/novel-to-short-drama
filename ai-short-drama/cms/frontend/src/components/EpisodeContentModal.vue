@@ -279,6 +279,24 @@ async function confirmPlan(executeImmediately = false) {
   }
 }
 
+async function rejectPlan() {
+	if (pendingPlan.value?.status !== 'validated' || saving.value) return
+	saving.value = true
+	error.value = ''
+	try {
+		await api.rejectChangePlan(props.projectId, pendingPlan.value.change_plan_id, {
+			actor: 'episode-content-modal', reason: 'candidate rejected in review',
+		})
+		pendingPlan.value = null
+		selectedRebuildTasks.value = []
+		savedNotice.value = '候选已拒绝；current 剧本未发生变化。'
+	} catch (err) {
+		error.value = err.message
+	} finally {
+		saving.value = false
+	}
+}
+
 async function executePlan(nested = false) {
   if (pendingPlan.value?.status !== 'confirmed') return
   if (!nested) saving.value = true
@@ -370,8 +388,14 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <div class="episode-plan-diff-head"><b>字段</b><b>修改前</b><b>修改后</b></div>
             <div v-for="row in planDiff" :key="row.field"><code>{{ row.field }}<small v-if="row.start_ms != null">重建 {{ row.start_ms }}–{{ row.end_ms }}ms</small></code><span>{{ formatDiffValue(row.before) }}</span><span>{{ formatDiffValue(row.after) }}</span></div>
           </div>
+          <div v-if="pendingPlan.review_metadata?.candidate_type === 'script_ai_rewrite'" class="episode-plan-summary">
+            <article><b>AI 改写理由</b><span>{{ pendingPlan.review_metadata.reason }}</span></article>
+            <article><b>来源证据</b><span v-for="item in pendingPlan.review_metadata.source_evidence" :key="`${item.source_span_id}:${item.event_revision_id}`">{{ item.source_span_id || item.event_revision_id }} · {{ item.explanation }}</span></article>
+            <article><b>预计时长变化</b><span>{{ pendingPlan.review_metadata.estimated_duration_delta_ms }} ms</span></article>
+          </div>
           <div class="episode-plan-risks"><b>风险</b><span v-for="risk in pendingPlan.plan.risks" :key="risk"><AlertTriangle :size="12" />{{ risk }}</span></div>
           <footer>
+            <button v-if="pendingPlan.status === 'validated'" class="button button-secondary" :disabled="saving" @click="rejectPlan">拒绝候选</button>
             <button class="button button-secondary" :disabled="saving" @click="pendingPlan = null">返回编辑</button>
             <button v-if="pendingPlan.status === 'validated' && !content.has_downstream_assets" class="button button-primary" :disabled="saving" @click="confirmPlan(true)"><Save :size="15" />保存并确认</button>
             <button v-else-if="pendingPlan.status === 'validated'" class="button button-primary" :disabled="saving" @click="confirmPlan(false)"><ShieldCheck :size="15" />确认影响与重建</button>

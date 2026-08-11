@@ -70,6 +70,7 @@ type irMergeV2Service interface {
 type seasonWorkbenchService interface {
 	ListSeasonPlans(context.Context, string) ([]store.SeasonPlanSummary, error)
 	ValidateSeasonPlanDraft(context.Context, string, store.SeasonPlanDraft) (store.SeasonValidationResult, error)
+	PreviewSeasonPlanChange(context.Context, string, store.SeasonPlanDraft) (store.SeasonPlanChangePreview, error)
 	CreateSeasonPlanVersion(context.Context, string, string, store.SeasonPlanDraft) (json.RawMessage, string, error)
 	ApproveSeasonPlan(context.Context, string, string) (store.SeasonApprovalResult, error)
 }
@@ -112,6 +113,7 @@ func registerSourceV2(router *gin.Engine, service sourceV2Service) {
 	api.POST("/adaptation-projects/:projectID/impact/:changeSetID/regeneration-requests", h.createRegenerationRequest)
 	api.GET("/adaptation-plans/:adaptationPlanID", h.getAdaptationPlan)
 	api.POST("/adaptation-plans/:adaptationPlanID/validate", h.validateSeasonPlan)
+	api.POST("/adaptation-plans/:adaptationPlanID/change-plan", h.previewSeasonPlanChange)
 	api.POST("/adaptation-plans/:adaptationPlanID/versions", h.createSeasonPlanVersion)
 	api.POST("/adaptation-plans/:adaptationPlanID/approve", h.approveSeasonPlan)
 	api.POST("/adaptation-projects", h.createAdaptationProject)
@@ -1014,6 +1016,24 @@ func (h *sourceV2Handler) validateSeasonPlan(c *gin.Context) {
 		return
 	}
 	v2Response(c, http.StatusOK, traceID(c), validation, nil)
+}
+
+func (h *sourceV2Handler) previewSeasonPlanChange(c *gin.Context) {
+	if h.seasonService == nil {
+		v2Error(c, store.ErrUnsupported)
+		return
+	}
+	var draft store.SeasonPlanDraft
+	if !decodeStrictJSON(c, &draft) {
+		return
+	}
+	preview, err := h.seasonService.PreviewSeasonPlanChange(c.Request.Context(),
+		c.Param("adaptationPlanID"), draft)
+	if err != nil {
+		v2Error(c, err)
+		return
+	}
+	v2Response(c, http.StatusOK, traceID(c), preview, nil)
 }
 
 func (h *sourceV2Handler) createSeasonPlanVersion(c *gin.Context) {

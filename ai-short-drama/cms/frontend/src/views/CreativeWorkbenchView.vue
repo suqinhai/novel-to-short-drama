@@ -61,6 +61,11 @@ const nextShot = computed(() => {
   const shots = [...workspace.value.shots].sort((left, right) => left.shot_order - right.shot_order)
   return shots[shots.findIndex(item => item.shot_id === selectedShot.value?.shot_id) + 1]
 })
+const nextTwoShots = computed(() => {
+  const shots = [...workspace.value.shots].sort((left, right) => left.shot_order - right.shot_order)
+  const index = shots.findIndex(item => item.shot_id === selectedShot.value?.shot_id)
+  return index < 0 ? [] : shots.slice(index + 1, index + 3)
+})
 const lanes = computed(() => timelineLanes(workspace.value.timeline_items))
 const maxTimelineMS = computed(() => Math.max(1, ...workspace.value.timeline_items.map(item => Number(item.timeline_end_ms || 0))))
 const allIssues = computed(() => [
@@ -176,7 +181,8 @@ function idList(value) {
 function openShotEditor(mode, shot = selectedShot.value) {
   if (!shot) return
   selectedShotId.value = shot.shot_id
-  const half = Number(shot.duration_seconds || 0) / 2
+  const partCount = mode === 'split3' ? 3 : 2
+  const partDuration = Number(shot.duration_seconds || 0) / partCount
   const ordered = [...workspace.value.shots].sort((left, right) => left.shot_order - right.shot_order)
   const following = ordered[ordered.findIndex(item => item.shot_id === shot.shot_id) + 1]
   shotForm.value = {
@@ -186,16 +192,19 @@ function openShotEditor(mode, shot = selectedShot.value) {
     action_phase: JSON.stringify(shot.action_phase || {}, null, 2),
     head_state: JSON.stringify(shot.head_state || {}, null, 2),
     tail_state: JSON.stringify(shot.tail_state || {}, null, 2),
-    action_description: mode === 'merge' && following ? `${shot.action_description}；${following.action_description}` : shot.action_description, facial_expression: shot.facial_expression,
-    duration_seconds: mode === 'merge' && following ? Number(shot.duration_seconds)+Number(following.duration_seconds) : Number(shot.duration_seconds), coverage_role: shot.coverage_role || '',
+    action_description: mode.startsWith('merge') ? [shot, ...nextTwoShots.value.slice(0, mode === 'merge3' ? 2 : 1)].map(item => item.action_description).join('；') : shot.action_description, facial_expression: shot.facial_expression,
+    duration_seconds: mode.startsWith('merge') ? [shot, ...nextTwoShots.value.slice(0, mode === 'merge3' ? 2 : 1)].reduce((sum, item) => sum + Number(item.duration_seconds), 0) : Number(shot.duration_seconds), coverage_role: shot.coverage_role || '',
     coverage_group: shot.coverage_group || '', coverage_side: shot.coverage_side || '',
     axis: shot.axis || '', dialogue_ids: (shot.dialogue_ids || []).join(','),
-    first_action: shot.action_description, second_action: shot.action_description,
-    first_duration: Number(half.toFixed(2)), second_duration: Number((Number(shot.duration_seconds)-half).toFixed(2)),
-    first_dialogue_ids: '', second_dialogue_ids: (shot.dialogue_ids || []).join(','),
+    part_count: partCount, first_action: shot.action_description, second_action: shot.action_description, third_action: shot.action_description,
+    first_duration: Number(partDuration.toFixed(2)), second_duration: Number(partDuration.toFixed(2)),
+    third_duration: Number((Number(shot.duration_seconds)-partDuration*2).toFixed(2)),
+    first_dialogue_ids: '', second_dialogue_ids: mode === 'split3' ? '' : (shot.dialogue_ids || []).join(','), third_dialogue_ids: (shot.dialogue_ids || []).join(','),
     bridge_state: JSON.stringify(shot.tail_state || {}, null, 2), bridge_phase: 'bridge',
     first_coverage_role: shot.coverage_role || '', second_coverage_role: shot.coverage_role || '',
+    second_bridge_state: JSON.stringify(shot.tail_state || {}, null, 2), second_bridge_phase: 'bridge-2',
     first_coverage_group: '', first_coverage_side: '', second_coverage_group: '', second_coverage_side: '',
+    third_coverage_role: shot.coverage_role || '', third_coverage_group: '', third_coverage_side: '',
   }
 }
 
@@ -211,15 +220,20 @@ async function previewShotForm() {
   const shot = workspace.value.shots.find(item => item.shot_id === shotForm.value?.shot_id)
   if (!shot || !shotForm.value) return
   try {
-    if (shotForm.value.mode === 'split') {
+    if (shotForm.value.mode === 'split' || shotForm.value.mode === 'split3') {
       await previewShotRequest(shotSplitRequest(workspace.value, shot, {
         ...shotForm.value, bridge_state: parseJSONField(shotForm.value.bridge_state, '中间状态'),
         first_dialogue_ids: idList(shotForm.value.first_dialogue_ids),
         second_dialogue_ids: idList(shotForm.value.second_dialogue_ids),
+        third_dialogue_ids: idList(shotForm.value.third_dialogue_ids),
+        second_bridge_state: parseJSONField(shotForm.value.second_bridge_state, '第二中间状态'),
       }))
-    } else if (shotForm.value.mode === 'merge') {
+    } else if (shotForm.value.mode === 'merge' || shotForm.value.mode === 'merge3') {
       if (!nextShot.value) throw new Error('没有可合并的下一相邻镜头')
-      await previewShotRequest(shotMergeRequest(workspace.value, shot, nextShot.value, shotForm.value))
+      if (shotForm.value.mode === 'merge3' && nextTwoShots.value.length < 2) throw new Error('没有三个可合并的相邻镜头')
+      await previewShotRequest(shotMergeRequest(workspace.value, shot, nextShot.value, {
+        ...shotForm.value, additional_shots: shotForm.value.mode === 'merge3' ? [nextTwoShots.value[1]] : [],
+      }))
     } else {
       await previewShotRequest(shotUpdateRequest(workspace.value, shot, {
         shot_size: shotForm.value.shot_size, camera_angle: shotForm.value.camera_angle,
@@ -444,7 +458,9 @@ onMounted(load)
                     <button title="延长 0.5 秒" @click.stop="retimeShot(shot, .5)"><Clock3 :size="14" />+0.5s</button>
                     <button @click.stop="openShotEditor('edit', shot)">编辑全部字段</button>
                     <button @click.stop="openShotEditor('split', shot)">拆成两镜</button>
+                    <button @click.stop="openShotEditor('split3', shot)">拆成三镜</button>
                     <button @click.stop="openShotEditor('merge', shot)">合并下一镜</button>
+                    <button @click.stop="openShotEditor('merge3', shot)">合并连续三镜</button>
                   </div>
                 </article>
               </div>
@@ -456,18 +472,19 @@ onMounted(load)
               </div>
 
               <form v-if="shotForm" class="shot-editor-form" @submit.prevent="previewShotForm">
-                <header><div><span>STRUCTURAL DRAFT</span><h3>{{ shotForm.mode === 'split' ? '拆分镜头' : shotForm.mode === 'merge' ? '合并相邻镜头' : '修改镜头版本' }}</h3></div><button type="button" @click="shotForm=null">关闭</button></header>
-                <template v-if="shotForm.mode === 'split'">
+                <header><div><span>STRUCTURAL DRAFT</span><h3>{{ shotForm.mode.startsWith('split') ? '拆分镜头' : shotForm.mode.startsWith('merge') ? '合并相邻镜头' : '修改镜头版本' }}</h3></div><button type="button" @click="shotForm=null">关闭</button></header>
+                <template v-if="shotForm.mode === 'split' || shotForm.mode === 'split3'">
                   <section><h4>新镜头 A</h4><label>动作<textarea v-model="shotForm.first_action" required /></label><label>时长<input v-model.number="shotForm.first_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.first_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.first_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>正反打组<input v-model="shotForm.first_coverage_group" /></label><label>正反打侧<select v-model="shotForm.first_coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label></section>
                   <section><h4>新镜头 B</h4><label>动作<textarea v-model="shotForm.second_action" required /></label><label>时长<input v-model.number="shotForm.second_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.second_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.second_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>正反打组<input v-model="shotForm.second_coverage_group" /></label><label>正反打侧<select v-model="shotForm.second_coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label></section>
-                  <section class="wide"><h4>两镜接力</h4><label>中间动作阶段<input v-model="shotForm.bridge_phase" required /></label><label>共享 A 尾 / B 首状态 JSON<textarea v-model="shotForm.bridge_state" required /></label></section>
+                  <section v-if="shotForm.mode === 'split3'"><h4>新镜头 C</h4><label>动作<textarea v-model="shotForm.third_action" required /></label><label>时长<input v-model.number="shotForm.third_duration" type="number" min="0.1" step="0.1" /></label><label>对白 ID（逗号）<input v-model="shotForm.third_dialogue_ids" /></label><label>覆盖类型<select v-model="shotForm.third_coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label></section>
+                  <section class="wide"><h4>镜头接力</h4><label>中间动作阶段<input v-model="shotForm.bridge_phase" required /></label><label>共享 A 尾 / B 首状态 JSON<textarea v-model="shotForm.bridge_state" required /></label><template v-if="shotForm.mode === 'split3'"><label>第二中间动作阶段<input v-model="shotForm.second_bridge_phase" required /></label><label>共享 B 尾 / C 首状态 JSON<textarea v-model="shotForm.second_bridge_state" required /></label></template></section>
                 </template>
                 <template v-else>
                   <label>景别<input v-model="shotForm.shot_size" /></label><label>机位<input v-model="shotForm.camera_angle" /></label><label>构图<input v-model="shotForm.composition" /></label><label>运镜<input v-model="shotForm.camera_motion" /></label>
                   <label class="wide">动作<textarea v-model="shotForm.action_description" required /></label><label>表情<input v-model="shotForm.facial_expression" /></label><label>时长<input v-model.number="shotForm.duration_seconds" type="number" min="0.1" step="0.1" /></label><label>轴线<input v-model="shotForm.axis" /></label>
                   <label>覆盖类型<select v-model="shotForm.coverage_role"><option value="">未标</option><option value="establishing">建立镜头</option><option value="action">动作镜头</option><option value="reaction">反应镜头</option><option value="shot_reverse">正反打</option><option value="insert_closeup">插入特写</option></select></label><label>对白 ID（逗号）<input v-model="shotForm.dialogue_ids" /></label><label>正反打组<input v-model="shotForm.coverage_group" /></label><label>正反打侧<select v-model="shotForm.coverage_side"><option value="">—</option><option value="a">A</option><option value="b">B</option></select></label>
                   <label v-if="shotForm.mode === 'edit'" class="wide">表演 JSON<textarea v-model="shotForm.performance" /></label><label v-if="shotForm.mode === 'edit'" class="wide">动作阶段 JSON<textarea v-model="shotForm.action_phase" /></label><label v-if="shotForm.mode === 'edit'" class="wide">首帧状态 JSON<textarea v-model="shotForm.head_state" /></label><label v-if="shotForm.mode === 'edit'" class="wide">尾帧状态 JSON<textarea v-model="shotForm.tail_state" /></label>
-                  <p v-if="shotForm.mode === 'merge'" class="wide">将与下一相邻镜头 {{ nextShot?.shot_id || '—' }} 合并；人物、场景、轴线、动作接力、对白顺序和时长由服务端校验。</p>
+                  <p v-if="shotForm.mode.startsWith('merge')" class="wide">将合并 {{ shotForm.mode === 'merge3' ? '连续三个镜头' : `下一相邻镜头 ${nextShot?.shot_id || '—'}` }}；人物、场景、轴线、动作接力、对白顺序和时长由服务端校验。</p>
                 </template>
                 <footer class="wide"><button type="submit" :disabled="saving">只生成影响预览</button><small>此操作不会写入正式镜头、媒体或 current 指针。</small></footer>
               </form>

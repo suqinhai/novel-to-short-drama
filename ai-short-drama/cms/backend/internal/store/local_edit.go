@@ -15,21 +15,22 @@ import (
 )
 
 type ChangePlan struct {
-	ChangePlanID string               `json:"change_plan_id"`
-	ProjectID    string               `json:"project_id"`
-	Status       string               `json:"status"`
-	Plan         localedit.Plan       `json:"plan"`
-	Fingerprint  string               `json:"fingerprint"`
-	Impacts      []ChangePlanImpact   `json:"impacts"`
-	RebuildTasks []IncrementalRebuild `json:"rebuild_tasks"`
-	RequestedBy  *string              `json:"requested_by,omitempty"`
-	ConfirmedBy  *string              `json:"confirmed_by,omitempty"`
-	ConfirmedAt  *time.Time           `json:"confirmed_at,omitempty"`
-	AppliedAt    *time.Time           `json:"applied_at,omitempty"`
-	ErrorCode    *string              `json:"error_code,omitempty"`
-	ErrorMessage *string              `json:"error_message,omitempty"`
-	CreatedAt    time.Time            `json:"created_at"`
-	UpdatedAt    time.Time            `json:"updated_at"`
+	ChangePlanID   string               `json:"change_plan_id"`
+	ProjectID      string               `json:"project_id"`
+	Status         string               `json:"status"`
+	Plan           localedit.Plan       `json:"plan"`
+	Fingerprint    string               `json:"fingerprint"`
+	Impacts        []ChangePlanImpact   `json:"impacts"`
+	RebuildTasks   []IncrementalRebuild `json:"rebuild_tasks"`
+	RequestedBy    *string              `json:"requested_by,omitempty"`
+	ConfirmedBy    *string              `json:"confirmed_by,omitempty"`
+	ConfirmedAt    *time.Time           `json:"confirmed_at,omitempty"`
+	AppliedAt      *time.Time           `json:"applied_at,omitempty"`
+	ErrorCode      *string              `json:"error_code,omitempty"`
+	ErrorMessage   *string              `json:"error_message,omitempty"`
+	ReviewMetadata json.RawMessage      `json:"review_metadata"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 }
 
 type ChangePlanImpact struct {
@@ -281,6 +282,20 @@ func (s *Store) ConfirmChangePlan(ctx context.Context, projectID, planID string,
 		return ChangePlan{}, err
 	}
 	defer tx.Rollback(ctx)
+	var seasonPlanConfirmation bool
+	err = tx.QueryRow(ctx, `SELECT target_entity_type='adaptation_plan'
+		AND review_metadata ? 'preview_fingerprint'
+		FROM drama.change_plans WHERE project_id=$1 AND change_plan_id=$2 FOR UPDATE`,
+		projectID, planID).Scan(&seasonPlanConfirmation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ChangePlan{}, ErrNotFound
+	}
+	if err != nil {
+		return ChangePlan{}, err
+	}
+	if seasonPlanConfirmation {
+		return ChangePlan{}, fmt.Errorf("%w: season change plans must use the atomic season confirmation endpoint", ErrConflict)
+	}
 	tag, err := tx.Exec(ctx, `UPDATE drama.change_plans SET status='confirmed',
 		confirmed_by=$3,confirmed_at=now(),error_code=NULL,error_message=NULL
 		WHERE project_id=$1 AND change_plan_id=$2 AND status='validated'`, projectID, planID, actor)
@@ -311,6 +326,70 @@ func (s *Store) ConfirmChangePlan(ctx context.Context, projectID, planID string,
 	return s.GetChangePlan(ctx, projectID, planID)
 }
 
+func (s *Store) SetChangePlanReviewMetadata(
+	ctx context.Context, projectID, planID string, metadata json.RawMessage,
+) (ChangePlan, error) {
+	var value map[string]any
+	if len(metadata) == 0 || json.Unmarshal(metadata, &value) != nil {
+		return ChangePlan{}, fmt.Errorf("%w: review metadata must be a JSON object", localedit.ErrInvalidPlan)
+	}
+	tag, err := s.writer.Exec(ctx, `UPDATE drama.change_plans SET review_metadata=$3::jsonb,updated_at=now()
+		WHERE project_id=$1 AND change_plan_id=$2 AND status='validated'`, projectID, planID, metadata)
+	if err != nil {
+		return ChangePlan{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return ChangePlan{}, fmt.Errorf("%w: review metadata can only be attached to a validated plan", ErrConflict)
+	}
+	return s.GetChangePlan(ctx, projectID, planID)
+}
+
+func (s *Store) RejectChangePlan(
+	ctx context.Context, projectID, planID string, actor *string, reason string,
+) (ChangePlan, error) {
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return ChangePlan{}, err
+	}
+	defer tx.Rollback(ctx)
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM drama.change_plans
+		WHERE project_id=$1 AND change_plan_id=$2 FOR UPDATE`, projectID, planID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ChangePlan{}, ErrNotFound
+	}
+	if err != nil {
+		return ChangePlan{}, err
+	}
+	if status == "cancelled" {
+		if err = tx.Commit(ctx); err != nil {
+			return ChangePlan{}, err
+		}
+		return s.GetChangePlan(ctx, projectID, planID)
+	}
+	if status != "validated" {
+		return ChangePlan{}, fmt.Errorf("%w: only an unconfirmed candidate can be rejected", ErrConflict)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.change_plans SET status='cancelled',updated_at=now()
+		WHERE change_plan_id=$1`, planID); err != nil {
+		return ChangePlan{}, err
+	}
+	eventID, err := newPublicID("cpe_")
+	if err != nil {
+		return ChangePlan{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(
+		change_plan_event_id,change_plan_id,event_type,actor,details)
+		VALUES($1,$2,'cancelled',$3,jsonb_build_object('reason',$4::text))`,
+		eventID, planID, actor, strings.TrimSpace(reason)); err != nil {
+		return ChangePlan{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ChangePlan{}, err
+	}
+	return s.GetChangePlan(ctx, projectID, planID)
+}
+
 func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string) (result ChangePlan, err error) {
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
@@ -321,20 +400,23 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 	var status, entityType, entityID, changeKind, fingerprint, userIntent string
 	var targetContentHash *string
 	var targetVersion int
-	var semantic bool
+	var semantic, seasonPlanConfirmation bool
 	var changesJSON, rebuildTasksJSON json.RawMessage
 	err = tx.QueryRow(ctx, `SELECT status,target_entity_type,target_entity_id,target_version,
 		expected_changes,rebuild_tasks,change_kind,semantic_change,plan_fingerprint,target_content_hash
-		,user_intent
+		,user_intent,(target_entity_type='adaptation_plan' AND review_metadata ? 'preview_fingerprint')
 		FROM drama.change_plans WHERE project_id=$1 AND change_plan_id=$2 FOR UPDATE`,
 		projectID, planID).Scan(&status, &entityType, &entityID, &targetVersion,
 		&changesJSON, &rebuildTasksJSON, &changeKind, &semantic, &fingerprint,
-		&targetContentHash, &userIntent)
+		&targetContentHash, &userIntent, &seasonPlanConfirmation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChangePlan{}, ErrNotFound
 	}
 	if err != nil {
 		return ChangePlan{}, err
+	}
+	if seasonPlanConfirmation {
+		return ChangePlan{}, fmt.Errorf("%w: season change plans must use the atomic season confirmation endpoint", ErrConflict)
 	}
 	if status == "applied" {
 		if err = tx.Commit(ctx); err != nil {
@@ -522,8 +604,7 @@ func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID str
 			  'rules',COALESCE((SELECT jsonb_agg(to_jsonb(rule)-'id'-'created_at'-'updated_at' ORDER BY rule.priority DESC,rule.adaptation_rule_id)
 			    FROM drama.adaptation_rules rule WHERE rule.adaptation_spec_version_id=s.adaptation_spec_version_id),'[]'::jsonb)
 			) FROM drama.adaptation_spec_versions s WHERE adaptation_spec_version_id=$1 FOR UPDATE`,
-		"adaptation_plan": `SELECT to_jsonb(p)-'id'-'created_at'-'updated_at'
-			FROM drama.adaptation_plans p WHERE adaptation_plan_id=$1 FOR UPDATE`,
+		"adaptation_plan": seasonPlanDraftSnapshotSQL,
 		"pacing": `SELECT (to_jsonb(p)-'id'-'created_at')||jsonb_build_object(
 			  'story_arcs',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at' ORDER BY item.ordinal)
 			    FROM drama.pacing_story_arcs item WHERE item.pacing_plan_id=p.pacing_plan_id),'[]'::jsonb),
@@ -700,14 +781,14 @@ func (s *Store) GetChangePlan(ctx context.Context, projectID, planID string) (Ch
 		target_entity_type,target_entity_id,target_version,must_preserve,allowed_fields,
 		expected_changes,affected_upstream,affected_downstream,rebuild_decision,rebuild_tasks,
 		risks,validation_rules,rollback_version,change_kind,semantic_change,locks,plan_fingerprint,
-		requested_by,confirmed_by,confirmed_at,applied_at,error_code,error_message,created_at,updated_at
+		requested_by,confirmed_by,confirmed_at,applied_at,error_code,error_message,review_metadata,created_at,updated_at
 		FROM drama.change_plans WHERE project_id=$1 AND change_plan_id=$2`,
 		projectID, planID).Scan(&item.ChangePlanID, &item.ProjectID, &item.Status, &item.Plan.UserIntent,
 		&target.EntityType, &target.EntityID, &target.Version, &mustPreserve, &allowedFieldsJSON,
 		&changesJSON, &upstreamJSON, &downstreamJSON, &rebuildJSON, &rebuildTasksJSON,
 		&risksJSON, &rulesJSON, &item.Plan.RollbackVersion, &changeKind, &semantic, &locksJSON,
 		&item.Fingerprint, &item.RequestedBy, &item.ConfirmedBy, &item.ConfirmedAt, &item.AppliedAt,
-		&item.ErrorCode, &item.ErrorMessage, &item.CreatedAt, &item.UpdatedAt)
+		&item.ErrorCode, &item.ErrorMessage, &item.ReviewMetadata, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChangePlan{}, ErrNotFound
 	}

@@ -111,6 +111,22 @@ func (h *Handler) confirmChangePlan(c *gin.Context) {
 	handleChangePlanMutation(c, result, err)
 }
 
+type rejectChangePlanRequest struct {
+	Actor  *string `json:"actor,omitempty"`
+	Reason string  `json:"reason,omitempty"`
+}
+
+func (h *Handler) rejectChangePlan(c *gin.Context) {
+	var input rejectChangePlanRequest
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		respondError(c, http.StatusBadRequest, "INVALID_REJECTION", "拒绝信息格式无效")
+		return
+	}
+	result, err := h.store.RejectChangePlan(c.Request.Context(), c.Param("projectID"),
+		c.Param("changePlanID"), input.Actor, input.Reason)
+	handleChangePlanMutation(c, result, err)
+}
+
 func (h *Handler) executeChangePlan(c *gin.Context) {
 	result, err := h.store.ExecuteChangePlan(c.Request.Context(), c.Param("projectID"), c.Param("changePlanID"))
 	handleChangePlanMutation(c, result, err)

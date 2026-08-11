@@ -74,8 +74,8 @@ func Build(base []Shot, request Request) (Preview, error) {
 }
 
 func split(base []Shot, request Request) ([]Shot, []string, []string, error) {
-	if len(request.Shots) != 2 || len(request.NewShotIDs) != 2 {
-		return nil, nil, nil, fmt.Errorf("%w: split requires exactly two shot drafts", ErrInvalidEdit)
+	if len(request.Shots) < 2 || len(request.Shots) != len(request.NewShotIDs) {
+		return nil, nil, nil, fmt.Errorf("%w: split requires at least two shot drafts and one new id per draft", ErrInvalidEdit)
 	}
 	index := shotIndex(base, request.ShotID)
 	if index < 0 {
@@ -92,15 +92,20 @@ func split(base []Shot, request Request) ([]Shot, []string, []string, error) {
 		}
 		parts[i].GenerationVersion, parts[i].Version = 1, 1
 	}
-	if math.Abs(parts[0].DurationSeconds+parts[1].DurationSeconds-source.DurationSeconds) > .011 {
+	totalDuration := 0.0
+	dialoguePartition := []string{}
+	for _, part := range parts {
+		totalDuration += part.DurationSeconds
+		dialoguePartition = append(dialoguePartition, part.DialogueIDs...)
+	}
+	if math.Abs(totalDuration-source.DurationSeconds) > .011 {
 		return nil, nil, nil, fmt.Errorf("%w: split durations must equal the source duration", ErrInvalidEdit)
 	}
-	if !sameOrderedSet(append(parts[0].DialogueIDs, parts[1].DialogueIDs...), source.DialogueIDs) ||
-		hasDuplicates(append(parts[0].DialogueIDs, parts[1].DialogueIDs...)) {
+	if !sameOrderedSet(dialoguePartition, source.DialogueIDs) || hasDuplicates(dialoguePartition) {
 		return nil, nil, nil, fmt.Errorf("%w: split dialogues must form an exact, non-overlapping partition", ErrInvalidEdit)
 	}
 	if !reflect.DeepEqual(normalizeState(parts[0].HeadState), normalizeState(source.HeadState)) ||
-		!reflect.DeepEqual(normalizeState(parts[1].TailState), normalizeState(source.TailState)) {
+		!reflect.DeepEqual(normalizeState(parts[len(parts)-1].TailState), normalizeState(source.TailState)) {
 		return nil, nil, nil, fmt.Errorf("%w: split must preserve the source head and tail state", ErrInvalidEdit)
 	}
 	result := append([]Shot{}, base[:index]...)
@@ -110,19 +115,32 @@ func split(base []Shot, request Request) ([]Shot, []string, []string, error) {
 }
 
 func merge(base []Shot, request Request) ([]Shot, []string, []string, error) {
-	if len(request.ShotIDs) != 2 || len(request.Shots) != 1 || len(request.NewShotIDs) != 1 {
-		return nil, nil, nil, fmt.Errorf("%w: merge requires two sources and one result", ErrInvalidEdit)
+	if len(request.ShotIDs) < 2 || len(request.Shots) != 1 || len(request.NewShotIDs) != 1 {
+		return nil, nil, nil, fmt.Errorf("%w: merge requires at least two sources and one result", ErrInvalidEdit)
 	}
-	leftIndex, rightIndex := shotIndex(base, request.ShotIDs[0]), shotIndex(base, request.ShotIDs[1])
-	if leftIndex < 0 || rightIndex != leftIndex+1 {
-		return nil, nil, nil, fmt.Errorf("%w: merge sources must be adjacent and ordered", ErrInvalidEdit)
+	firstIndex := shotIndex(base, request.ShotIDs[0])
+	if firstIndex < 0 {
+		return nil, nil, nil, fmt.Errorf("%w: merge source was not found", ErrInvalidEdit)
 	}
-	left, right := base[leftIndex], base[rightIndex]
-	if left.SceneID != right.SceneID || left.StoryboardID != right.StoryboardID || left.LocationID != right.LocationID {
-		return nil, nil, nil, fmt.Errorf("%w: merge sources must share storyboard, scene and location", ErrInvalidEdit)
+	sources := make([]Shot, len(request.ShotIDs))
+	for i, id := range request.ShotIDs {
+		index := shotIndex(base, id)
+		if index != firstIndex+i {
+			return nil, nil, nil, fmt.Errorf("%w: merge sources must be adjacent and ordered", ErrInvalidEdit)
+		}
+		sources[i] = base[index]
 	}
-	if left.Axis != "" && right.Axis != "" && left.Axis != right.Axis {
-		return nil, nil, nil, fmt.Errorf("%w: merge would cross the established axis", ErrInvalidEdit)
+	left, right := sources[0], sources[len(sources)-1]
+	for i, source := range sources {
+		if source.SceneID != left.SceneID || source.StoryboardID != left.StoryboardID || source.LocationID != left.LocationID {
+			return nil, nil, nil, fmt.Errorf("%w: merge sources must share storyboard, scene and location", ErrInvalidEdit)
+		}
+		if left.Axis != "" && source.Axis != "" && left.Axis != source.Axis {
+			return nil, nil, nil, fmt.Errorf("%w: merge would cross the established axis", ErrInvalidEdit)
+		}
+		if i > 0 && len(boundaryConflicts(sources[i-1], source)) > 0 {
+			return nil, nil, nil, fmt.Errorf("%w: source action/state boundary is not mergeable", ErrInvalidEdit)
+		}
 	}
 	merged := request.Shots[0]
 	inheritShot(&merged, left)
@@ -132,27 +150,30 @@ func merge(base []Shot, request Request) ([]Shot, []string, []string, error) {
 		merged.LineageRootShotID = left.ShotID
 	}
 	merged.GenerationVersion, merged.Version = 1, 1
-	if !sameSet(merged.CharacterIDs, uniqueStrings(append(copyStrings(left.CharacterIDs), right.CharacterIDs...))) {
-		return nil, nil, nil, fmt.Errorf("%w: merged character set must equal the union of both shots", ErrInvalidEdit)
+	wantCharacters, wantDialogue := []string{}, []string{}
+	totalDuration := 0.0
+	for _, source := range sources {
+		wantCharacters = append(wantCharacters, source.CharacterIDs...)
+		wantDialogue = append(wantDialogue, source.DialogueIDs...)
+		totalDuration += source.DurationSeconds
 	}
-	wantDialogue := append(copyStrings(left.DialogueIDs), right.DialogueIDs...)
+	if !sameSet(merged.CharacterIDs, uniqueStrings(wantCharacters)) {
+		return nil, nil, nil, fmt.Errorf("%w: merged character set must equal the union of all source shots", ErrInvalidEdit)
+	}
 	if !reflect.DeepEqual(merged.DialogueIDs, wantDialogue) {
 		return nil, nil, nil, fmt.Errorf("%w: merged dialogues must preserve source order", ErrInvalidEdit)
 	}
-	if merged.DurationSeconds <= 0 || merged.DurationSeconds > left.DurationSeconds+right.DurationSeconds+.011 {
+	if merged.DurationSeconds <= 0 || merged.DurationSeconds > totalDuration+.011 {
 		return nil, nil, nil, fmt.Errorf("%w: merged duration must be positive and cannot exceed source duration", ErrInvalidEdit)
 	}
 	if !reflect.DeepEqual(normalizeState(merged.HeadState), normalizeState(left.HeadState)) ||
 		!reflect.DeepEqual(normalizeState(merged.TailState), normalizeState(right.TailState)) {
 		return nil, nil, nil, fmt.Errorf("%w: merge must preserve outer head and tail state", ErrInvalidEdit)
 	}
-	if conflicts := boundaryConflicts(left, right); len(conflicts) > 0 {
-		return nil, nil, nil, fmt.Errorf("%w: source action/state boundary is not mergeable", ErrInvalidEdit)
-	}
-	result := append([]Shot{}, base[:leftIndex]...)
+	result := append([]Shot{}, base[:firstIndex]...)
 	result = append(result, merged)
-	result = append(result, base[rightIndex+1:]...)
-	return result, request.NewShotIDs, []string{left.ShotID, right.ShotID}, nil
+	result = append(result, base[firstIndex+len(sources):]...)
+	return result, request.NewShotIDs, append([]string{}, request.ShotIDs...), nil
 }
 
 func reorder(base []Shot, orderedIDs []string) ([]Shot, error) {
@@ -437,6 +458,10 @@ func diffIDs(base, next []Shot, created, retired []string) ([]string, []string, 
 }
 
 func sameShotContent(a, b Shot) bool {
+	aa, bb := []Shot{a}, []Shot{b}
+	normalizeSequence(aa)
+	normalizeSequence(bb)
+	a, b = aa[0], bb[0]
 	a.ThumbnailURL = ""
 	b.ThumbnailURL = ""
 	a.HeadFrameRef = ""
@@ -445,6 +470,8 @@ func sameShotContent(a, b Shot) bool {
 	b.TailFrameRef = ""
 	a.Version = 0
 	b.Version = 0
+	a.ShotOrder, a.ShotNumber = 0, 0
+	b.ShotOrder, b.ShotNumber = 0, 0
 	return reflect.DeepEqual(a, b)
 }
 func normalizeState(v any) any {

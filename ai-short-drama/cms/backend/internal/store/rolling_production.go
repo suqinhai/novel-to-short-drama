@@ -483,6 +483,75 @@ func publishAdaptationPlanArtifacts(
 	projectID string,
 	adaptationPlanID string,
 ) error {
+	// Publishing is the authoritative bridge from the season workbench's immutable
+	// native rows into the Effective Input Resolver artifact graph. Older projects
+	// may already have artifacts from the compiler; workbench-created versions do
+	// not, so materialize missing nodes before switching current bindings.
+	var planVersion int
+	var planHash, compilerRunID, specVersionID string
+	if err := tx.QueryRow(ctx, `SELECT version_number,content_hash,compiler_run_id,adaptation_spec_version_id
+		FROM drama.adaptation_plans WHERE project_id=$1 AND adaptation_plan_id=$2`, projectID, adaptationPlanID).
+		Scan(&planVersion, &planHash, &compilerRunID, &specVersionID); err != nil {
+		return err
+	}
+	planArtifactID, err := newPublicID("art_")
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.artifacts(
+		artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,
+		validity_status,is_current,idempotency_key,metadata)
+		SELECT $1,'adaptation_plan',$2,$3,$4,$5,'needs_review',false,$6,
+			jsonb_build_object('compiler_run_id',$7::text,'adaptation_spec_version_id',$8::text,
+				'published_by','season_workbench','provenance_complete',true)
+		WHERE NOT EXISTS(SELECT 1 FROM drama.artifacts
+			WHERE project_id=$2 AND artifact_type='adaptation_plan' AND native_entity_id=$3)`,
+		planArtifactID, projectID, adaptationPlanID, planVersion, planHash,
+		"season-workbench:adaptation-plan:"+adaptationPlanID, compilerRunID, specVersionID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT adaptation_episode_plan_id,episode_number,content_hash
+		FROM drama.adaptation_episode_plans WHERE adaptation_plan_id=$1 ORDER BY episode_number`, adaptationPlanID)
+	if err != nil {
+		return err
+	}
+	type episodeArtifactSeed struct {
+		id     string
+		number int
+		hash   string
+	}
+	seeds := []episodeArtifactSeed{}
+	for rows.Next() {
+		var seed episodeArtifactSeed
+		if err = rows.Scan(&seed.id, &seed.number, &seed.hash); err != nil {
+			rows.Close()
+			return err
+		}
+		seeds = append(seeds, seed)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, seed := range seeds {
+		episodeArtifactID, idErr := newPublicID("art_")
+		if idErr != nil {
+			return idErr
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO drama.artifacts(
+			artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,
+			validity_status,is_current,idempotency_key,metadata)
+			SELECT $1,'adaptation_episode_plan',$2,$3,$4,$5,'needs_review',false,$6,
+				jsonb_build_object('adaptation_plan_id',$7::text,'episode_number',$4::integer,
+					'published_by','season_workbench','provenance_complete',true)
+			WHERE NOT EXISTS(SELECT 1 FROM drama.artifacts
+				WHERE project_id=$2 AND artifact_type='adaptation_episode_plan' AND native_entity_id=$3)`,
+			episodeArtifactID, projectID, seed.id, seed.number, seed.hash,
+			"season-workbench:adaptation-episode-plan:"+seed.id, adaptationPlanID); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(ctx, `UPDATE drama.artifacts artifact
 		SET is_current=CASE
 				WHEN artifact.native_entity_id=$2
@@ -500,7 +569,7 @@ func publishAdaptationPlanArtifacts(
 		projectID, adaptationPlanID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE drama.artifacts artifact
+	_, err = tx.Exec(ctx, `UPDATE drama.artifacts artifact
 		SET is_current=CASE
 				WHEN selected.adaptation_episode_plan_id IS NOT NULL
 					AND artifact.validity_status IN ('valid','needs_review') THEN true

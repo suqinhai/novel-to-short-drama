@@ -98,6 +98,7 @@ func (h *Handler) Router() *gin.Engine {
 	api.POST("/projects/:projectID/change-plans", h.createChangePlan)
 	api.GET("/projects/:projectID/change-plans/:changePlanID", h.getChangePlan)
 	api.POST("/projects/:projectID/change-plans/:changePlanID/confirm", h.confirmChangePlan)
+	api.POST("/projects/:projectID/change-plans/:changePlanID/reject", h.rejectChangePlan)
 	api.POST("/projects/:projectID/change-plans/:changePlanID/execute", h.executeChangePlan)
 	api.POST("/projects/:projectID/change-plans/:changePlanID/rebuild-tasks/:rebuildTaskID/status", h.updateRebuildTaskStatus)
 	api.GET("/projects/:projectID/entity-versions", h.listEntityVersions)

@@ -63,6 +63,33 @@ test('镜头拖拽、拆分、合并和字段修改都生成 shot sequence 预�
   assert.equal(merge.operation, 'merge')
   assert.deepEqual(merge.shots[0].character_ids, ['alice', 'bob'])
   assert.deepEqual(merge.shots[0].dialogue_ids, ['d1', 'd2'])
+
+  const third = {
+    ...second, shot_id: 'shot_c', shot_order: 3, duration_seconds: 2,
+    character_ids: ['carol'], dialogue_ids: ['d3'],
+    head_state: { pose: 'end' }, tail_state: { pose: 'exit' },
+    action_phase: { start: 'end', end: 'exit' },
+  }
+  const splitThree = shotSplitRequest(workspace, first, {
+    part_count: 3,
+    first_action: 'part one', second_action: 'part two', third_action: 'part three',
+    first_duration: 1, second_duration: 1, third_duration: 2,
+    first_dialogue_ids: [], second_dialogue_ids: [], third_dialogue_ids: ['d1'],
+    bridge_state: { pose: 'bridge-1' }, second_bridge_state: { pose: 'bridge-2' },
+    bridge_phase: 'bridge-1', second_bridge_phase: 'bridge-2',
+  })
+  assert.equal(splitThree.shots.length, 3)
+  assert.deepEqual(splitThree.shots.map(item => item.duration_seconds), [1, 1, 2])
+  assert.deepEqual(splitThree.shots[1].tail_state, splitThree.shots[2].head_state)
+
+  const mergeThree = shotMergeRequest({ ...workspace, shots: [first, second, third] }, first, second, {
+    additional_shots: [third],
+  })
+  assert.deepEqual(mergeThree.shot_ids, ['shot_a', 'shot_b', 'shot_c'])
+  assert.equal(mergeThree.shots[0].duration_seconds, 9)
+  assert.deepEqual(mergeThree.shots[0].character_ids, ['alice', 'bob', 'carol'])
+  assert.deepEqual(mergeThree.shots[0].dialogue_ids, ['d1', 'd2', 'd3'])
+  assert.deepEqual(mergeThree.shots[0].tail_state, third.tail_state)
 })
 
 test('对白精确重建范围不扩散到整集', () => {

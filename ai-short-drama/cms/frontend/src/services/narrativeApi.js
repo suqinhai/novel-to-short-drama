@@ -201,6 +201,11 @@ export const narrativeApi = {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
     })
   },
+  previewSeasonPlanChange(adaptationPlanId, draft) {
+    return request(`/adaptation-plans/${id(adaptationPlanId)}/change-plan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
+    })
+  },
   createSeasonPlanVersion(adaptationPlanId, draft, idempotencyKey) {
     return command(`/adaptation-plans/${id(adaptationPlanId)}/versions`, { body: draft, idempotencyKey })
   },

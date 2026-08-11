@@ -53,7 +53,16 @@ type Request struct {
 }
 
 type Result struct {
-	Blocks []Block `json:"blocks"`
+	Blocks                   []Block          `json:"blocks"`
+	Reason                   string           `json:"reason"`
+	SourceEvidence           []SourceEvidence `json:"source_evidence"`
+	EstimatedDurationDeltaMS int              `json:"estimated_duration_delta_ms"`
+}
+
+type SourceEvidence struct {
+	SourceSpanID    string `json:"source_span_id,omitempty"`
+	EventRevisionID string `json:"event_revision_id,omitempty"`
+	Explanation     string `json:"explanation"`
 }
 
 type Rewriter interface {
@@ -88,7 +97,7 @@ func (r *HTTPRewriter) Rewrite(ctx context.Context, input Request) (Result, erro
 		return Result{}, fmt.Errorf("%w: configure LITELLM_BASE_URL and SCRIPT_WRITING_MODEL", ErrUnavailable)
 	}
 	inputJSON, _ := json.Marshal(input)
-	system := "你是结构化短剧剧本编辑器。只改写 blocks，不得新增、删除或改动 block_id；不得改写未提供内容。必须保持给定剧情事实、人物关系、时空和 must_preserve。只输出 JSON 对象 {\"blocks\":[...]}。"
+	system := "你是结构化短剧剧本编辑器。只改写 blocks，不得新增、删除或改动 block_id；不得改写未提供内容。必须保持给定剧情事实、人物关系、时空和 must_preserve。只输出 JSON 对象 {\"blocks\":[...],\"reason\":\"...\",\"source_evidence\":[{\"source_span_id\":\"...\",\"event_revision_id\":\"...\",\"explanation\":\"...\"}],\"estimated_duration_delta_ms\":0}。证据 ID 必须来自 context。"
 	user := "执行操作 " + input.Operation + "。"
 	if input.ConvertTo != "" {
 		user += " 所有块转换为 " + input.ConvertTo + "。"
@@ -190,7 +199,65 @@ func ValidateResult(input Request, result Result) error {
 		}
 		seen[block.BlockID] = true
 	}
+	if strings.TrimSpace(result.Reason) == "" {
+		return fmt.Errorf("%w: AI rewrite reason is required", ErrInvalidRequest)
+	}
+	if len(result.SourceEvidence) == 0 {
+		return fmt.Errorf("%w: AI rewrite source evidence is required", ErrInvalidRequest)
+	}
+	knownSpanIDs, knownEventIDs, contextSupplied, err := evidenceIDsFromContext(input.Context)
+	if err != nil {
+		return fmt.Errorf("%w: invalid rewrite context: %v", ErrInvalidRequest, err)
+	}
+	for _, evidence := range result.SourceEvidence {
+		spanID := strings.TrimSpace(evidence.SourceSpanID)
+		eventID := strings.TrimSpace(evidence.EventRevisionID)
+		if strings.TrimSpace(evidence.Explanation) == "" || (spanID == "" && eventID == "") {
+			return fmt.Errorf("%w: AI rewrite evidence requires an id and explanation", ErrInvalidRequest)
+		}
+		if contextSupplied && ((spanID != "" && !knownSpanIDs[spanID]) ||
+			(eventID != "" && !knownEventIDs[eventID])) {
+			return fmt.Errorf("%w: AI rewrite evidence is not present in the supplied context", ErrInvalidRequest)
+		}
+	}
 	return nil
+}
+
+func evidenceIDsFromContext(raw json.RawMessage) (map[string]bool, map[string]bool, bool, error) {
+	spanIDs := map[string]bool{}
+	eventIDs := map[string]bool{}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return spanIDs, eventIDs, false, nil
+	}
+	var reference struct {
+		Events []struct {
+			EventRevisionID string   `json:"event_revision_id"`
+			SourceSpanIDs   []string `json:"source_span_ids"`
+		} `json:"events"`
+		SourceSpans []struct {
+			SourceSpanID string `json:"source_span_id"`
+		} `json:"source_spans"`
+	}
+	if err := json.Unmarshal(trimmed, &reference); err != nil {
+		return nil, nil, true, err
+	}
+	for _, event := range reference.Events {
+		if id := strings.TrimSpace(event.EventRevisionID); id != "" {
+			eventIDs[id] = true
+		}
+		for _, sourceSpanID := range event.SourceSpanIDs {
+			if id := strings.TrimSpace(sourceSpanID); id != "" {
+				spanIDs[id] = true
+			}
+		}
+	}
+	for _, sourceSpan := range reference.SourceSpans {
+		if id := strings.TrimSpace(sourceSpan.SourceSpanID); id != "" {
+			spanIDs[id] = true
+		}
+	}
+	return spanIDs, eventIDs, true, nil
 }
 
 func completionEndpoint(base string) string {

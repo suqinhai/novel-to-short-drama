@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"short-drama-cms/backend/internal/localedit"
 )
 
 type SeasonEventCard struct {
@@ -52,7 +55,51 @@ type SeasonPlanDraft struct {
 	Episodes            []SeasonEpisodeDraft `json:"episodes"`
 	OmittedEvents       []SeasonEventCard    `json:"omitted_events"`
 	CreativeSuggestions json.RawMessage      `json:"creative_suggestions,omitempty"`
+	PreviewFingerprint  string               `json:"preview_fingerprint,omitempty"`
 }
+
+type SeasonPlanChangePreview struct {
+	ChangePlanID         string                 `json:"change_plan_id"`
+	Status               string                 `json:"status"`
+	BaseAdaptationPlanID string                 `json:"base_adaptation_plan_id"`
+	BaseVersion          int                    `json:"base_version"`
+	BaseContentHash      string                 `json:"base_content_hash"`
+	PreviewFingerprint   string                 `json:"preview_fingerprint"`
+	Diff                 []map[string]any       `json:"diff"`
+	StaleScope           []map[string]any       `json:"stale_scope"`
+	Validation           SeasonValidationResult `json:"validation"`
+}
+
+const seasonPlanDraftSnapshotSQL = `SELECT jsonb_build_object(
+	'schema_version',COALESCE(NULLIF(plan.workbench_snapshot->>'schema_version',''),'season-plan-draft.v1'),
+	'plan_name',plan.plan_name,'strategy_label',plan.strategy_label,
+	'episodes',CASE WHEN jsonb_typeof(plan.workbench_snapshot->'episodes')='array'
+		AND jsonb_array_length(plan.workbench_snapshot->'episodes')>0
+		THEN plan.workbench_snapshot->'episodes'
+		ELSE COALESCE((SELECT jsonb_agg(jsonb_build_object(
+			'episode_number',episode.episode_number,'title',episode.title,'logline',episode.logline,
+			'three_second_opening',episode.three_second_opening,
+			'first_thirty_seconds_goal',episode.first_thirty_seconds_goal,
+			'core_conflict',episode.core_conflict,'climax',episode.climax,'ending_hook',episode.ending_hook,
+			'emotion_curve',episode.emotion_curve,'information_reveal_amount',episode.information_reveal_amount,
+			'estimated_duration_seconds',episode.estimated_duration_seconds,
+			'continuity_in',episode.continuity_in,'continuity_out',episode.continuity_out,
+			'events',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+				'card_id','card_'||assignment.episode_event_assignment_id,
+				'presentation_mode',assignment.usage_mode,
+				'source_event_ids',jsonb_build_array(assignment.event_revision_id),
+				'summary',event.summary,'rationale','',
+				'merge_group_id',COALESCE(assignment.merge_group_id,''),'importance',event.importance)
+				ORDER BY assignment.sequence_number)
+				FROM drama.episode_event_assignments assignment
+				JOIN drama.narrative_event_revisions event USING(event_revision_id)
+				WHERE assignment.adaptation_episode_plan_id=episode.adaptation_episode_plan_id),'[]'::jsonb)
+		) ORDER BY episode.episode_number)
+		FROM drama.adaptation_episode_plans episode
+		WHERE episode.adaptation_plan_id=plan.adaptation_plan_id),'[]'::jsonb) END,
+	'omitted_events',COALESCE(plan.workbench_snapshot->'omitted_events','[]'::jsonb),
+	'creative_suggestions',COALESCE(plan.creative_suggestions,'[]'::jsonb)
+) FROM drama.adaptation_plans plan WHERE plan.adaptation_plan_id=$1`
 
 type SeasonDiagnostic struct {
 	Severity   string         `json:"severity"`
@@ -571,10 +618,27 @@ func (s *Store) ListSeasonPlans(ctx context.Context, projectID string) ([]Season
 }
 
 func (s *Store) CreateSeasonPlanVersion(ctx context.Context, basePlanID, key string, draft SeasonPlanDraft) (json.RawMessage, string, error) {
+	key = strings.TrimSpace(key)
+	if key != "" {
+		var replayID string
+		err := s.pool.QueryRow(ctx, `SELECT adaptation_plan_id FROM drama.adaptation_plans
+			WHERE save_idempotency_key=$1`, key).Scan(&replayID)
+		if err == nil {
+			return s.GetAdaptationPlan(ctx, replayID)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", err
+		}
+	}
+	previewFingerprint := strings.TrimSpace(draft.PreviewFingerprint)
+	if previewFingerprint == "" {
+		return nil, "", fmt.Errorf("%w: a persisted season change plan must be confirmed", ErrConflict)
+	}
 	validation, err := s.ValidateSeasonPlanDraft(ctx, basePlanID, draft)
 	if err != nil {
 		return nil, "", err
 	}
+	draft.PreviewFingerprint = ""
 	snapshot, err := json.Marshal(draft)
 	if err != nil {
 		return nil, "", err
@@ -588,19 +652,11 @@ func (s *Store) CreateSeasonPlanVersion(ctx context.Context, basePlanID, key str
 		return nil, "", err
 	}
 	defer tx.Rollback(ctx)
-	var replayID string
-	err = tx.QueryRow(ctx, `SELECT adaptation_plan_id FROM drama.adaptation_plans WHERE save_idempotency_key=$1`, key).Scan(&replayID)
-	if err == nil {
-		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return nil, "", commitErr
-		}
-		return s.GetAdaptationPlan(ctx, replayID)
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, "", err
-	}
-	var projectID, compilerRunID, specVersionID string
-	err = tx.QueryRow(ctx, `SELECT project_id,compiler_run_id,adaptation_spec_version_id FROM drama.adaptation_plans WHERE adaptation_plan_id=$1 FOR SHARE`, basePlanID).Scan(&projectID, &compilerRunID, &specVersionID)
+	var projectID, compilerRunID, specVersionID, baseHash string
+	var baseVersion int
+	err = tx.QueryRow(ctx, `SELECT project_id,compiler_run_id,adaptation_spec_version_id,version_number,content_hash
+		FROM drama.adaptation_plans WHERE adaptation_plan_id=$1 FOR SHARE`, basePlanID).
+		Scan(&projectID, &compilerRunID, &specVersionID, &baseVersion, &baseHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", ErrNotFound
 	}
@@ -610,14 +666,63 @@ func (s *Store) CreateSeasonPlanVersion(ctx context.Context, basePlanID, key str
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, projectID); err != nil {
 		return nil, "", err
 	}
+	var latestVersion int
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(version_number),0) FROM drama.adaptation_plans WHERE project_id=$1`, projectID).Scan(&latestVersion); err != nil {
+		return nil, "", err
+	}
+	if baseVersion != latestVersion {
+		return nil, "", fmt.Errorf("%w: adaptation plan base version %d is stale; current latest version is %d", ErrConflict, baseVersion, latestVersion)
+	}
+	var changePlanID, changePlanStatus string
+	var reviewMetadata json.RawMessage
+	err = tx.QueryRow(ctx, `SELECT change_plan_id,status,review_metadata
+		FROM drama.change_plans
+		WHERE project_id=$1 AND target_entity_type='adaptation_plan'
+		  AND target_entity_id=$2 AND target_version=$3
+		  AND review_metadata->>'preview_fingerprint'=$4
+		ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+		projectID, basePlanID, baseVersion, previewFingerprint).
+		Scan(&changePlanID, &changePlanStatus, &reviewMetadata)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", fmt.Errorf("%w: season change plan was not found; preview again", ErrConflict)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if changePlanStatus != "validated" {
+		return nil, "", fmt.Errorf("%w: season change plan is %s", ErrConflict, changePlanStatus)
+	}
+	var review struct {
+		BaseContentHash string          `json:"base_content_hash"`
+		SeasonDraft     SeasonPlanDraft `json:"season_draft"`
+	}
+	if err = json.Unmarshal(reviewMetadata, &review); err != nil || review.BaseContentHash != baseHash {
+		return nil, "", fmt.Errorf("%w: season change plan provenance no longer matches its base", ErrConflict)
+	}
+	review.SeasonDraft.PreviewFingerprint = ""
+	if !reflect.DeepEqual(normalizeJSONValue(review.SeasonDraft), normalizeJSONValue(draft)) {
+		return nil, "", fmt.Errorf("%w: submitted season draft differs from the reviewed change plan", ErrConflict)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.change_plans
+		SET status='executing',confirmed_by='season-workbench',confirmed_at=now()
+		WHERE change_plan_id=$1`, changePlanID); err != nil {
+		return nil, "", err
+	}
+	confirmedEventID, err := newPublicID("cpe_")
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(
+		change_plan_event_id,change_plan_id,event_type,actor,details)
+		VALUES($1,$2,'confirmed','season-workbench',jsonb_build_object('preview_fingerprint',$3::text))`,
+		confirmedEventID, changePlanID, previewFingerprint); err != nil {
+		return nil, "", err
+	}
 	planID, err := newPublicID("ap_")
 	if err != nil {
 		return nil, "", err
 	}
-	var version int
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(max(version_number),0)+1 FROM drama.adaptation_plans WHERE project_id=$1`, projectID).Scan(&version); err != nil {
-		return nil, "", err
-	}
+	version := latestVersion + 1
 	creative := draft.CreativeSuggestions
 	if len(creative) == 0 {
 		creative = json.RawMessage(`[]`)
@@ -635,9 +740,9 @@ func (s *Store) CreateSeasonPlanVersion(ctx context.Context, basePlanID, key str
 	_, err = tx.Exec(ctx, `INSERT INTO drama.adaptation_plans(adaptation_plan_id,compiler_run_id,project_id,adaptation_spec_version_id,
 		version_number,status,is_current,content_hash,quality_report,parent_adaptation_plan_id,plan_name,strategy_label,
 		workbench_snapshot,creative_suggestions,save_idempotency_key)
-		VALUES($1,$2,$3,$4,$5,'draft',false,$6,jsonb_build_object('validation',$7::jsonb,'diagnostics',$8::jsonb->'diagnostics','workbench_validation',$8::jsonb),$9,$10,$11,$12::jsonb,$13::jsonb,$14)`,
+		VALUES($1,$2,$3,$4,$5,'draft',false,$6,jsonb_build_object('validation',$7::jsonb,'diagnostics',$8::jsonb->'diagnostics','workbench_validation',$8::jsonb,'change_plan_id',$15::text),$9,$10,$11,$12::jsonb,$13::jsonb,$14)`,
 		planID, compilerRunID, projectID, specVersionID, version, contentHash, compilerValidationJSON, validationJSON, basePlanID,
-		strings.TrimSpace(draft.PlanName), strings.TrimSpace(draft.StrategyLabel), snapshot, creative, key)
+		strings.TrimSpace(draft.PlanName), strings.TrimSpace(draft.StrategyLabel), snapshot, creative, key, changePlanID)
 	if err != nil {
 		return nil, "", mapPGConflict(err)
 	}
@@ -751,10 +856,136 @@ func (s *Store) CreateSeasonPlanVersion(ctx context.Context, basePlanID, key str
 	if _, err = tx.Exec(ctx, `UPDATE drama.adaptation_plans SET status='waiting_review',updated_at=CURRENT_TIMESTAMP WHERE adaptation_plan_id=$1`, planID); err != nil {
 		return nil, "", err
 	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.change_plans
+		SET status='applied',applied_at=now(),
+			review_metadata=review_metadata||jsonb_build_object('result_adaptation_plan_id',$2::text)
+		WHERE change_plan_id=$1`, changePlanID, planID); err != nil {
+		return nil, "", err
+	}
+	appliedEventID, err := newPublicID("cpe_")
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.change_plan_events(
+		change_plan_event_id,change_plan_id,event_type,actor,details)
+		VALUES($1,$2,'applied','season-workbench',jsonb_build_object('adaptation_plan_id',$3::text))`,
+		appliedEventID, changePlanID, planID); err != nil {
+		return nil, "", err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, "", err
 	}
 	return s.GetAdaptationPlan(ctx, planID)
+}
+
+func (s *Store) PreviewSeasonPlanChange(
+	ctx context.Context, basePlanID string, draft SeasonPlanDraft,
+) (SeasonPlanChangePreview, error) {
+	validation, err := s.ValidateSeasonPlanDraft(ctx, basePlanID, draft)
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	var projectID, baseHash string
+	var baseVersion, latestVersion int
+	var baseSnapshot json.RawMessage
+	err = s.pool.QueryRow(ctx, `SELECT base.project_id,base.version_number,base.content_hash,
+		(SELECT max(version_number) FROM drama.adaptation_plans
+		WHERE project_id=base.project_id)
+		FROM drama.adaptation_plans base WHERE base.adaptation_plan_id=$1`, basePlanID).
+		Scan(&projectID, &baseVersion, &baseHash, &latestVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SeasonPlanChangePreview{}, ErrNotFound
+	}
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	if baseVersion != latestVersion {
+		return SeasonPlanChangePreview{}, fmt.Errorf("%w: adaptation plan base version %d is stale; current latest version is %d", ErrConflict, baseVersion, latestVersion)
+	}
+	if err = s.pool.QueryRow(ctx, seasonPlanDraftSnapshotSQL, basePlanID).Scan(&baseSnapshot); err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	draft.PreviewFingerprint = ""
+	fingerprint, err := hashJSON(map[string]any{
+		"base_adaptation_plan_id": basePlanID, "base_version": baseVersion,
+		"base_content_hash": baseHash, "draft": draft,
+	})
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	var before map[string]any
+	var after map[string]any
+	_ = json.Unmarshal(baseSnapshot, &before)
+	afterRaw, _ := json.Marshal(draft)
+	_ = json.Unmarshal(afterRaw, &after)
+	diff := []map[string]any{}
+	for _, field := range []string{"plan_name", "strategy_label", "episodes", "omitted_events", "creative_suggestions"} {
+		if !reflect.DeepEqual(normalizeJSONValue(before[field]), normalizeJSONValue(after[field])) {
+			diff = append(diff, map[string]any{"field": field, "before": before[field], "after": after[field]})
+		}
+	}
+	stale := []map[string]any{}
+	rows, queryErr := s.pool.Query(ctx, `WITH RECURSIVE walk AS (
+		SELECT artifact.artifact_id,artifact.artifact_type,artifact.native_entity_id,0 depth
+		FROM drama.artifacts artifact WHERE artifact.project_id=$1
+		  AND artifact.artifact_type='adaptation_plan' AND artifact.native_entity_id=$2 AND artifact.is_current
+		UNION ALL
+		SELECT child.artifact_id,child.artifact_type,child.native_entity_id,walk.depth+1
+		FROM walk JOIN drama.artifact_dependencies dependency ON dependency.upstream_artifact_id=walk.artifact_id
+		JOIN drama.artifacts child ON child.artifact_id=dependency.downstream_artifact_id AND child.is_current)
+		SELECT DISTINCT artifact_id,artifact_type,native_entity_id,depth FROM walk WHERE depth>0
+		ORDER BY depth,artifact_type,artifact_id`, projectID, basePlanID)
+	if queryErr != nil {
+		return SeasonPlanChangePreview{}, queryErr
+	}
+	for rows.Next() {
+		var id, kind, native string
+		var depth int
+		if err = rows.Scan(&id, &kind, &native, &depth); err != nil {
+			rows.Close()
+			return SeasonPlanChangePreview{}, err
+		}
+		stale = append(stale, map[string]any{"artifact_id": id, "artifact_type": kind,
+			"native_entity_id": native, "depth": depth, "after_status": "stale"})
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	changes := make([]localedit.Change, 0, len(diff))
+	allowedFields := make([]string, 0, len(diff))
+	for _, item := range diff {
+		field := fmt.Sprint(item["field"])
+		changes = append(changes, localedit.Change{Operation: "replace", Field: field, Value: item["after"]})
+		allowedFields = append(allowedFields, field)
+	}
+	plan, err := localedit.Build(localedit.Request{
+		Instruction: "确认整季策划变更并创建不可变 adaptation plan successor",
+		Target: localedit.Target{EntityType: "adaptation_plan", EntityID: basePlanID,
+			Version: baseVersion},
+		Changes: changes, AllowedFields: allowedFields,
+		MustPreserve: []string{"source_event_ids", "causal_order", "provenance", "approved current until confirmation"},
+		Locks:        []string{"source_event_ids", "causal_order", "provenance"},
+	})
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	changePlan, err := s.CreateChangePlan(ctx, projectID, plan, nil)
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	reviewMetadata, _ := json.Marshal(map[string]any{
+		"preview_fingerprint": fingerprint, "base_content_hash": baseHash,
+		"season_draft": draft, "validation": validation, "stale_scope": stale,
+	})
+	changePlan, err = s.SetChangePlanReviewMetadata(ctx, projectID, changePlan.ChangePlanID, reviewMetadata)
+	if err != nil {
+		return SeasonPlanChangePreview{}, err
+	}
+	return SeasonPlanChangePreview{ChangePlanID: changePlan.ChangePlanID, Status: changePlan.Status,
+		BaseAdaptationPlanID: basePlanID, BaseVersion: baseVersion,
+		BaseContentHash: baseHash, PreviewFingerprint: fingerprint, Diff: diff,
+		StaleScope: stale, Validation: validation}, nil
 }
 
 func seasonUniqueStrings(values []string) []string {

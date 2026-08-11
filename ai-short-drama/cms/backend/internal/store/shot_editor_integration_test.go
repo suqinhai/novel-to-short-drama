@@ -21,6 +21,7 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	ctx = withShotEditorResolverBypass(ctx)
 	database, err := New(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +79,14 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 		}
 		if len(plan.ContinuityConflicts) == 0 {
 			t.Fatal("reorder preview did not expose head/tail conflict")
+		}
+		if len(plan.Impact.ChangedShotIDs) != 0 || len(plan.Impact.StaleArtifacts) != 0 {
+			t.Fatalf("order-only edit incorrectly invalidated shot media: %#v", plan.Impact)
+		}
+		for _, task := range plan.Impact.RebuildTasks {
+			if task["action"] == "regenerate_image" || task["action"] == "regenerate_video" {
+				t.Fatalf("order-only edit scheduled media regeneration: %#v", plan.Impact.RebuildTasks)
+			}
 		}
 		if _, err = database.ConfirmShotEditPlan(ctx, projectID, episodeID, plan.ShotEditPlanID, nil); !errors.Is(err, ErrConflict) {
 			t.Fatalf("conflicting plan confirmation should fail: %v", err)
@@ -209,14 +218,20 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 			t.Fatal(readErr)
 		}
 		source := current[0]
-		first, second := source, source
-		first.DurationSeconds, second.DurationSeconds = source.DurationSeconds/2, source.DurationSeconds-source.DurationSeconds/2
-		first.ActionDescription, second.ActionDescription = "Alice grips the letter", "Alice completes the lift"
-		bridge := map[string]any{"pose": "letter quarter raised", "gaze": "bob"}
-		first.TailState, second.HeadState = bridge, bridge
-		first.ActionPhase = map[string]any{"start": "raise/start", "end": "raise/bridge"}
-		second.ActionPhase = map[string]any{"start": "raise/bridge", "end": "raise/middle"}
-		splitPlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationSplit, BaseSequenceVersion: version, ShotID: source.ShotID, Shots: []shoteditor.Shot{first, second}})
+		first, second, third := source, source, source
+		first.DurationSeconds = source.DurationSeconds / 3
+		second.DurationSeconds = source.DurationSeconds / 3
+		third.DurationSeconds = source.DurationSeconds - first.DurationSeconds - second.DurationSeconds
+		first.ActionDescription, second.ActionDescription, third.ActionDescription =
+			"Alice grips the letter", "Alice raises the letter", "Alice completes the lift"
+		bridgeOne := map[string]any{"pose": "letter quarter raised", "gaze": "bob"}
+		bridgeTwo := map[string]any{"pose": "letter three quarters raised", "gaze": "bob"}
+		first.TailState, second.HeadState = bridgeOne, bridgeOne
+		second.TailState, third.HeadState = bridgeTwo, bridgeTwo
+		first.ActionPhase = map[string]any{"start": "raise/start", "end": "raise/bridge-1"}
+		second.ActionPhase = map[string]any{"start": "raise/bridge-1", "end": "raise/bridge-2"}
+		third.ActionPhase = map[string]any{"start": "raise/bridge-2", "end": "raise/middle"}
+		splitPlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationSplit, BaseSequenceVersion: version, ShotID: source.ShotID, Shots: []shoteditor.Shot{first, second, third}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +243,7 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		created := splitPlan.Impact.CreatedShotIDs
-		if len(created) != 2 {
+		if len(created) != 3 {
 			t.Fatalf("split created ids=%v", created)
 		}
 		var sourceCurrent bool
@@ -256,15 +271,15 @@ func TestAtomicMultiShotEditorIntegration(t *testing.T) {
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
-		left, right := afterSplit[0], afterSplit[1]
+		left, middle, right := afterSplit[0], afterSplit[1], afterSplit[2]
 		merged := left
-		merged.DurationSeconds = left.DurationSeconds + right.DurationSeconds
+		merged.DurationSeconds = left.DurationSeconds + middle.DurationSeconds + right.DurationSeconds
 		merged.ActionDescription = "Alice lifts the letter in one continuous action"
-		merged.CharacterIDs = uniqueVersionedEntityIDs(append(append([]string{}, left.CharacterIDs...), right.CharacterIDs...))
-		merged.DialogueIDs = append(append([]string{}, left.DialogueIDs...), right.DialogueIDs...)
+		merged.CharacterIDs = uniqueVersionedEntityIDs(append(append(append([]string{}, left.CharacterIDs...), middle.CharacterIDs...), right.CharacterIDs...))
+		merged.DialogueIDs = append(append(append([]string{}, left.DialogueIDs...), middle.DialogueIDs...), right.DialogueIDs...)
 		merged.HeadState, merged.TailState = left.HeadState, right.TailState
 		merged.ActionPhase = map[string]any{"start": left.ActionPhase["start"], "end": right.ActionPhase["end"]}
-		mergePlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationMerge, BaseSequenceVersion: splitVersion, ShotIDs: []string{left.ShotID, right.ShotID}, Shots: []shoteditor.Shot{merged}})
+		mergePlan, err := database.CreateShotEditPlan(ctx, projectID, episodeID, shoteditor.Request{Operation: shoteditor.OperationMerge, BaseSequenceVersion: splitVersion, ShotIDs: []string{left.ShotID, middle.ShotID, right.ShotID}, Shots: []shoteditor.Shot{merged}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -354,4 +369,25 @@ func safeSQLIdentifier(value string) bool {
 		}
 	}
 	return value != ""
+}
+
+func TestResolvedShotEditorPayloadUsesFrozenResolverData(t *testing.T) {
+	metadata := map[string]interface{}{
+		"production_snapshot": json.RawMessage(`{
+			"state":"resolved",
+			"payload":{
+				"shots":[{"shot_id":"shot-resolved","storyboard_id":"board-1","episode_id":"episode-1","scene_id":"scene-1","shot_order":1,"shot_number":1,"duration_seconds":2,"generation_version":3}],
+				"dialogues":[{"dialogue_id":"dialogue-resolved","estimated_duration_ms":1250}]
+			}
+		}`),
+	}
+	shots, durations, authoritative, err := resolvedShotEditorPayload(metadata)
+	if err != nil || !authoritative || len(shots) != 1 || shots[0].ShotID != "shot-resolved" ||
+		durations["dialogue-resolved"] != 1250 {
+		t.Fatalf("frozen Resolver payload was not consumed: shots=%#v durations=%#v authoritative=%t err=%v",
+			shots, durations, authoritative, err)
+	}
+	if _, _, _, err = resolvedShotEditorPayload(map[string]interface{}{}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing Resolver payload was not blocked: %v", err)
+	}
 }

@@ -113,7 +113,8 @@ var allowedFields = map[string]map[string]bool{
 		"story_arc_revision_ids": true, "rules": true,
 	},
 	"adaptation_plan": {
-		"quality_report": true,
+		"quality_report": true, "plan_name": true, "strategy_label": true,
+		"episodes": true, "omitted_events": true, "creative_suggestions": true,
 	},
 	"pacing": {
 		"total_duration_seconds": true, "story_arcs": true, "episodes": true, "beats": true,

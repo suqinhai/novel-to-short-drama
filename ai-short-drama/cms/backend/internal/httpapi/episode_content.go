@@ -122,6 +122,20 @@ func (h *Handler) createEpisodeContentAIChangePlan(c *gin.Context) {
 		handleEpisodeContentPlanError(c, err)
 		return
 	}
+	reviewMetadata, _ := json.Marshal(map[string]any{
+		"candidate_type":              "script_ai_rewrite",
+		"original_blocks":             blocks,
+		"new_blocks":                  result.Blocks,
+		"reason":                      result.Reason,
+		"source_evidence":             result.SourceEvidence,
+		"estimated_duration_delta_ms": result.EstimatedDurationDeltaMS,
+	})
+	resultPlan, err = h.store.SetChangePlanReviewMetadata(c.Request.Context(),
+		c.Param("projectID"), resultPlan.ChangePlanID, reviewMetadata)
+	if err != nil {
+		handleEpisodeContentPlanError(c, err)
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": resultPlan})
 }
 
