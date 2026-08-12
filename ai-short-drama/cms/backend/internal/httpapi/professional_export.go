@@ -98,6 +98,10 @@ func (h *Handler) downloadProfessionalExport(c *gin.Context) {
 		respondError(c, http.StatusConflict, "EXPORT_NOT_READY", "export package is not ready")
 		return
 	}
+	if err = h.store.ValidateProfessionalExportReady(c.Request.Context(), c.Param("projectID"), c.Param("exportID")); err != nil {
+		writeProfessionalExportError(c, err)
+		return
+	}
 	storageRoot, err := filepath.Abs(h.config.StorageDirectory)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "EXPORT_PATH_INVALID", err.Error())

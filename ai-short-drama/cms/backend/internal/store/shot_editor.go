@@ -1227,8 +1227,13 @@ func (s *Store) UpdateShotEditRebuildTaskStatus(
 	if len(output) == 0 {
 		output = json.RawMessage(`{}`)
 	}
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return IncrementalRebuild{}, err
+	}
+	defer tx.Rollback(ctx)
 	var task IncrementalRebuild
-	err := s.writer.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
+	err = tx.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
 		status=$5,output=$6::jsonb,error_code=$7,error_message=$8,
 		completed_at=CASE WHEN $5 IN('succeeded','failed','cancelled') THEN now() ELSE NULL END
 		FROM drama.shot_edit_plans plan
@@ -1246,7 +1251,18 @@ func (s *Store) UpdateShotEditRebuildTaskStatus(
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IncrementalRebuild{}, ErrConflict
 	}
-	return task, err
+	if err != nil {
+		return IncrementalRebuild{}, err
+	}
+	if status == "succeeded" {
+		if err = publishRebuildArtifactSuccessor(ctx, tx, task, output); err != nil {
+			return IncrementalRebuild{}, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return IncrementalRebuild{}, err
+	}
+	return task, nil
 }
 
 func shotNullableString(value string) any {

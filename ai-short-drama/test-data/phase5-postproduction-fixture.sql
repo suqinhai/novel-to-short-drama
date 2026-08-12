@@ -168,6 +168,16 @@ INSERT INTO drama.candidate_selections(
   '{"causality":true,"duration":true,"character_state":true,"foreshadowing":true,"continuity":true}',
   'phase5-fixture','phase5:selection:1'
 );
+INSERT INTO drama.candidate_hard_rule_results(
+  candidate_hard_rule_result_id,candidate_selection_id,rule_name,passed,message
+)
+SELECT 'hard_rule_phase5_'||rule_name,'selection_phase5_1',rule_name,true,'fixture pass'
+FROM unnest(ARRAY['causality','duration','character_state','foreshadowing','continuity']) rule_name;
+INSERT INTO drama.artifact_current_bindings(
+  artifact_current_binding_id,project_id,target_type,target_id,component_scope,current_artifact_id
+) VALUES(
+  'binding_phase5_candidate','p_phase1_legacy','episode','ep_phase1_legacy_001','whole','artifact_phase5_selection'
+);
 
 INSERT INTO drama.episode_scripts(
   script_id,project_id,season_id,episode_id,version,title,opening_hook,scenes,
@@ -408,6 +418,14 @@ INSERT INTO drama.episode_audio_plans(
 ) VALUES(
   'audio_plan_phase5','p_phase1_legacy','ep_phase1_legacy_001','script_phase5_post',1,
   '["audio_phase5_1","audio_phase5_2"]','[]','[]','[]',8000,'completed','approved'
+);
+
+INSERT INTO drama.editing_template_bindings(
+  editing_template_binding_id,project_id,episode_id,editing_template_version_id,version,
+  override_config,is_current,change_reason,created_by
+) VALUES(
+  'template_binding_phase5','p_phase1_legacy','ep_phase1_legacy_001',
+  'etv_system_suspense_v1',1,'{}',true,'phase5 fixture current binding','phase5-fixture'
 );
 
 INSERT INTO drama.edit_timelines(

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  NLE_TRACKS, activeItemsAt, formatNLETimecode, gesturePatch, renderOutcome,
+  NLE_TRACKS, activeItemsAt, formatNLETimecode, gesturePatch, moveTrack, orderedNLETracks, renderOutcome,
   snapTimeMS, stepPlayhead, subtitlePreviewConfig, visibleTimelineWindow,
 } from '../src/services/timelineNle.js'
 
@@ -12,6 +12,15 @@ test('NLE exposes the seven required fixed tracks and unified millisecond timeco
   assert.equal(formatNLETimecode(62345), '01:02.345')
   assert.equal(stepPlayhead(1000, 1, 'frame', 25), 1040)
   assert.equal(stepPlayhead(1000, -1, '100ms', 25), 900)
+})
+
+test('track order is versionable and move operations preserve every lane', () => {
+  const partial = orderedNLETracks(['subtitle', 'video']).map(item => item.type)
+  assert.deepEqual(partial.slice(0, 2), ['subtitle', 'video'])
+  assert.equal(new Set(partial).size, NLE_TRACKS.length)
+  const moved = moveTrack(partial, 'video', -1)
+  assert.deepEqual(moved.slice(0, 2), ['video', 'subtitle'])
+  assert.deepEqual(new Set(moved), new Set(NLE_TRACKS.map(item => item.type)))
 })
 
 test('move and trims snap in milliseconds while keeping independent source handles', () => {

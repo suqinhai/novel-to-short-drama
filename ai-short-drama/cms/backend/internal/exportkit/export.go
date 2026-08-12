@@ -258,7 +258,7 @@ func buildFountain(snapshot Snapshot) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "Title: %s\nEpisode: %d\nDraft date: %s\n\n", snapshot.ScriptTitle, snapshot.EpisodeNumber, snapshot.CreatedAt.Format("2006-01-02"))
 	for _, scene := range snapshot.Scenes {
-		heading := strings.ToUpper(strings.TrimSpace(scene.InteriorExterior + ". " + scene.Location + " - " + scene.TimeOfDay))
+		heading := strings.ToUpper(strings.TrimSpace(fountainScenePrefix(scene.InteriorExterior) + " " + scene.Location + " - " + scene.TimeOfDay))
 		if heading == ".  -" {
 			heading = "INT. 未指定地点 - 未指定时间"
 		}
@@ -281,6 +281,26 @@ func buildFountain(snapshot Snapshot) string {
 		}
 	}
 	return output.String()
+}
+
+func fountainScenePrefix(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "内", "內", "内景", "內景", "INT", "INT.", "INTERIOR":
+		return "INT."
+	case "外", "外景", "EXT", "EXT.", "EXTERIOR":
+		return "EXT."
+	case "内外", "內外", "内/外", "內/外", "INT/EXT", "INT./EXT.", "INT/EXT.":
+		return "INT./EXT."
+	default:
+		if strings.HasPrefix(normalized, "INT.") || strings.HasPrefix(normalized, "EXT.") {
+			return normalized
+		}
+		if normalized == "" {
+			return "."
+		}
+		return "." + strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(value), "."), "。")
+	}
 }
 
 func buildDOCX(snapshot Snapshot) ([]byte, error) {

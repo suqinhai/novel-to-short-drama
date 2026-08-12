@@ -8,6 +8,26 @@ export const NLE_TRACKS = [
   { type: 'subtitle', label: '字幕', kind: 'subtitle' },
 ]
 
+export function orderedNLETracks(order = []) {
+  const known = new Map(NLE_TRACKS.map(track => [track.type, track]))
+  const result = []
+  for (const type of Array.isArray(order) ? order : []) {
+    if (known.has(type) && !result.some(item => item.type === type)) result.push(known.get(type))
+  }
+  for (const track of NLE_TRACKS) if (!result.some(item => item.type === track.type)) result.push(track)
+  return result
+}
+
+export function moveTrack(order = [], type, direction) {
+  const result = orderedNLETracks(order).map(track => track.type)
+  const index = result.indexOf(type)
+  const target = Math.max(0, Math.min(result.length - 1, index + Math.sign(direction || 0)))
+  if (index < 0 || target === index) return result
+  const [item] = result.splice(index, 1)
+  result.splice(target, 0, item)
+  return result
+}
+
 export function integerMS(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? Math.max(0, Math.round(number)) : fallback

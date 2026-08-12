@@ -58,7 +58,8 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 			t.Fatal(restoreErr)
 		}
 		if staleErr == nil || (!strings.Contains(staleErr.Error(), "stale or unapproved media") &&
-			!strings.Contains(staleErr.Error(), "authoritative production snapshot is unavailable")) {
+			!strings.Contains(staleErr.Error(), "authoritative production snapshot is unavailable") &&
+			!strings.Contains(staleErr.Error(), "EFFECTIVE_INPUTS_BLOCKED")) {
 			t.Fatalf("stale timeline media entered authoritative QA snapshot: %v", staleErr)
 		}
 		if _, updateErr := database.writer.Exec(ctx, `UPDATE drama.episode_masters SET is_current=false WHERE master_id='master_phase5_v1'`); updateErr != nil {
@@ -222,6 +223,22 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 	})
 
 	t.Run("all professional formats build and round-trip from current versions", func(t *testing.T) {
+		masterGate, gateErr := database.RunAuthoritativeQualityGate(ctx, projectID, episodeID,
+			"master_phase5_v1", qualitygate.DefaultConfig(), false, "acceptance-export-gate")
+		if gateErr != nil {
+			t.Fatal(gateErr)
+		}
+		for _, finding := range masterGate.Findings {
+			if finding.Severity == qualitygate.SeverityBlocking && finding.Status == qualitygate.FindingOpen {
+				if _, gateErr = database.OverrideQualityGateFinding(ctx, projectID, episodeID, masterGate.GateRunID,
+					finding.FindingID, "acceptance fixture risk reviewed for export", "acceptance-owner"); gateErr != nil {
+					t.Fatal(gateErr)
+				}
+			}
+		}
+		if _, gateErr = database.ApproveQualityGateMaster(ctx, projectID, episodeID, masterGate.GateRunID, "acceptance-owner"); gateErr != nil {
+			t.Fatal(gateErr)
+		}
 		selection := ProfessionalExportSelection{EpisodeID: episodeID, BundleVersion: 31,
 			ScriptID: "script_phase5_post", StoryboardID: "storyboard_phase5_post", TimelineID: "timeline_phase5_v1",
 			MasterID: "master_phase5_v1", StoryBibleID: "sb_phase1_legacy",
@@ -231,7 +248,8 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 		staleSelection.BundleVersion = 32
 		staleSelection.TimelineID = legalDraftID
 		if _, staleErr := database.CreateProfessionalExport(ctx, projectID, CreateProfessionalExportInput{
-			Formats: append([]string(nil), exportkit.Formats...), Selection: staleSelection, RequestedBy: "acceptance"}); staleErr == nil || !strings.Contains(staleErr.Error(), "EXPORT_STALE_BLOCKED") {
+			Formats: append([]string(nil), exportkit.Formats...), Selection: staleSelection, RequestedBy: "acceptance"}); staleErr == nil ||
+			(!strings.Contains(staleErr.Error(), "EXPORT_STALE_BLOCKED") && !strings.Contains(staleErr.Error(), "EXPORT_VERSION_MISMATCH")) {
 			t.Fatalf("stale timeline/master selection was accepted: %v", staleErr)
 		}
 		job, createErr := database.CreateProfessionalExport(ctx, projectID, CreateProfessionalExportInput{
@@ -257,6 +275,35 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 		if completeErr != nil || ready.Status != "ready" {
 			t.Fatalf("export did not become ready: %#v err=%v", ready, completeErr)
 		}
+		if _, invalidateErr := database.writer.Exec(ctx, `UPDATE drama.artifacts
+			SET validity_status='stale',is_current=false WHERE artifact_id='artifact_phase5_timeline'`); invalidateErr != nil {
+			t.Fatal(invalidateErr)
+		}
+		defer func() {
+			_, _ = database.writer.Exec(ctx, `UPDATE drama.artifacts
+				SET validity_status='valid',is_current=true WHERE artifact_id='artifact_phase5_timeline'`)
+		}()
+		var exportStatus, approvalStatus string
+		if queryErr := database.pool.QueryRow(ctx, `SELECT job.status,approval.status
+			FROM drama.professional_export_jobs job
+			JOIN drama.quality_gate_master_approvals approval ON approval.gate_approval_id=job.gate_approval_id
+			WHERE job.export_id=$1`, job.ExportID).Scan(&exportStatus, &approvalStatus); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if exportStatus != "stale" || approvalStatus != "revoked" {
+			t.Fatalf("artifact invalidation did not revoke delivery: export=%s approval=%s", exportStatus, approvalStatus)
+		}
+		var projectedStage string
+		if queryErr := database.pool.QueryRow(ctx, `SELECT current_stage FROM drama.projects WHERE project_id=$1`, projectID).Scan(&projectedStage); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if projectedStage == "stage_5_completed" || projectedStage == "qc_completed" {
+			t.Fatalf("project delivery projection remained falsely completed after invalidation: %s", projectedStage)
+		}
+		if downloadErr := database.ValidateProfessionalExportReady(ctx, projectID, job.ExportID); downloadErr == nil ||
+			!strings.Contains(downloadErr.Error(), "EXPORT_STALE_BLOCKED") {
+			t.Fatalf("invalidated export remained downloadable: %v", downloadErr)
+		}
 	})
 
 	t.Run("blocking QA prevents API and direct DB render until audited override", func(t *testing.T) {
@@ -278,26 +325,44 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 		var jobsBefore int
 		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.render_jobs WHERE timeline_id=$1`, legalDraftID).Scan(&jobsBefore)
 		if _, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, legalDraftID); !errors.Is(renderErr, ErrConflict) ||
-			!strings.Contains(renderErr.Error(), "QUALITY_GATE_BLOCKED") {
-			t.Fatalf("store render bypassed gate: %v", renderErr)
+			!strings.Contains(renderErr.Error(), "QUALITY_GATE_TARGET_MISMATCH") {
+			t.Fatalf("old-master gate released a new timeline: %v", renderErr)
 		}
 		_, directErr := database.writer.Exec(ctx, `INSERT INTO drama.render_jobs(render_job_id,idempotency_key,trace_id,
 			project_id,episode_id,timeline_id,timeline_version,render_type,status,command_template_id,input_manifest_path,output_path)
 			VALUES('rj_phase31_bypass','phase31-bypass','trace-phase31-bypass',$1,$2,$3,3,'preview','pending','test','/tmp/input','/tmp/output')`,
 			projectID, episodeID, legalDraftID)
-		if directErr == nil || !strings.Contains(directErr.Error(), "QUALITY_GATE_BLOCKED") {
-			t.Fatalf("direct render insert bypassed database gate: %v", directErr)
+		if directErr == nil || !strings.Contains(directErr.Error(), "QUALITY_GATE_TARGET_MISMATCH") {
+			t.Fatalf("direct render insert accepted an old-master gate: %v", directErr)
+		}
+		targetSnapshot, targetErr := database.BuildAuthoritativeTimelineQualityGateSnapshot(ctx, projectID, episodeID, legalDraftID)
+		if targetErr != nil {
+			t.Fatal(targetErr)
+		}
+		targetSnapshot.Artifacts[0].Facts = snapshot.Artifacts[0].Facts
+		targetSnapshot.Artifacts[1].Facts = snapshot.Artifacts[1].Facts
+		targetRun, targetErr := qualitygate.EvaluateRules(targetSnapshot, qualitygate.DefaultConfig(), false)
+		if targetErr != nil {
+			t.Fatal(targetErr)
+		}
+		targetRecord, targetErr := database.SaveQualityGateRuleRun(ctx, targetSnapshot, targetRun, "acceptance-target")
+		if targetErr != nil {
+			t.Fatal(targetErr)
+		}
+		if _, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, legalDraftID); !errors.Is(renderErr, ErrConflict) ||
+			!strings.Contains(renderErr.Error(), "QUALITY_GATE_BLOCKED") {
+			t.Fatalf("target blocking gate did not block render: %v", renderErr)
 		}
 		var jobsAfter int
 		_ = database.pool.QueryRow(ctx, `SELECT count(*) FROM drama.render_jobs WHERE timeline_id=$1`, legalDraftID).Scan(&jobsAfter)
 		if jobsAfter != jobsBefore {
 			t.Fatalf("blocked render left a task: before=%d after=%d", jobsBefore, jobsAfter)
 		}
-		for _, finding := range record.Findings {
+		for _, finding := range targetRecord.Findings {
 			if finding.Severity != qualitygate.SeverityBlocking || finding.Status != qualitygate.FindingOpen {
 				continue
 			}
-			if _, overrideErr := database.OverrideQualityGateFinding(ctx, projectID, episodeID, record.GateRunID,
+			if _, overrideErr := database.OverrideQualityGateFinding(ctx, projectID, episodeID, targetRecord.GateRunID,
 				finding.FindingID, "负责人接受本次已定位风险", "acceptance-owner"); overrideErr != nil {
 				t.Fatal(overrideErr)
 			}
@@ -305,6 +370,35 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 		job, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, legalDraftID)
 		if renderErr != nil || job.Status != "pending" {
 			t.Fatalf("audited override did not release render: %#v err=%v", job, renderErr)
+		}
+		masterID := "master_phase32_" + strings.TrimPrefix(job.RenderJobID, "rj_")
+		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.episode_masters(
+			master_id,project_id,episode_id,timeline_id,render_job_id,generation_version,master_type,
+			storage_url,width,height,aspect_ratio,fps,duration_ms,video_codec,audio_codec,sample_rate,
+			content_hash,status,is_current) VALUES($1,$2,$3,$4,$5,1,'preview',$6,1080,1920,'9:16',24,8000,
+			'h264','aac',48000,$7,'ready',true)`, masterID, projectID, episodeID, legalDraftID,
+			job.RenderJobID, "/results/"+masterID+".mp4", strings.Repeat("a", 64)); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		if _, persistErr := database.writer.Exec(ctx, `UPDATE drama.render_jobs
+			SET status='succeeded',progress=100,output_url=$2,completed_at=now(),updated_at=now()
+			WHERE render_job_id=$1`, job.RenderJobID, "/results/"+masterID+".mp4"); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		var currentTimeline, currentMaster string
+		if queryErr := database.pool.QueryRow(ctx, `SELECT
+			(SELECT artifact.native_entity_id FROM drama.artifact_current_bindings binding
+			 JOIN drama.artifacts artifact ON artifact.artifact_id=binding.current_artifact_id
+			 WHERE binding.project_id=$1 AND binding.target_type='episode' AND binding.target_id=$2
+			   AND binding.component_scope='edit_timeline'),
+			(SELECT artifact.native_entity_id FROM drama.artifact_current_bindings binding
+			 JOIN drama.artifacts artifact ON artifact.artifact_id=binding.current_artifact_id
+			 WHERE binding.project_id=$1 AND binding.target_type='episode' AND binding.target_id=$2
+			   AND binding.component_scope='episode_master')`, projectID, episodeID).Scan(&currentTimeline, &currentMaster); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if currentTimeline != legalDraftID || currentMaster != masterID {
+			t.Fatalf("successful render did not publish current artifacts: timeline=%s master=%s", currentTimeline, currentMaster)
 		}
 	})
 }

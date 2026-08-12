@@ -37,6 +37,21 @@ func (s *Store) RunAuthoritativeQualityGate(
 	return s.SaveQualityGateRuleRun(ctx, snapshot, run, actor)
 }
 
+func (s *Store) RunAuthoritativeTimelineQualityGate(
+	ctx context.Context, projectID, episodeID, timelineID string, config qualitygate.Config,
+	modelReviewRequired bool, actor string,
+) (QualityGateRecord, error) {
+	snapshot, err := s.BuildAuthoritativeTimelineQualityGateSnapshot(ctx, projectID, episodeID, timelineID)
+	if err != nil {
+		return QualityGateRecord{}, err
+	}
+	run, err := qualitygate.EvaluateRules(snapshot, config, modelReviewRequired)
+	if err != nil {
+		return QualityGateRecord{}, fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	return s.SaveQualityGateRuleRun(ctx, snapshot, run, actor)
+}
+
 func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 	ctx context.Context, projectID, episodeID, masterID string,
 ) (qualitygate.Snapshot, error) {
@@ -56,6 +71,10 @@ func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 	if resolution.ResolverVersion == "" || resolution.ResolutionHash == "" {
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: effective input resolution is incomplete", ErrConflict)
 	}
+	deliveryInputHash, err := s.deliveryEffectiveInputHash(ctx, raw)
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
 
 	productionItem, ok := effectiveItemByKind(resolution.Items, "production_snapshot")
 	if !ok || productionItem.State != "resolved" || len(productionItem.Content) == 0 {
@@ -70,16 +89,17 @@ func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: production snapshot payload is invalid", ErrConflict)
 	}
 
-	var timelineID, masterStatus, approvalState string
+	var timelineID, masterStatus, approvalState, masterHash string
 	var timelineVersion, masterVersion int
 	var durationMS int64
 	var timelineCurrent, masterCurrent bool
 	err = s.pool.QueryRow(ctx, `SELECT master.timeline_id,master.generation_version,master.duration_ms,master.status,
 		master.is_current,timeline.version,timeline.approval_state,timeline.is_current
+		,master.content_hash
 		FROM drama.episode_masters master JOIN drama.edit_timelines timeline ON timeline.timeline_id=master.timeline_id
 		WHERE master.project_id=$1 AND master.episode_id=$2 AND master.master_id=$3`,
 		projectID, episodeID, masterID).Scan(&timelineID, &masterVersion, &durationMS, &masterStatus,
-		&masterCurrent, &timelineVersion, &approvalState, &timelineCurrent)
+		&masterCurrent, &timelineVersion, &approvalState, &timelineCurrent, &masterHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return qualitygate.Snapshot{}, ErrNotFound
 	}
@@ -89,6 +109,9 @@ func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 	if masterStatus != "ready" || !masterCurrent || !timelineCurrent || (approvalState != "approved" && approvalState != "restored") {
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: master must reference the current approved timeline", ErrConflict)
 	}
+	if !resolution.Ready || resolution.Status != "ready" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: EFFECTIVE_INPUTS_BLOCKED: post-production Resolver is %s", ErrConflict, resolution.Status)
+	}
 	resolvedTimelineID := rawStringField(payload["timeline"], "timeline_id")
 	if resolvedTimelineID == "" || resolvedTimelineID != timelineID {
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: master timeline does not match the Effective Input Resolver", ErrConflict)
@@ -97,46 +120,21 @@ func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: authoritative timeline is invalid: %v", ErrConflict, err)
 	}
 
-	artifacts := make([]qualitygate.Artifact, 0, len(qualitygate.StageOrder))
-	artifacts = append(artifacts,
-		artifactFromEffectiveItem(qualitygate.StageSourceIR, resolution.Items, "narrative_ir"),
-		artifactFromEffectiveItem(qualitygate.StageAdaptationPlan, resolution.Items, "adaptation_plan"),
-		artifactFromPayload(qualitygate.StageEpisodeOutline, payload["outline"], "episode_id", episodeID),
-		artifactFromPayload(qualitygate.StageScript, payload["script"], "script_id", ""),
-		artifactFromPayload(qualitygate.StageStoryboard, payload["storyboard"], "storyboard_id", ""),
-	)
+	artifacts := authoritativeUpstreamArtifacts(resolution, payload, episodeID)
 	mediaID := "media:" + production.ContentHash
 	if production.ContentHash == "" {
 		mediaID = "media:" + resolution.ResolutionHash
 	}
 	artifacts = append(artifacts, qualitygate.Artifact{Stage: qualitygate.StageMedia, ArtifactID: mediaID, Version: masterVersion})
 
-	timelineArtifact := qualitygate.Artifact{Stage: qualitygate.StageEditTimeline, ArtifactID: timelineID,
-		Version: timelineVersion, DurationMS: durationMS, Timeline: []qualitygate.TimelineItem{}}
-	rows, err := s.pool.Query(ctx, `SELECT timeline_item_id,track_type,entity_type,entity_id,timeline_start_ms,timeline_end_ms,
-		COALESCE(source_path,''),COALESCE(source_url,'') FROM drama.edit_timeline_items
-		WHERE timeline_id=$1 ORDER BY track_type,track_number,sequence_number`, timelineID)
+	timelineArtifact, timelineHash, err := s.loadQualityGateTimeline(ctx, timelineID, timelineVersion, durationMS)
 	if err != nil {
 		return qualitygate.Snapshot{}, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var item qualitygate.TimelineItem
-		var sourcePath, sourceURL string
-		if err = rows.Scan(&item.TimelineItemID, &item.TrackType, &item.EntityType, &item.EntityID,
-			&item.StartMS, &item.EndMS, &sourcePath, &sourceURL); err != nil {
-			return qualitygate.Snapshot{}, err
-		}
-		if item.TrackType != "subtitle" && strings.TrimSpace(sourcePath) == "" && strings.TrimSpace(sourceURL) == "" {
-			return qualitygate.Snapshot{}, fmt.Errorf("%w: timeline item %s has no media reference", ErrConflict, item.TimelineItemID)
-		}
-		timelineArtifact.Timeline = append(timelineArtifact.Timeline, item)
-	}
-	if err = rows.Err(); err != nil {
-		return qualitygate.Snapshot{}, err
-	}
+	timelineArtifact.ContentHash = timelineHash
 	artifacts = append(artifacts, timelineArtifact,
-		qualitygate.Artifact{Stage: qualitygate.StageMaster, ArtifactID: masterID, Version: masterVersion, DurationMS: durationMS})
+		qualitygate.Artifact{Stage: qualitygate.StageMaster, ArtifactID: masterID, Version: masterVersion,
+			VersionID: masterID, ContentHash: masterHash, DurationMS: durationMS})
 
 	for index := range artifacts {
 		if artifacts[index].ArtifactID == "" || artifacts[index].Version < 1 {
@@ -144,11 +142,176 @@ func (s *Store) BuildAuthoritativeQualityGateSnapshot(
 		}
 	}
 	snapshot := qualitygate.Snapshot{SchemaVersion: qualitygate.SchemaVersion, ProjectID: projectID,
-		EpisodeID: episodeID, MasterID: masterID, DurationMS: durationMS, Artifacts: artifacts}
+		EpisodeID: episodeID, MasterID: masterID, TargetTimelineID: timelineID, TargetTimelineHash: timelineHash,
+		EffectiveInputResolutionID: resolution.ResolutionID, EffectiveInputHash: deliveryInputHash,
+		ResolverArtifactIDs: resolverArtifactIDs(resolution.Items), DurationMS: durationMS, Artifacts: artifacts}
 	if err = snapshot.Validate(); err != nil {
 		return qualitygate.Snapshot{}, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 	return snapshot, nil
+}
+
+func (s *Store) BuildAuthoritativeTimelineQualityGateSnapshot(
+	ctx context.Context, projectID, episodeID, timelineID string,
+) (qualitygate.Snapshot, error) {
+	projectID, episodeID, timelineID = strings.TrimSpace(projectID), strings.TrimSpace(episodeID), strings.TrimSpace(timelineID)
+	if projectID == "" || episodeID == "" || timelineID == "" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: project_id, episode_id and timeline_id are required", ErrValidation)
+	}
+	var resolution effectiveinput.Resolution
+	raw, err := s.ResolveEffectiveInputs(ctx, projectID, episodeID, "post_production")
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
+	if err = json.Unmarshal(raw, &resolution); err != nil {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: decode effective input resolution: %v", ErrValidation, err)
+	}
+	if !resolution.Ready || resolution.Status != "ready" || resolution.ResolutionID == "" || resolution.ResolutionHash == "" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: EFFECTIVE_INPUTS_BLOCKED: post-production Resolver is %s", ErrConflict, resolution.Status)
+	}
+	deliveryInputHash, err := s.deliveryEffectiveInputHash(ctx, raw)
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
+	productionItem, ok := effectiveItemByKind(resolution.Items, "production_snapshot")
+	if !ok || productionItem.State != "resolved" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: authoritative production snapshot is unavailable", ErrConflict)
+	}
+	var production qualityGateProductionSnapshot
+	if err = json.Unmarshal(productionItem.Content, &production); err != nil || production.SchemaVersion != "production-input-snapshot.v1" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: authoritative production snapshot is invalid", ErrConflict)
+	}
+	var payload map[string]json.RawMessage
+	if err = json.Unmarshal(production.Payload, &payload); err != nil {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: production snapshot payload is invalid", ErrConflict)
+	}
+	resolvedTimelineID := rawStringField(payload["timeline"], "timeline_id")
+	var version int
+	var durationMS int64
+	var state string
+	err = s.pool.QueryRow(ctx, `SELECT version,target_duration_ms,approval_state FROM drama.edit_timelines
+		WHERE timeline_id=$1 AND project_id=$2 AND episode_id=$3`, timelineID, projectID, episodeID).Scan(&version, &durationMS, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return qualitygate.Snapshot{}, ErrNotFound
+	}
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
+	if state != "draft" && state != "render_failed" {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: only draft or render_failed timelines can be render-gated", ErrConflict)
+	}
+	var basedOnResolved bool
+	err = s.pool.QueryRow(ctx, `WITH RECURSIVE lineage AS (
+		SELECT timeline_id,parent_timeline_id FROM drama.edit_timelines WHERE timeline_id=$1
+		UNION ALL SELECT parent.timeline_id,parent.parent_timeline_id FROM drama.edit_timelines parent
+		JOIN lineage child ON child.parent_timeline_id=parent.timeline_id
+	) SELECT EXISTS(SELECT 1 FROM lineage WHERE timeline_id=$2)`, timelineID, resolvedTimelineID).Scan(&basedOnResolved)
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
+	if resolvedTimelineID == "" || !basedOnResolved {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: target timeline is not derived from the Resolver current timeline", ErrConflict)
+	}
+	if err = validateNLETimeline(ctx, s.pool, timelineID, durationMS); err != nil {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: authoritative timeline is invalid: %v", ErrConflict, err)
+	}
+	artifacts := authoritativeUpstreamArtifacts(resolution, payload, episodeID)
+	mediaID := "media:" + production.ContentHash
+	if production.ContentHash == "" {
+		mediaID = "media:" + resolution.ResolutionHash
+	}
+	artifacts = append(artifacts, qualitygate.Artifact{Stage: qualitygate.StageMedia, ArtifactID: mediaID,
+		Version: version, VersionID: resolution.ResolutionID, BindingID: resolution.ResolutionID, ContentHash: production.ContentHash})
+	timelineArtifact, timelineHash, err := s.loadQualityGateTimeline(ctx, timelineID, version, durationMS)
+	if err != nil {
+		return qualitygate.Snapshot{}, err
+	}
+	timelineArtifact.ContentHash = timelineHash
+	artifacts = append(artifacts, timelineArtifact, qualitygate.Artifact{Stage: qualitygate.StageMaster,
+		ArtifactID: "render-target:" + timelineID, Version: version, VersionID: "pending:" + timelineID,
+		ContentHash: timelineHash, DurationMS: durationMS})
+	snapshot := qualitygate.Snapshot{SchemaVersion: qualitygate.SchemaVersion, ProjectID: projectID,
+		EpisodeID: episodeID, TargetTimelineID: timelineID, TargetTimelineHash: timelineHash,
+		EffectiveInputResolutionID: resolution.ResolutionID, EffectiveInputHash: deliveryInputHash,
+		ResolverArtifactIDs: resolverArtifactIDs(resolution.Items), DurationMS: durationMS, Artifacts: artifacts}
+	if err = snapshot.Validate(); err != nil {
+		return qualitygate.Snapshot{}, fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	return snapshot, nil
+}
+
+func (s *Store) deliveryEffectiveInputHash(ctx context.Context, resolution json.RawMessage) (string, error) {
+	var result string
+	if err := s.pool.QueryRow(ctx, `SELECT drama.delivery_effective_input_hash($1::jsonb)`, resolution).Scan(&result); err != nil {
+		return "", err
+	}
+	if len(result) != 64 {
+		return "", fmt.Errorf("%w: delivery effective input hash is invalid", ErrConflict)
+	}
+	return result, nil
+}
+
+func (s *Store) loadQualityGateTimeline(ctx context.Context, timelineID string, version int, durationMS int64) (qualitygate.Artifact, string, error) {
+	artifact := qualitygate.Artifact{Stage: qualitygate.StageEditTimeline, ArtifactID: timelineID,
+		Version: version, VersionID: fmt.Sprintf("%s:v%d", timelineID, version), BindingID: "native:timeline:" + timelineID,
+		DurationMS: durationMS, Timeline: []qualitygate.TimelineItem{}}
+	rows, err := s.pool.Query(ctx, `SELECT timeline_item_id,track_type,entity_type,entity_id,timeline_start_ms,timeline_end_ms,
+		COALESCE(source_path,''),COALESCE(source_url,'') FROM drama.edit_timeline_items
+		WHERE timeline_id=$1 ORDER BY track_type,track_number,sequence_number`, timelineID)
+	if err != nil {
+		return artifact, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item qualitygate.TimelineItem
+		var sourcePath, sourceURL string
+		if err = rows.Scan(&item.TimelineItemID, &item.TrackType, &item.EntityType, &item.EntityID,
+			&item.StartMS, &item.EndMS, &sourcePath, &sourceURL); err != nil {
+			return artifact, "", err
+		}
+		if item.TrackType != "subtitle" && strings.TrimSpace(sourcePath) == "" && strings.TrimSpace(sourceURL) == "" {
+			return artifact, "", fmt.Errorf("%w: timeline item %s has no media reference", ErrConflict, item.TimelineItemID)
+		}
+		artifact.Timeline = append(artifact.Timeline, item)
+	}
+	if err = rows.Err(); err != nil {
+		return artifact, "", err
+	}
+	var contentHash string
+	err = s.pool.QueryRow(ctx, `SELECT encode(drama.digest(convert_to(jsonb_build_object(
+		'timeline',to_jsonb(timeline)-'id'-'created_at'-'updated_at',
+		'items',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at'-'updated_at'
+			ORDER BY item.track_type,item.track_number,item.sequence_number) FROM drama.edit_timeline_items item
+			WHERE item.timeline_id=timeline.timeline_id),'[]'::jsonb))::text,'UTF8'),'sha256'),'hex')
+		FROM drama.edit_timelines timeline WHERE timeline_id=$1`, timelineID).Scan(&contentHash)
+	if err != nil {
+		return artifact, "", err
+	}
+	return artifact, contentHash, nil
+}
+
+func authoritativeUpstreamArtifacts(resolution effectiveinput.Resolution, payload map[string]json.RawMessage, episodeID string) []qualitygate.Artifact {
+	return []qualitygate.Artifact{
+		artifactFromEffectiveItem(qualitygate.StageSourceIR, resolution.Items, "narrative_ir"),
+		artifactFromEffectiveItem(qualitygate.StageAdaptationPlan, resolution.Items, "adaptation_plan"),
+		artifactFromPayload(qualitygate.StageEpisodeOutline, payload["outline"], "episode_id", episodeID),
+		artifactFromPayload(qualitygate.StageScript, payload["script"], "script_id", ""),
+		artifactFromPayload(qualitygate.StageStoryboard, payload["storyboard"], "storyboard_id", ""),
+	}
+}
+
+func resolverArtifactIDs(items []effectiveinput.Item) []string {
+	seen := map[string]bool{}
+	result := []string{}
+	for _, item := range items {
+		for _, id := range item.ArtifactIDs {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				result = append(result, id)
+			}
+		}
+	}
+	return result
 }
 
 func effectiveItemByKind(items []effectiveinput.Item, kind string) (effectiveinput.Item, bool) {
@@ -169,7 +332,13 @@ func artifactFromEffectiveItem(stage qualitygate.Stage, items []effectiveinput.I
 	if id == "" && len(item.InputIDs) > 0 {
 		id = strings.TrimSpace(item.InputIDs[0])
 	}
-	return qualitygate.Artifact{Stage: stage, ArtifactID: id, Version: firstVersion(item.Versions)}
+	versionID, bindingID := provenanceIdentity(item.Provenance)
+	contentHash := ""
+	if item.ContentHash != nil {
+		contentHash = *item.ContentHash
+	}
+	return qualitygate.Artifact{Stage: stage, ArtifactID: id, Version: firstVersion(item.Versions),
+		VersionID: versionID, BindingID: bindingID, ContentHash: contentHash}
 }
 
 func artifactFromPayload(stage qualitygate.Stage, raw json.RawMessage, idKey, fallback string) qualitygate.Artifact {
@@ -177,7 +346,22 @@ func artifactFromPayload(stage qualitygate.Stage, raw json.RawMessage, idKey, fa
 	if id == "" {
 		id = fallback
 	}
-	return qualitygate.Artifact{Stage: stage, ArtifactID: id, Version: rawVersion(raw)}
+	return qualitygate.Artifact{Stage: stage, ArtifactID: id, Version: rawVersion(raw),
+		VersionID: firstRawStringField(raw, "entity_version_id", "version_id", idKey),
+		BindingID: firstRawStringField(raw, "binding_id", "entity_version_binding_id")}
+}
+
+func provenanceIdentity(raw json.RawMessage) (string, string) {
+	return firstRawStringField(raw, "version_id"), firstRawStringField(raw, "binding_id")
+}
+
+func firstRawStringField(raw json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		if value := rawStringField(raw, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func rawStringField(raw json.RawMessage, key string) string {

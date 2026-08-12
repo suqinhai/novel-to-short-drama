@@ -11,8 +11,10 @@ const pythonCommand = process.env.PHASE5_PYTHON || 'python';
 const container = process.env.PHASE5_POSTGRES_CONTAINER || 'ai-short-drama-postgres-1';
 const freshDatabase = process.env.PHASE5_FRESH_DATABASE || 'short_drama_phase5_acceptance';
 const legacyDatabase = process.env.PHASE5_LEGACY_DATABASE || 'short_drama_phase5_legacy_upgrade';
+const compilerDatabase = process.env.PHASE5_COMPILER_DATABASE || 'short_drama_phase5_compiler_e2e';
+const isolationBaseDatabase = process.env.PHASE5_ISOLATION_BASE_DATABASE || 'short_drama_phase5_isolation_base';
 const safeDatabase = /^short_drama_phase5_[a-z0-9_]+$/;
-for (const database of [freshDatabase, legacyDatabase]) {
+for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase]) {
   if (!safeDatabase.test(database)) throw new Error(`refusing unsafe test database name: ${database}`);
 }
 
@@ -43,6 +45,7 @@ const migrationFiles = [
   'database/29-prompt-lab-professional-export.sql',
   'database/30-step-0-7-p0-p1-closure.sql',
   'database/31-step-8-10-p0-p1-closure.sql',
+  'database/32-final-delivery-chain-closure.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
@@ -65,6 +68,7 @@ const verifyFiles = [
   'database/28-verify-cross-layer-quality-gate.sql',
   'database/29-verify-prompt-lab-professional-export.sql',
   'database/31-verify-step-8-10-p0-p1-closure.sql',
+  'database/32-verify-final-delivery-chain-closure.sql',
 ];
 
 function loadEnv() {
@@ -118,6 +122,23 @@ function recreate(database) {
 function drop(database) {
   dockerPSQL('postgres', `DROP DATABASE IF EXISTS ${database};\n`, `cleanup isolated database ${database}`, false);
 }
+function recreateClone(database, sourceDatabase) {
+  dockerPSQL('postgres', `DROP DATABASE IF EXISTS ${database};\nCREATE DATABASE ${database} TEMPLATE ${sourceDatabase};\n`,
+    `recreate isolated clone ${database} from ${sourceDatabase}`, false);
+}
+let isolatedCounter = 0;
+function runIsolatedIntegration(label, envName, tests, options = {}) {
+  isolatedCounter += 1;
+  const database = `short_drama_phase5_case_${String(isolatedCounter).padStart(2, '0')}`;
+  recreateClone(database, isolationBaseDatabase);
+  const env = {...(options.env || commandEnv), [envName]: databaseURL(database)};
+  try {
+    return run(label, 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', tests],
+      {cwd: options.cwd, env});
+  } finally {
+    drop(database);
+  }
+}
 
 let failed = false;
 try {
@@ -139,6 +160,14 @@ try {
   sqlFile(legacyDatabase, 'test-data/phase5-postproduction-fixture.sql', 'seed complete Phase 5 post-production mock episode');
   sqlFile(legacyDatabase, 'test-data/phase18-effective-input-resolver-acceptance.sql',
     'Effective Input Resolver authority, isolation, blocking and provenance acceptance');
+  recreateClone(isolationBaseDatabase, legacyDatabase);
+
+  recreate(compilerDatabase);
+  for (const file of legacyBaseFiles) sqlFile(compilerDatabase, file, `compiler isolated base ${file}`);
+  sqlFile(compilerDatabase, 'test-data/phase1-legacy-seed.sql', 'compiler seed explicit legacy IDs');
+  for (const file of contractFiles) sqlFile(compilerDatabase, file, `compiler isolated upgrade ${file}`);
+  sqlFile(compilerDatabase, 'test-data/phase1-contract-seed.sql', 'compiler seed traced Narrative IR fixture');
+  sqlFile(compilerDatabase, 'test-data/phase3-compiler-db-seed.sql', 'compiler seed only its own operation');
 
   const backendCwd = path.join(root, 'cms/backend');
   run('Go backend unit tests', 'go', ['test', '-p', '1', './...'], {cwd: backendCwd, env: testEnv});
@@ -154,16 +183,16 @@ try {
   {cwd: backendCwd, env: {...commandEnv, PHASE20_DATABASE_URL: databaseURL(freshDatabase)}});
 
   run('Phase 3 compiler PostgreSQL E2E (valid + adversarial zero-write)', 'node', ['scripts/run-phase3-db-integration.js'], {
-    env: {...commandEnv, PHASE3_TEST_DATABASE: legacyDatabase, PHASE3_POSTGRES_CONTAINER: container},
+    env: {...commandEnv, PHASE3_TEST_DATABASE: compilerDatabase, PHASE3_POSTGRES_CONTAINER: container},
   });
-  run('Go Phase 15 exact local edit integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestLocalEditingFourScenariosIntegration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
-  run('Go atomic multi-shot concurrency, rollback, continuity and restore integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestAtomicMultiShotEditorIntegration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE15_DATABASE_URL: databaseURL(legacyDatabase)}});
-  run('Go Phase 4 performance/continuity integration on latest schema', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPerformanceContinuityPhase4Integration'],
-    {cwd: backendCwd, env: {...testEnv, MOCK_MODE: 'true', PHASE4_DATABASE_URL: databaseURL(legacyDatabase)}});
-  run('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestPhase5PostProductionMockChainIntegration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE5_POST_DATABASE_URL: databaseURL(legacyDatabase)}});
+  runIsolatedIntegration('Go Phase 15 exact local edit integration on latest schema', 'PHASE15_DATABASE_URL',
+    'TestLocalEditingFourScenariosIntegration', {cwd: backendCwd});
+  runIsolatedIntegration('Go atomic multi-shot concurrency, rollback, continuity and restore integration', 'PHASE15_DATABASE_URL',
+    'TestAtomicMultiShotEditorIntegration', {cwd: backendCwd});
+  runIsolatedIntegration('Go Phase 4 performance/continuity integration on latest schema', 'PHASE4_DATABASE_URL',
+    'TestPerformanceContinuityPhase4Integration', {cwd: backendCwd, env: {...testEnv, MOCK_MODE: 'true'}});
+  runIsolatedIntegration('Go Phase 5 complete mock, timing, template, restore and exact rebuild E2E', 'PHASE5_POST_DATABASE_URL',
+    'TestPhase5PostProductionMockChainIntegration', {cwd: backendCwd});
   run('Go Effective Input Resolver read-only integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestEffectiveInputResolverIntegration'],
     {cwd: backendCwd, env: {...commandEnv, PHASE18_DATABASE_URL: databaseURL(legacyDatabase)}});
   sqlFile(legacyDatabase, 'test-data/phase4-chapter-impact-e2e.sql', 'Phase 4 exact stale propagation E2E');
@@ -175,8 +204,10 @@ try {
   run('n8n seven-stage authoritative snapshot-loader E2E', 'node', ['scripts/validate-authoritative-n8n-e2e.js'], {
     env: {...commandEnv, PHASE5_TEST_DATABASE: legacyDatabase, PHASE5_POSTGRES_CONTAINER: container},
   });
-  run('Go whole-season workbench adversarial version/approval/queue integration', 'go', ['test', '-count=1', '-p', '1', '-v', './internal/store', '-run', 'TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration'],
-    {cwd: backendCwd, env: {...commandEnv, PHASE25_DATABASE_URL: databaseURL(legacyDatabase)}});
+  runIsolatedIntegration('Go whole-season workbench adversarial version/approval/queue integration', 'PHASE25_DATABASE_URL',
+    'TestSeasonWorkbenchVersionApprovalAndQueueGateIntegration', {cwd: backendCwd});
+  runIsolatedIntegration('Go final Step 8-10 target QA/export closure integration', 'PHASE31_DATABASE_URL',
+    'TestStep810P0P1ClosureIntegration', {cwd: backendCwd});
   run('Go backend vet', 'go', ['vet', './...'], {cwd: backendCwd, env: commandEnv});
 
   const frontendCwd = path.join(root, 'cms/frontend');
@@ -210,7 +241,7 @@ try {
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
     'validate-phase20.js', 'validate-phase21.js', 'validate-phase27.js', 'validate-phase28.js',
-    'validate-phase29.js', 'validate-phase31.js',
+    'validate-phase29.js', 'validate-phase31.js', 'validate-phase32.js',
     'validate-video-provider-retry-idempotency.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
@@ -238,7 +269,7 @@ try {
   if (process.env.PHASE5_KEEP_DATABASES === '1') {
     process.stdout.write('\nKeeping isolated Phase 5 databases for diagnosis as explicitly requested by PHASE5_KEEP_DATABASES=1\n');
   } else {
-    for (const database of [freshDatabase, legacyDatabase]) {
+    for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase]) {
       try { drop(database); } catch (error) { failed = true; console.error(`cleanup failed for ${database}: ${error.message}`); }
     }
   }

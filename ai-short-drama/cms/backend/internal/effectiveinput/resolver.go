@@ -24,6 +24,7 @@ type Item struct {
 	SourceStatus string          `json:"source_status"`
 	Content      json.RawMessage `json:"content"`
 	ArtifactIDs  []string        `json:"artifact_ids"`
+	Provenance   json.RawMessage `json:"provenance,omitempty"`
 	Reason       *string         `json:"reason,omitempty"`
 	Blocks       bool            `json:"blocks"`
 }

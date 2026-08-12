@@ -78,7 +78,7 @@
     "Claim Invalidation Scan": {"main": [[{"node": "Compare IR and Mark Exact Lineage Stale", "type": "main", "index": 0}]]}
   },
   "pinData": {},
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
     "saveDataErrorExecution": "none",

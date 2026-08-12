@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"short-drama-cms/backend/internal/localedit"
 	"short-drama-cms/backend/internal/postproduction"
+	"short-drama-cms/backend/internal/qualitygate"
 )
 
 func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
@@ -308,6 +310,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		if draft.Timeline.IsCurrent || draft.Timeline.ApprovalState != "draft" || draft.Item == nil {
 			t.Fatalf("edit must create a non-current item-linked draft: %#v", draft)
 		}
+		allowTimelineRender(t, ctx, database, projectID, episodeID, draft.Timeline.TimelineID)
 		job, renderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, draft.Timeline.TimelineID, renderStorage)
 		if renderErr != nil {
 			t.Fatal(renderErr)
@@ -331,17 +334,28 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				approvedBefore, currentAfterFailure, failedState)
 		}
 
-		restored, restoreErr := database.RestoreNLETimelineDraft(ctx, projectID, episodeID, "timeline_phase5_v1", nil)
+		restored, restoreErr := database.RestoreNLETimelineDraft(ctx, projectID, episodeID, base.TimelineID, nil)
 		if restoreErr != nil {
 			t.Fatal(restoreErr)
 		}
 		if restored.Timeline.IsCurrent || restored.Timeline.ParentTimelineID == nil ||
-			*restored.Timeline.ParentTimelineID != "timeline_phase5_v1" {
+			*restored.Timeline.ParentTimelineID != base.TimelineID {
 			t.Fatalf("restore must create a successor draft: %#v", restored)
 		}
+		allowTimelineRender(t, ctx, database, projectID, episodeID, restored.Timeline.TimelineID)
 		successJob, successErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, restored.Timeline.TimelineID, renderStorage)
 		if successErr != nil {
 			t.Fatal(successErr)
+		}
+		masterID := "master_post_" + successJob.RenderJobID
+		if _, err = database.writer.Exec(ctx, `INSERT INTO drama.episode_masters(
+			master_id,project_id,episode_id,timeline_id,render_job_id,generation_version,master_type,
+			storage_url,width,height,aspect_ratio,fps,duration_ms,video_codec,audio_codec,sample_rate,
+			content_hash,status,is_current) VALUES($1,$2,$3,$4,$5,1,'preview',$6,1080,1920,'9:16',24,8000,
+			'h264','aac',48000,$7,'ready',true)`, masterID, projectID, episodeID,
+			restored.Timeline.TimelineID, successJob.RenderJobID, "/results/"+masterID+".mp4",
+			strings.Repeat("b", 64)); err != nil {
+			t.Fatal(err)
 		}
 		if _, err = database.writer.Exec(ctx, `UPDATE drama.render_jobs
 			SET status='succeeded',progress=100,completed_at=now(),output_url='/results/acceptance.mp4'
@@ -357,6 +371,24 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 				promotedState, promotedCurrent)
 		}
 	})
+}
+
+func allowTimelineRender(t *testing.T, ctx context.Context, database *Store, projectID, episodeID, timelineID string) {
+	t.Helper()
+	run, err := database.RunAuthoritativeTimelineQualityGate(ctx, projectID, episodeID, timelineID,
+		qualitygate.DefaultConfig(), false, "postproduction-acceptance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range run.Findings {
+		if finding.Severity != qualitygate.SeverityBlocking || finding.Status != qualitygate.FindingOpen {
+			continue
+		}
+		if _, err = database.OverrideQualityGateFinding(ctx, projectID, episodeID, run.GateRunID,
+			finding.FindingID, "acceptance owner reviewed exact timeline risk", "acceptance-owner"); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func executeIntegrationChangePlan(

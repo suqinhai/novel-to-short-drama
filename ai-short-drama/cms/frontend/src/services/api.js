@@ -180,6 +180,29 @@ export const api = {
       method: 'POST', body: JSON.stringify({}),
     })
   },
+  reorderNLETracks(projectId, episodeId, timelineId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/tracks/reorder`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
+  queueNLEWaveforms(projectId, episodeId, timelineId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/timeline-versions/${encodeURIComponent(timelineId)}/waveforms`, {
+      method: 'POST', body: JSON.stringify({}),
+    })
+  },
+  runTimelineQualityGate(projectId, episodeId, timelineId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/quality-gates/rule-runs`, {
+      method: 'POST', body: JSON.stringify({ timeline_id: timelineId, model_review_required: false, actor: 'creative-workbench-nle', config: {} }),
+    })
+  },
+  getQualityGate(projectId, episodeId, gateRunId) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/quality-gates/runs/${encodeURIComponent(gateRunId)}`)
+  },
+  overrideQualityGateFinding(projectId, episodeId, gateRunId, findingId, payload) {
+    return request(`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/quality-gates/runs/${encodeURIComponent(gateRunId)}/findings/${encodeURIComponent(findingId)}/override`, {
+      method: 'POST', body: JSON.stringify(payload),
+    })
+  },
   getPerformanceBibles(projectId) {
     return request(`/projects/${encodeURIComponent(projectId)}/performance-bibles`)
   },

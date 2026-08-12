@@ -34,7 +34,32 @@ func registerPostProductionRoutes(api *gin.RouterGroup, handler *Handler) {
 	api.GET("/projects/:projectID/episodes/:episodeID/nle-timeline", handler.getNLETimeline)
 	api.PATCH("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/items/:itemID", handler.createNLEItemDraft)
 	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/restore-draft", handler.restoreNLETimelineDraft)
+	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/tracks/reorder", handler.reorderNLETracks)
+	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/waveforms", handler.queueNLEWaveforms)
 	api.POST("/projects/:projectID/episodes/:episodeID/timeline-versions/:timelineID/render", handler.confirmNLETimelineRender)
+}
+
+func (h *Handler) queueNLEWaveforms(c *gin.Context) {
+	result, err := h.store.QueueNLEWaveforms(c.Request.Context(), c.Param("projectID"), c.Param("episodeID"), c.Param("timelineID"))
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"data": result})
+}
+
+func (h *Handler) reorderNLETracks(c *gin.Context) {
+	var input store.NLETrackOrderInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_TRACK_ORDER", "track_order payload is invalid")
+		return
+	}
+	result, err := h.store.ReorderNLETracks(c.Request.Context(), c.Param("projectID"), c.Param("episodeID"), c.Param("timelineID"), input)
+	if err != nil {
+		writePostProductionError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": result})
 }
 
 func (h *Handler) getCreativeWorkbench(c *gin.Context) {

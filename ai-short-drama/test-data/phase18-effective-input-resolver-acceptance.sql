@@ -26,14 +26,17 @@ SELECT
   'hard_rule_phase18_1_'||rule_name,'selection_phase5_1',rule_name,true,'fixture pass'
 FROM unnest(ARRAY[
   'causality','duration','character_state','foreshadowing','continuity'
-]) rule_name;
+]) rule_name
+ON CONFLICT(candidate_selection_id,rule_name) DO NOTHING;
 
 INSERT INTO drama.artifact_current_bindings(
   artifact_current_binding_id,project_id,target_type,target_id,component_scope,current_artifact_id
 ) VALUES(
   'binding_phase18_candidate_1','p_phase1_legacy','episode','ep_phase1_legacy_001',
   'whole','artifact_phase5_selection'
-);
+)
+ON CONFLICT(project_id,target_type,target_id,component_scope) DO UPDATE
+SET current_artifact_id=EXCLUDED.current_artifact_id,selected_at=CURRENT_TIMESTAMP;
 
 INSERT INTO drama.character_performance_bibles(
   performance_bible_id,project_id,character_id,character_version,version,speech,acting,
@@ -151,7 +154,8 @@ FROM unnest(ARRAY[
 
 UPDATE drama.artifact_current_bindings
 SET current_artifact_id='artifact_phase18_selection_2'
-WHERE artifact_current_binding_id='binding_phase18_candidate_1';
+WHERE project_id='p_phase1_legacy' AND target_type='episode'
+  AND target_id='ep_phase1_legacy_001' AND component_scope='whole';
 
 INSERT INTO phase18_context_probe
 SELECT 'candidate_2',resolution->>'context_hash',item->>'content_hash'
@@ -191,7 +195,8 @@ SET validity_status='valid'
 WHERE artifact_id='artifact_phase18_selection_2';
 
 DELETE FROM drama.artifact_current_bindings
-WHERE artifact_current_binding_id='binding_phase18_candidate_1';
+WHERE project_id='p_phase1_legacy' AND target_type='episode'
+  AND target_id='ep_phase1_legacy_001' AND component_scope='whole';
 DO $$
 DECLARE result JSONB;
 BEGIN

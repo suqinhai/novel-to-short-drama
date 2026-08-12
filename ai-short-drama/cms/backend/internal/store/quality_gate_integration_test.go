@@ -56,7 +56,7 @@ func TestCrossLayerGatePersistenceAndApprovalIntegration(t *testing.T) {
 		t.Fatalf("open blocker must prevent approval: %v", err)
 	}
 	if _, err = database.ResolveQualityGateFinding(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID,
-		record.Findings[0].FindingID, "fixed", "tester"); !errors.Is(err, ErrConflict) {
+		record.Findings[0].FindingID, "", "fixed", "tester"); !errors.Is(err, ErrValidation) {
 		t.Fatalf("resolution without a local change plan must fail: %v", err)
 	}
 	plan, err := database.CreateQualityGateChangePlan(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID, record.Findings[0].FindingID, "tester")
@@ -66,11 +66,38 @@ func TestCrossLayerGatePersistenceAndApprovalIntegration(t *testing.T) {
 	if plan.DirectMutationAllowed || !plan.RequiresConfirmation {
 		t.Fatalf("unsafe change plan: %#v", plan)
 	}
+	confirmed, err := database.ConfirmQualityGateFinding(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID,
+		record.Findings[0].FindingID, "reviewed source evidence", "tester")
+	if err != nil || confirmed.Findings[0].ResolutionKind != qualitygate.DispositionHumanConfirmed || confirmed.Findings[0].Status != qualitygate.FindingOpen {
+		t.Fatalf("human confirmation must remain an open, auditable finding: %#v err=%v", confirmed.Findings, err)
+	}
 	if _, err = database.ResolveQualityGateFinding(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID,
-		record.Findings[0].FindingID, "executed local plan", "tester"); err != nil {
+		record.Findings[0].FindingID, run.GateRunID, "not rebuilt", "tester"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same QA snapshot must not prove a rebuild: %v", err)
+	}
+	replacementSnapshot := snapshot
+	replacementSnapshot.Artifacts = append([]qualitygate.Artifact(nil), snapshot.Artifacts...)
+	replacementSnapshot.Artifacts[1].Facts = []qualitygate.Fact{{Key: "killer", Value: "uncle"}}
+	replacementRun, err := qualitygate.EvaluateRules(replacementSnapshot, qualitygate.DefaultConfig(), false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	approval, err := database.ApproveQualityGateMaster(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID, "tester")
+	if len(replacementRun.Findings) != 0 {
+		t.Fatalf("replacement QA must prove the issue disappeared: %#v", replacementRun.Findings)
+	}
+	if _, err = database.SaveQualityGateRuleRun(ctx, replacementSnapshot, replacementRun, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := database.ResolveQualityGateFinding(ctx, snapshot.ProjectID, snapshot.EpisodeID, run.GateRunID,
+		record.Findings[0].FindingID, replacementRun.GateRunID, "rebuilt and checked on replacement snapshot", "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Findings[0].ResolutionKind != qualitygate.DispositionResolvedByRebuild ||
+		resolved.Findings[0].ReplacementGateRunID != replacementRun.GateRunID {
+		t.Fatalf("rebuild resolution provenance is incomplete: %#v", resolved.Findings[0])
+	}
+	approval, err := database.ApproveQualityGateMaster(ctx, snapshot.ProjectID, snapshot.EpisodeID, replacementRun.GateRunID, "tester")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import {
 import { api } from '../services/api'
 import {
   NLE_TRACKS, activeItemsAt, formatNLETimecode, gesturePatch, itemBoundaries,
-  stepPlayhead, subtitlePreviewConfig, visibleTimelineWindow,
+  moveTrack, orderedNLETracks, stepPlayhead, subtitlePreviewConfig, visibleTimelineWindow,
 } from '../services/timelineNle'
 
 const props = defineProps({
@@ -29,6 +29,7 @@ const zoom = ref(60)
 const snapping = ref(true)
 const stepMode = ref('frame')
 const selectedItemID = ref('')
+const renderGate = ref(null)
 const versionChoice = ref('')
 const selection = reactive({ start: 0, end: 0, active: false })
 const drag = reactive({ active: false, item: null, mode: '', startX: 0, preview: null })
@@ -45,7 +46,8 @@ const fps = computed(() => Number(timeline.value?.fps || 25))
 const currentTimelineID = computed(() => page.value?.current_timeline_id || '')
 const items = computed(() => page.value?.items || [])
 const timelineWidth = computed(() => Math.max(1050, durationMS.value / 1000 * zoom.value))
-const lanes = computed(() => NLE_TRACKS.map(track => ({
+const trackOrder = computed(() => objectConfig(timeline.value?.tracks)?.track_order || [])
+const lanes = computed(() => orderedNLETracks(trackOrder.value).map(track => ({
   ...track, entries: items.value.filter(item => item.track_type === track.type),
 })))
 const selectedItem = computed(() => items.value.find(item => item.timeline_item_id === selectedItemID.value) || null)
@@ -53,6 +55,8 @@ const activeVideo = computed(() => activeItemsAt(items.value, currentMS.value, [
 const activeSubtitle = computed(() => activeItemsAt(items.value, currentMS.value, ['subtitle'])[0] || null)
 const subtitleConfig = computed(() => subtitlePreviewConfig(activeSubtitle.value, objectConfig(timeline.value?.subtitle_config)))
 const canRender = computed(() => ['draft', 'render_failed'].includes(timeline.value?.approval_state)
+  && renderGate.value?.target_timeline_id === timeline.value?.timeline_id
+  && !(renderGate.value?.findings || []).some(item => item.severity === 'blocking' && item.status === 'open')
   && !['pending', 'claimed', 'processing'].includes(page.value?.render_job?.status))
 const renderStatus = computed(() => page.value?.render_job?.status || '')
 const rulerTicks = computed(() => {
@@ -74,6 +78,12 @@ function objectConfig(value) {
 function displayItem(item) {
   return drag.active && drag.item?.timeline_item_id === item.timeline_item_id
     ? { ...item, ...(drag.preview || {}) } : item
+}
+
+function waveformLabel(status) {
+  if (status === 'pending' || status === 'processing') return '波形生成中'
+  if (status === 'failed' || status === 'timeout') return '波形生成失败，可重试'
+  return '波形待生成'
 }
 
 function itemStyle(item) {
@@ -354,6 +364,28 @@ function updateSubtitleStyle(style) {
   savePatch(selectedItem.value, { effect_config: presets[style] || presets.clean }, 'subtitle_style')
 }
 
+async function reorderTrack(type, direction) {
+  if (!timeline.value || saving.value) return
+  saving.value = true
+  try {
+    const result = await api.reorderNLETracks(props.projectId, props.episodeId, timeline.value.timeline_id, {
+      track_order: moveTrack(trackOrder.value, type, direction), reason: 'nle_track_reorder', actor: 'creative-workbench-nle',
+    })
+    await loadWindow(result.timeline.timeline_id)
+    emit('versions-changed')
+  } catch (error) { emit('error', error.message) } finally { saving.value = false }
+}
+
+async function queueWaveforms() {
+  if (!timeline.value || saving.value) return
+  saving.value = true
+  try {
+    const jobs = await api.queueNLEWaveforms(props.projectId, props.episodeId, timeline.value.timeline_id)
+    emit('notice', jobs.length ? `已提交 ${jobs.length} 个真实波形生成任务` : '当前音频片段已具备波形或缺少可处理的音频源')
+    await loadWindow(timeline.value.timeline_id)
+  } catch (error) { emit('error', error.message) } finally { saving.value = false }
+}
+
 async function confirmRender() {
   if (!canRender.value || saving.value) return
   saving.value = true
@@ -362,6 +394,28 @@ async function confirmRender() {
     emit('notice', `已显式确认重编，渲染任务 ${job.render_job_id} 已创建；成功前 current 保持 v${props.timelineVersions.find(item => item.timeline_id === currentTimelineID.value)?.version || '旧版'}。`)
     await loadWindow(timeline.value.timeline_id)
     emit('versions-changed')
+  } catch (error) { emit('error', error.message) } finally { saving.value = false }
+}
+
+async function runRenderGate() {
+  if (!timeline.value || saving.value) return
+  saving.value = true
+  try {
+    renderGate.value = await api.runTimelineQualityGate(props.projectId, props.episodeId, timeline.value.timeline_id)
+    const blockers = (renderGate.value.findings || []).filter(item => item.severity === 'blocking' && item.status === 'open')
+    emit('notice', blockers.length ? `目标版本 QA 已阻断：${blockers.length} 项 blocking finding` : '目标版本 QA 预检通过，可以创建渲染任务')
+  } catch (error) { emit('error', error.message) } finally { saving.value = false }
+}
+
+async function overrideRenderFinding(finding) {
+  const reason = window.prompt('填写接受该风险的审计理由（必填）', '')
+  if (!reason?.trim() || !renderGate.value) return
+  saving.value = true
+  try {
+    await api.overrideQualityGateFinding(props.projectId, props.episodeId, renderGate.value.gate_run_id, finding.finding_id, {
+      reason: reason.trim(), actor: 'creative-workbench-nle-owner',
+    })
+    renderGate.value = await api.getQualityGate(props.projectId, props.episodeId, renderGate.value.gate_run_id)
   } catch (error) { emit('error', error.message) } finally { saving.value = false }
 }
 
@@ -423,10 +477,13 @@ onBeforeUnmount(() => {
       <button class="render-button" :disabled="!canRender || saving" @click="confirmRender">
         <LoaderCircle v-if="saving" :size="14" class="spin" /><Film v-else :size="14" />确认并重编
       </button>
+      <button class="render-button" :disabled="saving || !['draft','render_failed'].includes(timeline?.approval_state)" @click="runRenderGate"><Check :size="14" />目标 QA</button>
+      <button class="render-button" :disabled="saving" @click="queueWaveforms"><Volume2 :size="14" />生成波形</button>
     </header>
 
     <div v-if="loading" class="nle-loading"><LoaderCircle :size="18" class="spin" />正在按可视窗口加载代理媒体…</div>
     <template v-else-if="timeline">
+      <div v-if="renderGate?.target_timeline_id===timeline.timeline_id" class="nle-status"><span>QA {{ renderGate.status }}</span><button v-for="finding in renderGate.findings.filter(item=>item.severity==='blocking'&&item.status==='open')" :key="finding.finding_id" @click="overrideRenderFinding(finding)">override {{ finding.code }}</button></div>
       <div class="nle-preview-grid">
         <div class="nle-monitor">
           <video v-if="activeVideo?.proxy_url" ref="video" :key="activeVideo.timeline_item_id" :src="activeVideo.proxy_url" muted playsinline preload="metadata" @loadedmetadata="syncVideo" />
@@ -484,12 +541,12 @@ onBeforeUnmount(() => {
         <div class="nle-timeline-content" :style="{width:`${timelineWidth + 96}px`}" @pointerdown="beginSelection" @pointermove="selectionMove" @pointerup="endSelection">
           <div class="nle-ruler"><b>轨道 / 时间</b><div class="ruler-canvas"><span v-for="tick in rulerTicks" :key="tick" :style="{left:`${tick/1000*zoom}px`}">{{ formatNLETimecode(tick) }}</span></div></div>
           <div v-for="lane in lanes" :key="lane.type" class="nle-lane">
-            <b><component :is="lane.kind==='video'?Film:lane.kind==='audio'?Volume2:Scissors" :size="13" />{{ lane.label }}</b>
+            <b><component :is="lane.kind==='video'?Film:lane.kind==='audio'?Volume2:Scissors" :size="13" />{{ lane.label }}<button class="track-order" :disabled="saving" @click.stop="reorderTrack(lane.type,-1)">↑</button><button class="track-order" :disabled="saving" @click.stop="reorderTrack(lane.type,1)">↓</button></b>
             <div class="lane-canvas">
               <div v-for="item in lane.entries" :key="item.timeline_item_id" class="nle-clip" :class="[lane.type,{selected:item.timeline_item_id===selectedItemID,pending:item.proxy_status==='pending'}]" :style="itemStyle(item)" @pointerdown.stop="beginGesture($event,item,'move')" @click.stop="selectClip(item)">
                 <i class="trim-handle left" @pointerdown.stop="beginGesture($event,item,'trim-start')"></i>
                 <img v-if="lane.kind==='audio' && item.waveform_url" :src="item.waveform_url" loading="lazy" alt="音频波形" />
-                <span><strong>{{ item.subtitle_text || item.entity_id }}</strong><small v-if="lane.kind==='audio' && !item.waveform_url">波形生成中</small><small v-if="lane.kind==='video' && item.proxy_status==='pending'">代理生成中</small></span>
+                <span><strong>{{ item.subtitle_text || item.entity_id }}</strong><small v-if="lane.kind==='audio' && !item.waveform_url">{{ waveformLabel(item.waveform_status) }}</small><small v-if="lane.kind==='video' && item.proxy_status==='pending'">代理生成中</small></span>
                 <i class="trim-handle right" @pointerdown.stop="beginGesture($event,item,'trim-end')"></i>
               </div>
             </div>

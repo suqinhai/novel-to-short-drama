@@ -30,7 +30,7 @@ for (const marker of ['GetProjectImpact', 'CreateRegenerationRequest', "artifact
 }
 
 const workflow = JSON.parse(read('workflows/02c-chapter-impact-analysis.json'));
-assert(workflow.active === false, 'workflow must remain inactive before deployment');
+assert(workflow.active === true, 'impact analyzer must be active so queued operations are actually consumed');
 assert(workflow.settings.saveDataErrorExecution === 'none' && workflow.settings.saveDataSuccessExecution === 'none', 'workflow execution payload persistence must be disabled');
 const workflowText = JSON.stringify(workflow);
 for (const marker of ['claim_operation', 'invalidation_scan', 'analyze_chapter_impact']) {

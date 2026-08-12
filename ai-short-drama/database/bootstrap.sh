@@ -33,3 +33,5 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/29-prompt-lab-professional-export.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/30-step-0-7-p0-p1-closure.sql
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/31-step-8-10-p0-p1-closure.sql
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/32-final-delivery-chain-closure.sql
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$DB" -f /opt/drama/32-verify-final-delivery-chain-closure.sql

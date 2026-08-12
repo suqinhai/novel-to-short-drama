@@ -88,7 +88,7 @@ func TestHooksAndForeshadowsPropagateFromAdaptationPlan(t *testing.T) {
 }
 
 func TestModelReviewRejectsEvidenceOutsideFrozenSnapshot(t *testing.T) {
-	loc := Locator{Stage: StageScript, ArtifactID: "invented_script", EntityType: "scene", EntityID: "scene_fake"}
+	loc := Locator{Stage: StageScript, ArtifactID: "invented_script", Version: 1, EntityType: "scene", EntityID: "scene_fake"}
 	review := ModelReview{SchemaVersion: SchemaVersion, Provider: "fixture", Model: "judge-v2", PromptVersion: "prompt-v2",
 		Findings: []Finding{{SchemaVersion: FindingSchema, FindingID: "model_outside", DetectorType: DetectorModel,
 			Dimension: DimensionCausality, Code: "UNSUPPORTED_CAUSE", Severity: SeverityMajor, Message: "cause missing",
@@ -100,7 +100,7 @@ func TestModelReviewRejectsEvidenceOutsideFrozenSnapshot(t *testing.T) {
 }
 
 func TestLocalChangePlanNeverMutatesCreativeDataDirectly(t *testing.T) {
-	loc := Locator{Stage: StageMaster, ArtifactID: "master_1", EntityType: "timeline_item", EntityID: "item_1", StartMS: ptr(1000), EndMS: ptr(2000)}
+	loc := Locator{Stage: StageMaster, ArtifactID: "master_1", Version: 1, EntityType: "timeline_item", EntityID: "item_1", StartMS: ptr(1000), EndMS: ptr(2000)}
 	finding := Finding{SchemaVersion: FindingSchema, FindingID: "finding_1", DetectorType: DetectorRule,
 		Dimension: DimensionEditIntegrity, Code: "BLACK_FRAME_DETECTED", Severity: SeverityBlocking,
 		Message: "black frame", Evidence: []Evidence{{Locator: loc, Observed: "1200ms black", Expected: "<=1000ms"}},

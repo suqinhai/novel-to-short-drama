@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1147,8 +1149,13 @@ func (s *Store) UpdateRebuildTaskStatus(
 	if len(output) == 0 {
 		output = json.RawMessage(`{}`)
 	}
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return IncrementalRebuild{}, err
+	}
+	defer tx.Rollback(ctx)
 	var task IncrementalRebuild
-	err := s.writer.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
+	err = tx.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
 		status=$4,output=$5::jsonb,error_code=$6,error_message=$7,
 		completed_at=CASE WHEN $4 IN('succeeded','failed','cancelled') THEN now() ELSE NULL END
 		FROM drama.change_plans plan
@@ -1168,7 +1175,57 @@ func (s *Store) UpdateRebuildTaskStatus(
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IncrementalRebuild{}, ErrConflict
 	}
-	return task, err
+	if err != nil {
+		return IncrementalRebuild{}, err
+	}
+	if status == "succeeded" {
+		if err = publishRebuildArtifactSuccessor(ctx, tx, task, output); err != nil {
+			return IncrementalRebuild{}, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return IncrementalRebuild{}, err
+	}
+	return task, nil
+}
+
+func publishRebuildArtifactSuccessor(ctx context.Context, tx pgx.Tx, task IncrementalRebuild, output json.RawMessage) error {
+	if task.ArtifactID == nil || strings.TrimSpace(*task.ArtifactID) == "" {
+		return nil
+	}
+	var payload map[string]any
+	if json.Unmarshal(output, &payload) != nil {
+		return fmt.Errorf("%w: rebuild output must be a JSON object", ErrConflict)
+	}
+	nativeID := strings.TrimSpace(fmt.Sprint(payload["native_entity_id"]))
+	contentHash := strings.TrimSpace(fmt.Sprint(payload["content_hash"]))
+	if nativeID == "" || nativeID == "<nil>" || len(contentHash) != 64 {
+		return fmt.Errorf("%w: succeeded rebuild output requires native_entity_id and sha256 content_hash", ErrConflict)
+	}
+	var oldType, projectID string
+	var oldRevision int
+	err := tx.QueryRow(ctx, `SELECT artifact_type,project_id,revision_number FROM drama.artifacts
+		WHERE artifact_id=$1 FOR UPDATE`, *task.ArtifactID).Scan(&oldType, &projectID, &oldRevision)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256([]byte(task.RebuildTaskID + ":" + contentHash))
+	successorID := "artifact_rebuild_" + hex.EncodeToString(digest[:])[:24]
+	if _, err = tx.Exec(ctx, `UPDATE drama.artifacts SET is_current=false,
+		validity_status=CASE WHEN validity_status='valid' THEN 'superseded' ELSE validity_status END,updated_at=now()
+		WHERE artifact_id=$1`, *task.ArtifactID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,native_entity_id,
+		revision_number,content_hash,validity_status,is_current,idempotency_key,metadata)
+		VALUES($1,$2,$3,$4,$5,$6,'valid',true,$7,jsonb_build_object('rebuild_task_id',$8::text,'predecessor_artifact_id',$9::text))`,
+		successorID, oldType, projectID, nativeID, oldRevision+1, contentHash,
+		"rebuild:artifact:"+task.RebuildTaskID, task.RebuildTaskID, *task.ArtifactID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE drama.artifact_current_bindings SET current_artifact_id=$2,selected_at=now()
+		WHERE current_artifact_id=$1`, *task.ArtifactID, successorID)
+	return err
 }
 
 func intValue(value, delta any) int {

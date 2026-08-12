@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -24,6 +25,10 @@ const (
 	FindingOpen       = "open"
 	FindingResolved   = "resolved"
 	FindingOverridden = "overridden"
+	DispositionAutoDetected      = "auto_detected"
+	DispositionHumanConfirmed    = "human_confirmed"
+	DispositionResolvedByRebuild = "resolved_by_rebuild"
+	DispositionOverridden        = "overridden"
 )
 
 type Stage string
@@ -70,6 +75,10 @@ var dimensions = map[Dimension]struct{}{
 type Locator struct {
 	Stage        Stage  `json:"stage"`
 	ArtifactID   string `json:"artifact_id"`
+	Version      int    `json:"version,omitempty"`
+	VersionID    string `json:"version_id,omitempty"`
+	BindingID    string `json:"binding_id,omitempty"`
+	ContentHash  string `json:"content_hash,omitempty"`
 	EntityType   string `json:"entity_type"`
 	EntityID     string `json:"entity_id"`
 	FieldPath    string `json:"field_path,omitempty"`
@@ -98,22 +107,35 @@ type Finding struct {
 	Locators       []Locator       `json:"locators"`
 	Recommendation string          `json:"recommendation"`
 	Status         string          `json:"status"`
+	ResolutionKind string          `json:"resolution_kind,omitempty"`
+	HumanConfirmedBy string        `json:"human_confirmed_by,omitempty"`
+	HumanConfirmationReason string `json:"human_confirmation_reason,omitempty"`
+	HumanConfirmedAt *time.Time    `json:"human_confirmed_at,omitempty"`
+	ReplacementGateRunID string    `json:"replacement_gate_run_id,omitempty"`
 	Metadata       json.RawMessage `json:"metadata,omitempty"`
 }
 
 type Snapshot struct {
-	SchemaVersion string     `json:"schema_version"`
-	ProjectID     string     `json:"project_id"`
-	EpisodeID     string     `json:"episode_id"`
-	MasterID      string     `json:"master_id,omitempty"`
-	DurationMS    int64      `json:"duration_ms,omitempty"`
-	Artifacts     []Artifact `json:"artifacts"`
+	SchemaVersion              string     `json:"schema_version"`
+	ProjectID                  string     `json:"project_id"`
+	EpisodeID                  string     `json:"episode_id"`
+	MasterID                   string     `json:"master_id,omitempty"`
+	TargetTimelineID           string     `json:"target_timeline_id,omitempty"`
+	TargetTimelineHash         string     `json:"target_timeline_hash,omitempty"`
+	EffectiveInputResolutionID string     `json:"effective_input_resolution_id,omitempty"`
+	EffectiveInputHash         string     `json:"effective_input_hash,omitempty"`
+	ResolverArtifactIDs        []string   `json:"resolver_artifact_ids,omitempty"`
+	DurationMS                 int64      `json:"duration_ms,omitempty"`
+	Artifacts                  []Artifact `json:"artifacts"`
 }
 
 type Artifact struct {
 	Stage       Stage                  `json:"stage"`
 	ArtifactID  string                 `json:"artifact_id"`
 	Version     int                    `json:"version"`
+	VersionID   string                 `json:"version_id,omitempty"`
+	BindingID   string                 `json:"binding_id,omitempty"`
+	ContentHash string                 `json:"content_hash,omitempty"`
 	DurationMS  int64                  `json:"duration_ms,omitempty"`
 	Facts       []Fact                 `json:"facts,omitempty"`
 	Characters  []CharacterObservation `json:"characters,omitempty"`
@@ -261,6 +283,9 @@ func (snapshot Snapshot) Validate() error {
 	if strings.TrimSpace(snapshot.ProjectID) == "" || strings.TrimSpace(snapshot.EpisodeID) == "" {
 		return errors.New("project_id and episode_id are required")
 	}
+	if strings.TrimSpace(snapshot.TargetTimelineID) != "" && strings.TrimSpace(snapshot.TargetTimelineHash) == "" {
+		return errors.New("target_timeline_hash is required when target_timeline_id is present")
+	}
 	if len(snapshot.Artifacts) == 0 {
 		return errors.New("at least one artifact is required")
 	}
@@ -318,9 +343,9 @@ func ValidateModelReviewAgainstSnapshot(review ModelReview, snapshot Snapshot) e
 	if err := ValidateModelReview(review); err != nil {
 		return err
 	}
-	artifacts := map[string]Stage{}
+	artifacts := map[string]Artifact{}
 	for _, artifact := range snapshot.Artifacts {
-		artifacts[artifact.ArtifactID] = artifact.Stage
+		artifacts[artifact.ArtifactID] = artifact
 	}
 	for index, finding := range review.Findings {
 		if err := validateFindingArtifactGrounding(finding, artifacts); err != nil {
@@ -334,18 +359,23 @@ func ValidateFindingAgainstSnapshot(finding Finding, snapshot Snapshot) error {
 	if err := ValidateFinding(finding); err != nil {
 		return err
 	}
-	artifacts := map[string]Stage{}
+	artifacts := map[string]Artifact{}
 	for _, artifact := range snapshot.Artifacts {
-		artifacts[artifact.ArtifactID] = artifact.Stage
+		artifacts[artifact.ArtifactID] = artifact
 	}
 	return validateFindingArtifactGrounding(finding, artifacts)
 }
 
-func validateFindingArtifactGrounding(finding Finding, artifacts map[string]Stage) error {
+func validateFindingArtifactGrounding(finding Finding, artifacts map[string]Artifact) error {
 	for _, locator := range append(append([]Locator(nil), finding.Locators...), evidenceLocators(finding.Evidence)...) {
-		stage, exists := artifacts[locator.ArtifactID]
-		if !exists || stage != locator.Stage {
+		artifact, exists := artifacts[locator.ArtifactID]
+		if !exists || artifact.Stage != locator.Stage {
 			return fmt.Errorf("cites artifact %s outside the reviewed snapshot", locator.ArtifactID)
+		}
+		if locator.Version != artifact.Version || strings.TrimSpace(locator.VersionID) != strings.TrimSpace(artifact.VersionID) ||
+			strings.TrimSpace(locator.BindingID) != strings.TrimSpace(artifact.BindingID) ||
+			strings.TrimSpace(locator.ContentHash) != strings.TrimSpace(artifact.ContentHash) {
+			return fmt.Errorf("locator for artifact %s does not pin the reviewed version, binding and content hash", locator.ArtifactID)
 		}
 	}
 	return nil
@@ -389,6 +419,11 @@ func ValidateFinding(finding Finding) error {
 	if finding.Status != FindingOpen && finding.Status != FindingResolved && finding.Status != FindingOverridden {
 		return errors.New("invalid finding status")
 	}
+	if finding.ResolutionKind != "" && finding.ResolutionKind != DispositionAutoDetected &&
+		finding.ResolutionKind != DispositionHumanConfirmed && finding.ResolutionKind != DispositionResolvedByRebuild &&
+		finding.ResolutionKind != DispositionOverridden {
+		return errors.New("invalid finding resolution kind")
+	}
 	if len(finding.Metadata) > 0 {
 		var metadata map[string]any
 		if err := json.Unmarshal(finding.Metadata, &metadata); err != nil || metadata == nil {
@@ -400,8 +435,8 @@ func ValidateFinding(finding Finding) error {
 
 func validateLocator(locator Locator) error {
 	if !validStage(locator.Stage) || strings.TrimSpace(locator.ArtifactID) == "" ||
-		strings.TrimSpace(locator.EntityType) == "" || strings.TrimSpace(locator.EntityID) == "" {
-		return errors.New("locator requires stage, artifact_id, entity_type and entity_id")
+		locator.Version < 1 || strings.TrimSpace(locator.EntityType) == "" || strings.TrimSpace(locator.EntityID) == "" {
+		return errors.New("locator requires stage, artifact_id, version, entity_type and entity_id")
 	}
 	if locator.StartMS != nil && locator.EndMS != nil && *locator.EndMS <= *locator.StartMS {
 		return errors.New("locator end_ms must be greater than start_ms")

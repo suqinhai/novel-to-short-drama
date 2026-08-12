@@ -23,9 +23,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [master_id]
+              oneOf:
+                - required: [master_id]
+                - required: [timeline_id]
               properties:
                 master_id: {$ref: '#/components/schemas/ID'}
+                timeline_id: {$ref: '#/components/schemas/ID'}
                 config: {$ref: '#/components/schemas/RuleConfig'}
                 model_review_required: {type: boolean, default: true}
                 actor: {type: string}
@@ -69,12 +72,21 @@ paths:
     post:
       tags: [QualityGate]
       operationId: resolveQualityGateFinding
-      summary: Mark fixed only after a local change plan has been generated for this finding.
+      summary: Mark fixed only when a changed replacement QA snapshot proves the finding disappeared.
+      parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}, {$ref: '#/components/parameters/FindingID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ResolutionDecision'}}}}
+      responses:
+        '200': {$ref: '#/components/responses/GateRun'}
+        '409': {description: Finding is closed, no local plan exists, or replacement QA does not prove resolution.}
+  /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/findings/{finding_id}/confirm:
+    post:
+      tags: [QualityGate]
+      operationId: confirmQualityGateFinding
+      summary: Record human review without closing or bypassing an open finding.
       parameters: [{$ref: '#/components/parameters/ProjectID'}, {$ref: '#/components/parameters/EpisodeID'}, {$ref: '#/components/parameters/GateRunID'}, {$ref: '#/components/parameters/FindingID'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
       responses:
         '200': {$ref: '#/components/responses/GateRun'}
-        '409': {description: Finding is already closed, the gate is approved, or no local change plan exists.}
   /projects/{project_id}/episodes/{episode_id}/quality-gates/runs/{gate_run_id}/findings/{finding_id}/change-plan:
     post:
       tags: [QualityGate]
@@ -120,6 +132,11 @@ components:
         project_id: {$ref: '#/components/schemas/ID'}
         episode_id: {$ref: '#/components/schemas/ID'}
         master_id: {$ref: '#/components/schemas/ID'}
+        target_timeline_id: {$ref: '#/components/schemas/ID'}
+        target_timeline_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        effective_input_resolution_id: {$ref: '#/components/schemas/ID'}
+        effective_input_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        resolver_artifact_ids: {type: array, items: {$ref: '#/components/schemas/ID'}}
         duration_ms: {type: integer, minimum: 0}
         artifacts:
           type: array
@@ -132,6 +149,9 @@ components:
               stage: {$ref: '#/components/schemas/Stage'}
               artifact_id: {$ref: '#/components/schemas/ID'}
               version: {type: integer, minimum: 1}
+              version_id: {type: string}
+              binding_id: {type: string}
+              content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
               duration_ms: {type: integer, minimum: 0}
               facts: {type: array, items: {type: object}}
               characters: {type: array, items: {type: object}}
@@ -146,10 +166,14 @@ components:
               constraints: {type: array, items: {type: object}}
     Locator:
       type: object
-      required: [stage, artifact_id, entity_type, entity_id]
+      required: [stage, artifact_id, version, entity_type, entity_id]
       properties:
         stage: {$ref: '#/components/schemas/Stage'}
         artifact_id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1}
+        version_id: {type: string}
+        binding_id: {type: string}
+        content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
         entity_type: {type: string, minLength: 1}
         entity_id: {$ref: '#/components/schemas/ID'}
         field_path: {type: string}
@@ -172,6 +196,11 @@ components:
         locators: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Locator'}}
         recommendation: {type: string, minLength: 1}
         status: {enum: [open, resolved, overridden]}
+        resolution_kind: {enum: [auto_detected, human_confirmed, resolved_by_rebuild, overridden]}
+        human_confirmed_by: {type: string, minLength: 1}
+        human_confirmation_reason: {type: string, minLength: 1}
+        human_confirmed_at: {type: string, format: date-time}
+        replacement_gate_run_id: {$ref: '#/components/schemas/ID'}
         metadata: {type: object}
     ModelReview:
       type: object
@@ -188,6 +217,14 @@ components:
       additionalProperties: false
       required: [reason, actor]
       properties: {reason: {type: string, minLength: 1}, actor: {type: string, minLength: 1}}
+    ResolutionDecision:
+      type: object
+      additionalProperties: false
+      required: [replacement_gate_run_id, reason, actor]
+      properties:
+        replacement_gate_run_id: {$ref: '#/components/schemas/ID'}
+        reason: {type: string, minLength: 1}
+        actor: {type: string, minLength: 1}
     GateRunResponse:
       type: object
       required: [data]
@@ -197,6 +234,7 @@ components:
           required: [gate_run_id, ruleset_version, rule_score, rules_status, model_status, status, findings]
           properties:
             gate_run_id: {$ref: '#/components/schemas/ID'}
+            target_timeline_id: {$ref: '#/components/schemas/ID'}
             ruleset_version: {type: string}
             rule_score: {type: number, minimum: 0, maximum: 100}
             rules_status: {enum: [processing, completed, failed]}

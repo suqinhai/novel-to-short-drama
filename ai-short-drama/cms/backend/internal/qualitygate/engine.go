@@ -637,7 +637,9 @@ func (e *evaluator) add(dimension Dimension, code, severity, message string, evi
 }
 
 func artifactLocator(artifact Artifact, entityType, entityID, field string) Locator {
-	return Locator{Stage: artifact.Stage, ArtifactID: artifact.ArtifactID, EntityType: entityType, EntityID: entityID, FieldPath: field}
+	return Locator{Stage: artifact.Stage, ArtifactID: artifact.ArtifactID, Version: artifact.Version,
+		VersionID: artifact.VersionID, BindingID: artifact.BindingID, ContentHash: artifact.ContentHash,
+		EntityType: entityType, EntityID: entityID, FieldPath: field}
 }
 func eventLocator(a Artifact, v Event) Locator {
 	l := artifactLocator(a, "event", v.EventID, "events")

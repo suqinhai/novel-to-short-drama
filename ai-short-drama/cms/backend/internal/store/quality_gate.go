@@ -21,6 +21,7 @@ type QualityGateRecord struct {
 	ProjectID           string                `json:"project_id"`
 	EpisodeID           string                `json:"episode_id"`
 	MasterID            *string               `json:"master_id,omitempty"`
+	TargetTimelineID    *string               `json:"target_timeline_id,omitempty"`
 	RulesetVersion      string                `json:"ruleset_version"`
 	RulesConfig         qualitygate.Config    `json:"rules_config"`
 	PromptVersion       *string               `json:"prompt_version,omitempty"`
@@ -102,11 +103,11 @@ func (s *Store) SaveQualityGateRuleRun(ctx context.Context, snapshot qualitygate
 		}
 	}
 	command, err := tx.Exec(ctx, `INSERT INTO drama.quality_gate_runs(
-		gate_run_id,project_id,episode_id,master_id,ruleset_version,rules_config,rules_config_hash,snapshot,snapshot_hash,
+		gate_run_id,project_id,episode_id,master_id,target_timeline_id,ruleset_version,rules_config,rules_config_hash,snapshot,snapshot_hash,
 		rule_score,rules_status,model_review_required,model_status,status,created_by)
-		VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,$10,'completed',$11,$12,$13,NULLIF($14,''))
+		VALUES($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,'completed',$12,$13,$14,NULLIF($15,''))
 		ON CONFLICT(gate_run_id) DO NOTHING`, run.GateRunID, snapshot.ProjectID, snapshot.EpisodeID,
-		snapshot.MasterID, run.RulesetVersion, rulesConfigJSON, rulesConfigHash, snapshotJSON, snapshotHash, run.RuleScore,
+		snapshot.MasterID, snapshot.TargetTimelineID, run.RulesetVersion, rulesConfigJSON, rulesConfigHash, snapshotJSON, snapshotHash, run.RuleScore,
 		run.ModelReviewRequired, modelStatus, status, strings.TrimSpace(actor))
 	if err != nil {
 		return QualityGateRecord{}, err
@@ -120,6 +121,13 @@ func (s *Store) SaveQualityGateRuleRun(ctx context.Context, snapshot qualitygate
 			}
 			if _, err = tx.Exec(ctx, `UPDATE drama.quality_gate_runs SET status='superseded'
 				WHERE master_id=$1 AND gate_run_id<>$2 AND status IN('review_pending','review_ready','approved')`, snapshot.MasterID, run.GateRunID); err != nil {
+				return QualityGateRecord{}, err
+			}
+		}
+		if snapshot.TargetTimelineID != "" && snapshot.MasterID == "" {
+			if _, err = tx.Exec(ctx, `UPDATE drama.quality_gate_runs SET status='superseded'
+				WHERE target_timeline_id=$1 AND gate_run_id<>$2 AND master_id IS NULL
+				  AND status IN('review_pending','review_ready','approved')`, snapshot.TargetTimelineID, run.GateRunID); err != nil {
 				return QualityGateRecord{}, err
 			}
 		}
@@ -208,10 +216,10 @@ func (s *Store) SaveQualityGateModelReview(ctx context.Context, projectID, episo
 
 func (s *Store) GetQualityGateRun(ctx context.Context, projectID, episodeID, runID string) (QualityGateRecord, error) {
 	var result QualityGateRecord
-	err := s.pool.QueryRow(ctx, `SELECT gate_run_id,schema_version,project_id,episode_id,master_id,
+	err := s.pool.QueryRow(ctx, `SELECT gate_run_id,schema_version,project_id,episode_id,master_id,target_timeline_id,
 		ruleset_version,rules_config,prompt_version,rule_score,rules_status,model_review_required,model_status,status,created_at,updated_at
 		FROM drama.quality_gate_runs WHERE gate_run_id=$1 AND project_id=$2 AND episode_id=$3`, runID, projectID, episodeID).Scan(
-		&result.GateRunID, &result.SchemaVersion, &result.ProjectID, &result.EpisodeID, &result.MasterID,
+		&result.GateRunID, &result.SchemaVersion, &result.ProjectID, &result.EpisodeID, &result.MasterID, &result.TargetTimelineID,
 		&result.RulesetVersion, &result.RulesConfig, &result.PromptVersion, &result.RuleScore, &result.RulesStatus,
 		&result.ModelReviewRequired, &result.ModelStatus, &result.Status, &result.CreatedAt, &result.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -221,7 +229,8 @@ func (s *Store) GetQualityGateRun(ctx context.Context, projectID, episodeID, run
 		return QualityGateRecord{}, err
 	}
 	rows, err := s.pool.Query(ctx, `SELECT finding_id,schema_version,detector_type,dimension,code,severity,
-		message,evidence,locators,recommendation,status,detector_metadata
+		message,evidence,locators,recommendation,status,resolution_kind,COALESCE(human_confirmed_by,''),
+		COALESCE(human_confirmation_reason,''),human_confirmed_at,COALESCE(replacement_gate_run_id,''),detector_metadata
 		FROM drama.quality_gate_findings WHERE gate_run_id=$1
 		ORDER BY CASE severity WHEN 'blocking' THEN 0 WHEN 'major' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,created_at,finding_id`, runID)
 	if err != nil {
@@ -234,7 +243,9 @@ func (s *Store) GetQualityGateRun(ctx context.Context, projectID, episodeID, run
 		var evidenceJSON, locatorsJSON []byte
 		if err = rows.Scan(&finding.FindingID, &finding.SchemaVersion, &finding.DetectorType, &finding.Dimension,
 			&finding.Code, &finding.Severity, &finding.Message, &evidenceJSON, &locatorsJSON,
-			&finding.Recommendation, &finding.Status, &finding.Metadata); err != nil {
+			&finding.Recommendation, &finding.Status, &finding.ResolutionKind, &finding.HumanConfirmedBy,
+			&finding.HumanConfirmationReason, &finding.HumanConfirmedAt, &finding.ReplacementGateRunID,
+			&finding.Metadata); err != nil {
 			return QualityGateRecord{}, err
 		}
 		if err = json.Unmarshal(evidenceJSON, &finding.Evidence); err != nil {
@@ -294,7 +305,7 @@ func (s *Store) OverrideQualityGateFinding(ctx context.Context, projectID, episo
 	if err != nil {
 		return QualityGateOverride{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE drama.quality_gate_findings SET status='overridden',resolved_by=$3,
+	if _, err = tx.Exec(ctx, `UPDATE drama.quality_gate_findings SET status='overridden',resolution_kind='overridden',resolved_by=$3,
 		resolution_reason=$4,resolved_at=now() WHERE gate_run_id=$1 AND finding_id=$2`, runID, findingID, actor, reason); err != nil {
 		return QualityGateOverride{}, err
 	}
@@ -304,24 +315,65 @@ func (s *Store) OverrideQualityGateFinding(ctx context.Context, projectID, episo
 	return result, nil
 }
 
-func (s *Store) ResolveQualityGateFinding(ctx context.Context, projectID, episodeID, runID, findingID, reason, actor string) (QualityGateRecord, error) {
+func (s *Store) ConfirmQualityGateFinding(ctx context.Context, projectID, episodeID, runID, findingID, reason, actor string) (QualityGateRecord, error) {
 	reason, actor = strings.TrimSpace(reason), strings.TrimSpace(actor)
 	if reason == "" || actor == "" {
-		return QualityGateRecord{}, fmt.Errorf("%w: resolution reason and actor are required", ErrValidation)
+		return QualityGateRecord{}, fmt.Errorf("%w: confirmation reason and actor are required", ErrValidation)
 	}
-	command, err := s.writer.Exec(ctx, `UPDATE drama.quality_gate_findings finding SET status='resolved',resolved_by=$5,
-		resolution_reason=$6,resolved_at=now() FROM drama.quality_gate_runs run
-		WHERE finding.gate_run_id=$1 AND finding.finding_id=$2 AND run.gate_run_id=finding.gate_run_id
-		AND run.project_id=$3 AND run.episode_id=$4 AND finding.status='open' AND run.status<>'approved'
-		AND EXISTS(SELECT 1 FROM drama.quality_gate_change_plans plan
-		  WHERE plan.gate_run_id=finding.gate_run_id AND plan.finding_id=finding.finding_id
-		    AND plan.status IN('proposed','confirmed','executed'))`,
-		runID, findingID, projectID, episodeID, actor, reason)
+	command, err := s.writer.Exec(ctx, `UPDATE drama.quality_gate_findings finding
+		SET resolution_kind='human_confirmed',human_confirmed_by=$5,human_confirmation_reason=$6,human_confirmed_at=now()
+		FROM drama.quality_gate_runs run WHERE finding.gate_run_id=$1 AND finding.finding_id=$2
+		AND run.gate_run_id=finding.gate_run_id AND run.project_id=$3 AND run.episode_id=$4
+		AND finding.status='open' AND finding.resolution_kind IN('auto_detected','human_confirmed')
+		AND run.status<>'approved'`, runID, findingID, projectID, episodeID, actor, reason)
 	if err != nil {
 		return QualityGateRecord{}, err
 	}
 	if command.RowsAffected() == 0 {
-		return QualityGateRecord{}, fmt.Errorf("%w: finding is missing, closed, gate is approved, or local change plan is absent", ErrConflict)
+		return QualityGateRecord{}, fmt.Errorf("%w: finding is missing, closed, or gate is approved", ErrConflict)
+	}
+	return s.GetQualityGateRun(ctx, projectID, episodeID, runID)
+}
+
+func (s *Store) ResolveQualityGateFinding(ctx context.Context, projectID, episodeID, runID, findingID, replacementRunID, reason, actor string) (QualityGateRecord, error) {
+	replacementRunID = strings.TrimSpace(replacementRunID)
+	reason, actor = strings.TrimSpace(reason), strings.TrimSpace(actor)
+	if replacementRunID == "" || reason == "" || actor == "" {
+		return QualityGateRecord{}, fmt.Errorf("%w: replacement gate run, resolution reason and actor are required", ErrValidation)
+	}
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return QualityGateRecord{}, err
+	}
+	defer tx.Rollback(ctx)
+	command, err := tx.Exec(ctx, `UPDATE drama.quality_gate_findings finding
+		SET status='resolved',resolution_kind='resolved_by_rebuild',replacement_gate_run_id=$5,
+			resolved_by=$6,resolution_reason=$7,resolved_at=now()
+		FROM drama.quality_gate_runs original,drama.quality_gate_runs replacement
+		WHERE finding.gate_run_id=$1 AND finding.finding_id=$2 AND original.gate_run_id=finding.gate_run_id
+		AND original.project_id=$3 AND original.episode_id=$4 AND finding.status='open' AND original.status<>'approved'
+		AND replacement.gate_run_id=$5 AND replacement.project_id=original.project_id
+		AND replacement.episode_id=original.episode_id AND replacement.gate_run_id<>original.gate_run_id
+		AND replacement.created_at>=original.created_at AND replacement.snapshot_hash<>original.snapshot_hash
+		AND replacement.status IN('review_ready','approved') AND replacement.model_status<>'pending'
+		AND NOT EXISTS(SELECT 1 FROM drama.quality_gate_findings repeated
+		  WHERE repeated.gate_run_id=replacement.gate_run_id AND repeated.code=finding.code AND repeated.status='open')
+		AND EXISTS(SELECT 1 FROM drama.quality_gate_change_plans plan
+		  WHERE plan.gate_run_id=finding.gate_run_id AND plan.finding_id=finding.finding_id
+		    AND plan.status IN('proposed','confirmed','executed'))`,
+		runID, findingID, projectID, episodeID, replacementRunID, actor, reason)
+	if err != nil {
+		return QualityGateRecord{}, err
+	}
+	if command.RowsAffected() == 0 {
+		return QualityGateRecord{}, fmt.Errorf("%w: finding is not open, change plan is absent, or replacement QA does not prove the issue disappeared on a changed snapshot", ErrConflict)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE drama.quality_gate_change_plans SET status='executed',updated_at=now()
+		WHERE gate_run_id=$1 AND finding_id=$2`, runID, findingID); err != nil {
+		return QualityGateRecord{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return QualityGateRecord{}, err
 	}
 	return s.GetQualityGateRun(ctx, projectID, episodeID, runID)
 }
@@ -397,12 +449,15 @@ func (s *Store) getQualityGateFinding(ctx context.Context, projectID, episodeID,
 	var finding qualitygate.Finding
 	var evidenceJSON, locatorsJSON []byte
 	err := s.pool.QueryRow(ctx, `SELECT finding.finding_id,finding.schema_version,finding.detector_type,finding.dimension,
-		finding.code,finding.severity,finding.message,finding.evidence,finding.locators,finding.recommendation,finding.status,finding.detector_metadata
+		finding.code,finding.severity,finding.message,finding.evidence,finding.locators,finding.recommendation,finding.status,
+		finding.resolution_kind,COALESCE(finding.human_confirmed_by,''),COALESCE(finding.human_confirmation_reason,''),
+		finding.human_confirmed_at,COALESCE(finding.replacement_gate_run_id,''),finding.detector_metadata
 		FROM drama.quality_gate_findings finding JOIN drama.quality_gate_runs run USING(gate_run_id)
 		WHERE finding.gate_run_id=$1 AND finding.finding_id=$2 AND run.project_id=$3 AND run.episode_id=$4`,
 		runID, findingID, projectID, episodeID).Scan(&finding.FindingID, &finding.SchemaVersion, &finding.DetectorType,
 		&finding.Dimension, &finding.Code, &finding.Severity, &finding.Message, &evidenceJSON, &locatorsJSON,
-		&finding.Recommendation, &finding.Status, &finding.Metadata)
+		&finding.Recommendation, &finding.Status, &finding.ResolutionKind, &finding.HumanConfirmedBy,
+		&finding.HumanConfirmationReason, &finding.HumanConfirmedAt, &finding.ReplacementGateRunID, &finding.Metadata)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return qualitygate.Finding{}, ErrNotFound
 	}

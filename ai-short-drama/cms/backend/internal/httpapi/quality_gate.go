@@ -15,6 +15,7 @@ import (
 
 type qualityGateRuleRunRequest struct {
 	MasterID            string             `json:"master_id"`
+	TimelineID          string             `json:"timeline_id,omitempty"`
 	Config              qualitygate.Config `json:"config"`
 	ModelReviewRequired *bool              `json:"model_review_required,omitempty"`
 	Actor               string             `json:"actor,omitempty"`
@@ -23,6 +24,12 @@ type qualityGateRuleRunRequest struct {
 type qualityGateDecisionRequest struct {
 	Reason string `json:"reason"`
 	Actor  string `json:"actor"`
+}
+
+type qualityGateResolutionRequest struct {
+	ReplacementGateRunID string `json:"replacement_gate_run_id"`
+	Reason                string `json:"reason"`
+	Actor                 string `json:"actor"`
 }
 
 type qualityGateActorRequest struct {
@@ -35,6 +42,7 @@ func registerQualityGateRoutes(api *gin.RouterGroup, handler *Handler) {
 	api.GET(base+"/runs/:gateRunID", handler.getQualityGateRun)
 	api.POST(base+"/runs/:gateRunID/model-review", handler.submitQualityGateModelReview)
 	api.POST(base+"/runs/:gateRunID/findings/:findingID/override", handler.overrideQualityGateFinding)
+	api.POST(base+"/runs/:gateRunID/findings/:findingID/confirm", handler.confirmQualityGateFinding)
 	api.POST(base+"/runs/:gateRunID/findings/:findingID/resolve", handler.resolveQualityGateFinding)
 	api.POST(base+"/runs/:gateRunID/findings/:findingID/change-plan", handler.createQualityGateChangePlan)
 	api.POST(base+"/runs/:gateRunID/approve-master", handler.approveQualityGateMaster)
@@ -50,8 +58,19 @@ func (h *Handler) runCrossLayerRules(c *gin.Context) {
 	if input.ModelReviewRequired != nil {
 		required = *input.ModelReviewRequired
 	}
-	record, err := h.store.RunAuthoritativeQualityGate(c.Request.Context(), c.Param("projectID"),
-		c.Param("episodeID"), input.MasterID, input.Config, required, input.Actor)
+	if (strings.TrimSpace(input.MasterID) == "") == (strings.TrimSpace(input.TimelineID) == "") {
+		respondError(c, http.StatusBadRequest, "INVALID_QUALITY_GATE_REQUEST", "exactly one of master_id or timeline_id is required")
+		return
+	}
+	var record store.QualityGateRecord
+	var err error
+	if strings.TrimSpace(input.TimelineID) != "" {
+		record, err = h.store.RunAuthoritativeTimelineQualityGate(c.Request.Context(), c.Param("projectID"),
+			c.Param("episodeID"), input.TimelineID, input.Config, required, input.Actor)
+	} else {
+		record, err = h.store.RunAuthoritativeQualityGate(c.Request.Context(), c.Param("projectID"),
+			c.Param("episodeID"), input.MasterID, input.Config, required, input.Actor)
+	}
 	if err != nil {
 		writeQualityGateError(c, err)
 		return
@@ -97,14 +116,29 @@ func (h *Handler) overrideQualityGateFinding(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": result})
 }
 
-func (h *Handler) resolveQualityGateFinding(c *gin.Context) {
+func (h *Handler) confirmQualityGateFinding(c *gin.Context) {
 	var input qualityGateDecisionRequest
+	if err := decodeQualityGateJSON(c, &input); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_QUALITY_GATE_CONFIRMATION", err.Error())
+		return
+	}
+	result, err := h.store.ConfirmQualityGateFinding(c.Request.Context(), c.Param("projectID"), c.Param("episodeID"),
+		c.Param("gateRunID"), c.Param("findingID"), input.Reason, input.Actor)
+	if err != nil {
+		writeQualityGateError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func (h *Handler) resolveQualityGateFinding(c *gin.Context) {
+	var input qualityGateResolutionRequest
 	if err := decodeQualityGateJSON(c, &input); err != nil {
 		respondError(c, http.StatusBadRequest, "INVALID_QUALITY_GATE_RESOLUTION", err.Error())
 		return
 	}
 	result, err := h.store.ResolveQualityGateFinding(c.Request.Context(), c.Param("projectID"), c.Param("episodeID"),
-		c.Param("gateRunID"), c.Param("findingID"), input.Reason, input.Actor)
+		c.Param("gateRunID"), c.Param("findingID"), input.ReplacementGateRunID, input.Reason, input.Actor)
 	if err != nil {
 		writeQualityGateError(c, err)
 		return

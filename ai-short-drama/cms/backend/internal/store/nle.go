@@ -26,6 +26,7 @@ type NLETimelineSummary struct {
 	FPS                 float64         `json:"fps"`
 	Resolution          string          `json:"resolution"`
 	SubtitleConfig      json.RawMessage `json:"subtitle_config"`
+	Tracks              json.RawMessage `json:"tracks"`
 	ApprovedRenderJobID *string         `json:"approved_render_job_id,omitempty"`
 	ApprovedAt          *time.Time      `json:"approved_at,omitempty"`
 	CreatedAt           time.Time       `json:"created_at"`
@@ -52,6 +53,7 @@ type NLETimelineItem struct {
 	EffectConfig         json.RawMessage `json:"effect_config"`
 	ProxyURL             *string         `json:"proxy_url,omitempty"`
 	WaveformURL          *string         `json:"waveform_url,omitempty"`
+	WaveformStatus       string          `json:"waveform_status"`
 	SubtitleText         *string         `json:"subtitle_text,omitempty"`
 	ProxyStatus          string          `json:"proxy_status"`
 }
@@ -99,6 +101,21 @@ type NLEDraftResult struct {
 	Item     *NLETimelineItem   `json:"item,omitempty"`
 }
 
+type NLETrackOrderInput struct {
+	TrackOrder []string `json:"track_order"`
+	Reason     string   `json:"reason,omitempty"`
+	Actor      *string  `json:"actor,omitempty"`
+}
+
+type NLEWaveformJob struct {
+	JobID        string  `json:"job_id"`
+	TimelineID   string  `json:"timeline_id"`
+	TimelineItem string  `json:"timeline_item_id"`
+	EntityID     string  `json:"entity_id"`
+	Status       string  `json:"status"`
+	OutputURL    *string `json:"output_url,omitempty"`
+}
+
 func (s *Store) GetNLETimelinePage(
 	ctx context.Context, projectID, episodeID, timelineID string,
 	startMS, endMS int64, limit, offset int,
@@ -144,6 +161,11 @@ func (s *Store) GetNLETimelinePage(
 			WHERE (audio.dialogue_audio_id=item.entity_id OR audio.dialogue_id=item.entity_id)
 			  AND audio.is_current AND audio.waveform_url IS NOT NULL
 			ORDER BY audio.generation_version DESC LIMIT 1)) waveform_url,
+		COALESCE((SELECT job.status FROM drama.media_processing_jobs job
+			WHERE job.project_id=item.project_id AND job.episode_id=item.episode_id
+			  AND job.operation='generate_waveform' AND job.parameters->>'timeline_item_id'=item.timeline_item_id
+			ORDER BY job.updated_at DESC LIMIT 1),
+			CASE WHEN item.waveform_url IS NOT NULL THEN 'succeeded' ELSE 'missing' END) waveform_status,
 		CASE WHEN item.track_type='subtitle' THEN COALESCE(item.transform_config->>'text',(
 			SELECT dialogue.text FROM drama.dialogues dialogue WHERE dialogue.dialogue_id=item.entity_id),item.entity_id)
 			ELSE NULL END subtitle_text
@@ -161,7 +183,7 @@ func (s *Store) GetNLETimelinePage(
 			&item.TrackType, &item.TrackNumber, &item.SequenceNumber, &item.EntityType, &item.EntityID,
 			&item.TimelineStartMS, &item.TimelineEndMS, &item.SourceInMS, &item.SourceOutMS, &item.DurationMS,
 			&item.Volume, &item.FadeInMS, &item.FadeOutMS, &item.TransformConfig, &item.EffectConfig,
-			&item.ProxyURL, &item.WaveformURL, &item.SubtitleText); err != nil {
+			&item.ProxyURL, &item.WaveformURL, &item.WaveformStatus, &item.SubtitleText); err != nil {
 			return NLETimelinePage{}, err
 		}
 		item.ProxyStatus = "ready"
@@ -195,21 +217,154 @@ func (s *Store) GetNLETimelinePage(
 	return result, nil
 }
 
+func (s *Store) QueueNLEWaveforms(ctx context.Context, projectID, episodeID, timelineID string) ([]NLEWaveformJob, error) {
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM drama.edit_timelines
+		WHERE timeline_id=$1 AND project_id=$2 AND episode_id=$3)`, timelineID, projectID, episodeID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := tx.Query(ctx, `SELECT timeline_item_id,entity_type,entity_id,
+		COALESCE(NULLIF(btrim(COALESCE(source_path,'')),''),NULLIF(btrim(COALESCE(source_url,'')),''),'')
+		FROM drama.edit_timeline_items WHERE timeline_id=$1
+		  AND track_type IN('dialogue','narration','bgm','sound_effect','ambience')
+		  AND waveform_url IS NULL ORDER BY track_type,track_number,sequence_number`, timelineID)
+	if err != nil {
+		return nil, err
+	}
+	type sourceItem struct{ itemID, entityType, entityID, source string }
+	sources := []sourceItem{}
+	for rows.Next() {
+		var item sourceItem
+		if err = rows.Scan(&item.itemID, &item.entityType, &item.entityID, &item.source); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if strings.TrimSpace(item.source) != "" {
+			sources = append(sources, item)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	result := make([]NLEWaveformJob, 0, len(sources))
+	for _, source := range sources {
+		if strings.HasPrefix(source.source, "/") && !strings.HasPrefix(source.source, "/data/storage/") {
+			source.source = "/data/storage/" + strings.TrimPrefix(source.source, "/")
+		}
+		jobID, idErr := newPublicID("media_")
+		if idErr != nil {
+			return nil, idErr
+		}
+		parameters, _ := json.Marshal(map[string]any{"timeline_id": timelineID, "timeline_item_id": source.itemID,
+			"target_path": "/data/storage/results/nle/waveforms/" + jobID + ".png", "width": 1200, "height": 160})
+		var job NLEWaveformJob
+		err = tx.QueryRow(ctx, `INSERT INTO drama.media_processing_jobs(job_id,idempotency_key,project_id,episode_id,
+			entity_type,entity_id,operation,input_url,parameters,status)
+			VALUES($1,$2,$3,$4,$5,$6,'generate_waveform',$7,$8::jsonb,'pending')
+			ON CONFLICT(idempotency_key) DO UPDATE SET
+			  status=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout','cancelled') THEN 'pending'
+			    ELSE drama.media_processing_jobs.status END,
+			  error_code=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout','cancelled') THEN NULL
+			    ELSE drama.media_processing_jobs.error_code END,
+			  error_message=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout','cancelled') THEN NULL
+			    ELSE drama.media_processing_jobs.error_message END,
+			  started_at=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout','cancelled') THEN NULL
+			    ELSE drama.media_processing_jobs.started_at END,
+			  completed_at=CASE WHEN drama.media_processing_jobs.status IN('failed','timeout','cancelled') THEN NULL
+			    ELSE drama.media_processing_jobs.completed_at END,updated_at=now()
+			RETURNING job_id,$9::text,parameters->>'timeline_item_id',entity_id,status,output_url`,
+			jobID, "nle:waveform:"+timelineID+":"+source.itemID, projectID, episodeID, source.entityType,
+			source.entityID, source.source, parameters, timelineID).Scan(&job.JobID, &job.TimelineID,
+			&job.TimelineItem, &job.EntityID, &job.Status, &job.OutputURL)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, job)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 type nleTimelineScanner interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (s *Store) scanNLETimeline(ctx context.Context, q nleTimelineScanner, projectID, episodeID, timelineID string, target *NLETimelineSummary) error {
 	err := q.QueryRow(ctx, `SELECT timeline_id,parent_timeline_id,version,version_reason,approval_state,status,
-		is_current,target_duration_ms,fps,resolution,subtitle_config,approved_render_job_id,approved_at,created_at
+		is_current,target_duration_ms,fps,resolution,subtitle_config,tracks,approved_render_job_id,approved_at,created_at
 		FROM drama.edit_timelines WHERE project_id=$1 AND episode_id=$2 AND timeline_id=$3`,
 		projectID, episodeID, timelineID).Scan(&target.TimelineID, &target.ParentTimelineID, &target.Version,
 		&target.VersionReason, &target.ApprovalState, &target.Status, &target.IsCurrent, &target.TargetDurationMS,
-		&target.FPS, &target.Resolution, &target.SubtitleConfig, &target.ApprovedRenderJobID, &target.ApprovedAt, &target.CreatedAt)
+		&target.FPS, &target.Resolution, &target.SubtitleConfig, &target.Tracks, &target.ApprovedRenderJobID, &target.ApprovedAt, &target.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
 	return err
+}
+
+func (s *Store) ReorderNLETracks(ctx context.Context, projectID, episodeID, timelineID string, input NLETrackOrderInput) (NLEDraftResult, error) {
+	allowed := map[string]bool{"video": true, "dialogue": true, "narration": true, "bgm": true,
+		"ambience": true, "sound_effect": true, "subtitle": true}
+	seen := map[string]bool{}
+	if len(input.TrackOrder) != len(allowed) {
+		return NLEDraftResult{}, fmt.Errorf("%w: track_order must contain every NLE track exactly once", ErrConflict)
+	}
+	for _, track := range input.TrackOrder {
+		if !allowed[track] || seen[track] {
+			return NLEDraftResult{}, fmt.Errorf("%w: track_order contains an unknown or duplicate track", ErrConflict)
+		}
+		seen[track] = true
+	}
+	tx, err := s.writer.Begin(ctx)
+	if err != nil {
+		return NLEDraftResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	var state string
+	if err = tx.QueryRow(ctx, `SELECT approval_state FROM drama.edit_timelines
+		WHERE timeline_id=$1 AND project_id=$2 AND episode_id=$3 FOR UPDATE`, timelineID, projectID, episodeID).Scan(&state); errors.Is(err, pgx.ErrNoRows) {
+		return NLEDraftResult{}, ErrNotFound
+	}
+	if err != nil {
+		return NLEDraftResult{}, err
+	}
+	if state == "rendering" {
+		return NLEDraftResult{}, fmt.Errorf("%w: rendering timeline is immutable", ErrConflict)
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = "nle_track_reorder"
+	}
+	draft, err := cloneTimelineVersion(ctx, tx, projectID, episodeID, timelineID, "", "", reason, "draft", nil, nil)
+	if err != nil {
+		return NLEDraftResult{}, err
+	}
+	orderJSON, _ := json.Marshal(input.TrackOrder)
+	if _, err = tx.Exec(ctx, `UPDATE drama.edit_timelines
+		SET tracks=tracks||jsonb_build_object('track_order',$2::jsonb),updated_at=now() WHERE timeline_id=$1`,
+		draft.TimelineID, orderJSON); err != nil {
+		return NLEDraftResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return NLEDraftResult{}, err
+	}
+	var summary NLETimelineSummary
+	if err = s.scanNLETimeline(ctx, s.pool, projectID, episodeID, draft.TimelineID, &summary); err != nil {
+		return NLEDraftResult{}, err
+	}
+	return NLEDraftResult{Timeline: summary}, nil
 }
 
 func (s *Store) CreateNLEItemDraft(
@@ -533,7 +688,7 @@ func (s *Store) ConfirmNLETimelineRender(
 	if state != "draft" && state != "render_failed" {
 		return NLERenderJob{}, fmt.Errorf("%w: only a draft timeline can be explicitly rendered", ErrConflict)
 	}
-	if err = ensureQualityGateAllowsRender(ctx, tx, projectID, episodeID); err != nil {
+	if err = ensureQualityGateAllowsRender(ctx, tx, projectID, episodeID, timelineID); err != nil {
 		return NLERenderJob{}, err
 	}
 	if err = validateNLETimeline(ctx, tx, timelineID, targetDurationMS); err != nil {
@@ -593,16 +748,36 @@ func (s *Store) ConfirmNLETimelineRender(
 	return NLERenderJob{RenderJobID: renderID, TimelineID: timelineID, Status: "pending", Progress: 0, CreatedAt: time.Now()}, nil
 }
 
-func ensureQualityGateAllowsRender(ctx context.Context, tx pgx.Tx, projectID, episodeID string) error {
-	var runID, modelStatus string
-	err := tx.QueryRow(ctx, `SELECT gate_run_id,model_status FROM drama.quality_gate_runs
-		WHERE project_id=$1 AND episode_id=$2 AND status<>'superseded'
-		ORDER BY created_at DESC,gate_run_id DESC LIMIT 1`, projectID, episodeID).Scan(&runID, &modelStatus)
+func ensureQualityGateAllowsRender(ctx context.Context, tx pgx.Tx, projectID, episodeID, timelineID string) error {
+	var runID, modelStatus, snapshotTimelineHash, liveTimelineHash, resolutionHash string
+	err := tx.QueryRow(ctx, `SELECT run.gate_run_id,run.model_status,run.snapshot->>'target_timeline_hash',
+		encode(drama.digest(convert_to(jsonb_build_object(
+		  'timeline',to_jsonb(timeline)-'id'-'created_at'-'updated_at',
+		  'items',COALESCE((SELECT jsonb_agg(to_jsonb(item)-'id'-'created_at'-'updated_at'
+		    ORDER BY item.track_type,item.track_number,item.sequence_number) FROM drama.edit_timeline_items item
+		    WHERE item.timeline_id=timeline.timeline_id),'[]'::jsonb))::text,'UTF8'),'sha256'),'hex'),
+		run.snapshot->>'effective_input_hash'
+		FROM drama.quality_gate_runs run JOIN drama.edit_timelines timeline ON timeline.timeline_id=run.target_timeline_id
+		WHERE run.project_id=$1 AND run.episode_id=$2 AND run.target_timeline_id=$3
+		  AND run.master_id IS NULL AND run.status<>'superseded'
+		ORDER BY run.created_at DESC,run.gate_run_id DESC LIMIT 1`, projectID, episodeID, timelineID).Scan(
+		&runID, &modelStatus, &snapshotTimelineHash, &liveTimelineHash, &resolutionHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return fmt.Errorf("%w: QUALITY_GATE_TARGET_MISMATCH: target timeline has no authoritative preflight", ErrConflict)
 	}
 	if err != nil {
 		return err
+	}
+	if snapshotTimelineHash == "" || snapshotTimelineHash != liveTimelineHash {
+		return fmt.Errorf("%w: QUALITY_GATE_TARGET_MISMATCH: timeline changed after preflight", ErrConflict)
+	}
+	var liveResolutionHash string
+	if err = tx.QueryRow(ctx, `SELECT drama.delivery_effective_input_hash(
+		drama.resolve_effective_inputs($1,$2,'post_production'))`, projectID, episodeID).Scan(&liveResolutionHash); err != nil {
+		return err
+	}
+	if resolutionHash == "" || resolutionHash != liveResolutionHash {
+		return fmt.Errorf("%w: QUALITY_GATE_STALE: Effective Input Resolver changed after preflight", ErrConflict)
 	}
 	var blockers int
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM drama.quality_gate_findings

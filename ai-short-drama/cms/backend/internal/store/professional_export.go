@@ -61,21 +61,24 @@ type CreateProfessionalExportInput struct {
 }
 
 type ProfessionalExportJob struct {
-	ExportID      string                      `json:"export_id"`
-	ProjectID     string                      `json:"project_id"`
-	EpisodeID     string                      `json:"episode_id"`
-	BundleVersion int                         `json:"bundle_version"`
-	Formats       []string                    `json:"formats"`
-	Selection     ProfessionalExportSelection `json:"selection"`
-	SelectionHash string                      `json:"selection_hash"`
-	Manifest      json.RawMessage             `json:"manifest"`
-	Status        string                      `json:"status"`
-	PackagePath   *string                     `json:"package_path,omitempty"`
-	PackageHash   *string                     `json:"package_hash,omitempty"`
-	ErrorMessage  *string                     `json:"error_message,omitempty"`
-	RequestedBy   *string                     `json:"requested_by,omitempty"`
-	CreatedAt     time.Time                   `json:"created_at"`
-	CompletedAt   *time.Time                  `json:"completed_at,omitempty"`
+	ExportID                   string                      `json:"export_id"`
+	ProjectID                  string                      `json:"project_id"`
+	EpisodeID                  string                      `json:"episode_id"`
+	BundleVersion              int                         `json:"bundle_version"`
+	Formats                    []string                    `json:"formats"`
+	Selection                  ProfessionalExportSelection `json:"selection"`
+	SelectionHash              string                      `json:"selection_hash"`
+	EffectiveInputResolutionID *string                     `json:"effective_input_resolution_id,omitempty"`
+	EffectiveInputHash         *string                     `json:"effective_input_hash,omitempty"`
+	GateApprovalID             *string                     `json:"gate_approval_id,omitempty"`
+	Manifest                   json.RawMessage             `json:"manifest"`
+	Status                     string                      `json:"status"`
+	PackagePath                *string                     `json:"package_path,omitempty"`
+	PackageHash                *string                     `json:"package_hash,omitempty"`
+	ErrorMessage               *string                     `json:"error_message,omitempty"`
+	RequestedBy                *string                     `json:"requested_by,omitempty"`
+	CreatedAt                  time.Time                   `json:"created_at"`
+	CompletedAt                *time.Time                  `json:"completed_at,omitempty"`
 }
 
 type LocalEditTarget struct {
@@ -219,6 +222,9 @@ func validateExportInput(input CreateProfessionalExportInput) error {
 	if input.Selection.EpisodeID == "" || input.Selection.BundleVersion < 1 || len(input.Formats) == 0 {
 		return fmt.Errorf("%w: explicit episode_id, bundle_version and formats are required", ErrValidation)
 	}
+	if strings.TrimSpace(input.Selection.MasterID) == "" || strings.TrimSpace(input.Selection.TimelineID) == "" {
+		return fmt.Errorf("%w: master_id and timeline_id are required for a professional release", ErrValidation)
+	}
 	seen := map[string]bool{}
 	for _, format := range input.Formats {
 		if !exportkit.ValidFormat(format) {
@@ -279,10 +285,12 @@ func (s *Store) CreateProfessionalExport(ctx context.Context, projectID string, 
 func (s *Store) GetProfessionalExport(ctx context.Context, projectID, exportID string) (ProfessionalExportJob, error) {
 	var item ProfessionalExportJob
 	var formatsJSON, selectionJSON []byte
-	err := s.pool.QueryRow(ctx, `SELECT export_id,project_id,episode_id,bundle_version,formats,selection,selection_hash,manifest,
+	err := s.pool.QueryRow(ctx, `SELECT export_id,project_id,episode_id,bundle_version,formats,selection,selection_hash,
+		effective_input_resolution_id,effective_input_hash,gate_approval_id,manifest,
 		status,package_path,package_hash,error_message,requested_by,created_at,completed_at FROM drama.professional_export_jobs
 		WHERE export_id=$1 AND project_id=$2`, exportID, projectID).Scan(&item.ExportID, &item.ProjectID, &item.EpisodeID, &item.BundleVersion,
-		&formatsJSON, &selectionJSON, &item.SelectionHash, &item.Manifest, &item.Status, &item.PackagePath, &item.PackageHash, &item.ErrorMessage,
+		&formatsJSON, &selectionJSON, &item.SelectionHash, &item.EffectiveInputResolutionID, &item.EffectiveInputHash,
+		&item.GateApprovalID, &item.Manifest, &item.Status, &item.PackagePath, &item.PackageHash, &item.ErrorMessage,
 		&item.RequestedBy, &item.CreatedAt, &item.CompletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, ErrNotFound
@@ -332,6 +340,31 @@ func (s *Store) CompleteProfessionalExport(ctx context.Context, projectID, expor
 		return ProfessionalExportJob{}, fmt.Errorf("%w: export is not building", ErrConflict)
 	}
 	return s.GetProfessionalExport(ctx, projectID, exportID)
+}
+
+func (s *Store) ValidateProfessionalExportReady(ctx context.Context, projectID, exportID string) error {
+	var valid bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM drama.professional_export_jobs job
+		JOIN drama.quality_gate_master_approvals approval ON approval.gate_approval_id=job.gate_approval_id
+		JOIN drama.quality_gate_runs run ON run.gate_run_id=approval.gate_run_id
+		JOIN drama.episode_masters master ON master.master_id=job.selection->>'master_id'
+		JOIN drama.edit_timelines timeline ON timeline.timeline_id=job.selection->>'timeline_id'
+		WHERE job.export_id=$1 AND job.project_id=$2 AND job.status='ready'
+		  AND approval.status='active' AND run.status='approved'
+		  AND master.status='ready' AND master.is_current AND timeline.is_current
+		  AND master.timeline_id=timeline.timeline_id
+		  AND job.effective_input_hash=drama.delivery_effective_input_hash(
+		    drama.resolve_effective_inputs(job.project_id,job.episode_id,'post_production'))
+		  AND run.snapshot->>'target_timeline_hash'=drama.timeline_content_hash(timeline.timeline_id)
+	)`, exportID, projectID).Scan(&valid)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return fmt.Errorf("%w: EXPORT_STALE_BLOCKED: package no longer matches current Resolver/QA chain", ErrConflict)
+	}
+	return nil
 }
 func (s *Store) FailProfessionalExport(ctx context.Context, projectID, exportID string, buildErr error) {
 	_, _ = s.writer.Exec(ctx, `UPDATE drama.professional_export_jobs SET status='failed',error_message=$3,completed_at=CURRENT_TIMESTAMP WHERE export_id=$1 AND project_id=$2 AND status='building'`, exportID, projectID, buildErr.Error())

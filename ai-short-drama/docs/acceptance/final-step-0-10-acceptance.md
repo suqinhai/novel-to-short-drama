@@ -1,5 +1,76 @@
 # 第 0～10 步最终验收报告
 
+> **修复后复验结论（2026-08-12，当前 HEAD `14d888e64f7263274978e85882593ca7f3c5c2b1`）**
+> 本节是用户授权修复后基于当前工作树重新执行的结论，**取代下方原始终验的 FAIL 结论**；下方正文保留为修复前历史证据和问题复现记录。
+
+## 0. 修复后总体结论
+
+- **总体状态：PARTIAL**
+- **完整非商业功能闭环：核心本地闭环已形成。** Resolver-ready、artifact current、stale、目标版本 QA、render、master、export 和 provenance 现在受同一版本链约束；旧 QA 不能放行新 timeline，跨链或 stale selection 不能导出，上游 artifact 失效会撤销 approval、把现有 export 标为 stale 并回退项目投影。
+- **是否可进入下一阶段：有条件否。** 本轮发现的 2 个 P0、P1-2、P1-3 和 4 个 P2 均已修复并回归；但 P1-1 的通用 Provider 重建消费者仍未在无收费外部服务的环境中实际消费。若下一阶段依赖“上游改动后自动重生成正式媒体”，须先接通并验证该消费者；若下一阶段只继续本地编辑、QA、render/export 能力，可在保留此风险的前提下推进。
+- **当前未关闭问题：P0 × 0、P1 × 1、P2 × 0、P3 × 0。** 收费模型/图片/视频/TTS 仍属环境性 UNVERIFIABLE，不计为新增缺陷。
+- **一句话结论：** 原报告的跨版本 render/export P0 旁路已被 API 与数据库双重门禁封闭，全量自动验收 `278/278` 通过；唯一未完全闭环的是通用上游 rebuild task 到真实 Provider 产物的自动消费。
+
+## 0.1 原问题修复复核
+
+| 原问题 | 原严重度 | 修复后状态 | 实际回归证据 |
+|---|---:|---|---|
+| render gate 未绑定待渲染 timeline/master/Resolver | P0 | **PASS** | target timeline QA snapshot 固定 timeline hash、Resolver resolution/hash 和 artifact IDs；API 与 DB trigger 都拒绝旧 master QA 放行新 timeline、Resolver blocked、stale 与 required rebuild。`TestStep810P0P1ClosureIntegration/blocking_QA...` 通过。 |
+| professional export 可跨链/stale/未 QA，失效后仍 ready | P0 | **PASS** | selection 必须为 current master/timeline 同链并匹配 Resolver 与 active QA；download 再验证；artifact 失效自动将 export 标 stale、撤销 QA。13 类专业格式建立、解析回读和失效后拒绝下载均通过。 |
+| impact→rebuild→artifact current→QA/export | P1 | **PARTIAL** | impact workflow 已启用；succeeded rebuild 在事务内发布 immutable artifact successor、切 current binding；失败不切 current，非法成功 output 不能伪 succeeded；render 成功也原子发布 timeline/master artifacts。**但通用 Provider rebuild worker 未在本次无收费环境中实际消费 pending task**，不得报告完全关闭。 |
+| umbrella 使用共享 compiler fixture | P1 | **PASS** | runner 为 compiler、Phase15、season、post-production、Step8-10 等写密集场景创建独立 DB clone；最终 `node scripts/run-phase5-acceptance.js` 报告 `278 commands exited 0`。 |
+| 项目阶段投影漂移 | P1 | **PASS** | migration 32 以 render/QA/export/current artifact 重建权威投影；render publish 后刷新，artifact invalidation 后回退；Step8-10 集成验证 ready export 后完成、失效后不再停留 completed/qc。 |
+| Fountain 中文场景头不兼容 | P2 | **PASS** | `内/外/内外` 映射为 `INT./EXT.` 等标准 scene heading；导出解析回读通过。 |
+| NLE 轨道重排与 waveform 不完整 | P2 | **PASS** | track order 版本化、页面上下移动并刷新保持；真实 WAV→持久化 media job→独立 worker FFmpeg `showwavespic`→PNG 1200×160→SHA-256/size→timeline item URL 的隔离 E2E 通过；失败/超时可见且可重新排队。 |
+| QA locator/人工状态不自包含 | P2 | **PASS** | locator 具备 version/version_id/binding_id/content_hash；finding 区分 `auto_detected`、`human_confirmed`、`resolved_by_rebuild`、`overridden`。人工确认保持 open；只有不同 replacement QA snapshot 且原 code 消失才能 resolved。 |
+| Season/Step31 共享 mutable seed | P2 | **PASS** | 两项各自运行于由冻结 base 克隆的隔离 DB；套件重复执行稳定通过。 |
+
+## 0.2 修复后版本链与数据一致性
+
+修复后的权威链为：
+
+`source/IR/spec/script/storyboard/media current artifacts` → `Effective Input Resolver resolution/hash` → `draft timeline id/hash` → `target QA run` → `render task` → `current timeline/master artifacts + bindings` → `master QA approval` → `professional export resolution/hash/approval`。
+
+- render 必须命中**同一个 target timeline hash 与 Resolver effective-input hash**；direct SQL insert 也受 `guard_render_quality_gate` 阻断。
+- render succeeded 才发布 timeline/master artifact successor 和 current binding；失败不会替换旧 current。
+- export selection 不再接受任意客户端拼装；其 timeline/master、Resolver hash 与 QA approval 必须同链，下载时再次校验。
+- artifact 变为 stale/superseded 或失去 current 时，会撤销引用它的 QA、使 export stale，并刷新项目 delivery projection。
+- QA finding 的人工确认不能关闭 blocker；override 需要理由；“已重建解决”必须引用一个不同且通过的新 QA snapshot。
+- 未发现孤立 successor、错误 current、失效 binding 或伪 completed；通用 Provider rebuild task 在未被真实执行时保持 pending，不冒充成功。
+
+## 0.3 修复后测试与构建
+
+| 命令 | 退出码 | 通过/失败数量 | 结果 |
+|---|---:|---:|---|
+| `node scripts/run-phase5-acceptance.js` | 0 | 278 / 0 | PASS；含空库 migration 0～32、两次幂等重放、legacy upgrade、全部 verify、后端全测/集成 E2E、API/Resolver/工作流/导出闭环。 |
+| `go test -count=1 ./...` | 0 | 全部 package / 0 | PASS。 |
+| `go vet ./...` | 0 | 0 issue | PASS。 |
+| `npm test`（CMS frontend） | 0 | 86 / 0 | PASS。 |
+| `npm run build`（CMS frontend） | 0 | build succeeded / 0 | PASS；仅有 chunk size warning，不影响退出码。 |
+| `npm test` + `npm run check`（media worker） | 0 | 2 / 0 | PASS。 |
+| Veo adapter `npm test` + `npm run check` | 0 | 14 / 0 | PASS；未调用收费 Provider。 |
+| Phase 0～32 全部静态验收脚本 | 0 | 全部 / 0 | PASS；26 个 JSON Schema、OpenAPI、143 条 workflow SQL PREPARE 与 workflow 引用校验均通过。 |
+| 专业导出 round-trip | 0 | 13 类格式 / 0 | PASS；文件生成后由对应内置/标准解析器重新读取，manifest hash 与 provenance 校验通过。 |
+| 真实本地 waveform E2E | 0 | 1 / 0 | PASS；FFmpeg 生成 PNG 1200×160，输出 hash `7669e6ccf67829c2f9217858af2987a3262c68f0030554f8a80c1b897b8f33a2`，1068 bytes，并原子回写 timeline item。 |
+
+## 0.4 修复后未验证项目
+
+| 项目 | 状态 | 已验证层级 | 补验条件 |
+|---|---|---|---|
+| 通用上游 rebuild 的真实 Provider 消费 | PARTIAL | pending/running/succeeded/failed 状态机、非法 output、事务发布 successor/current、失败保留旧 current均已验证 | 提供免费 sandbox 或受控真实 Provider worker，实际消费 IR/plan 变化产生的每类 media rebuild，随后重跑 QA/render/export。 |
+| 收费模型/图片/视频/TTS | UNVERIFIABLE | 协议、非法输出、失败、timeout、无 mock fallback；本地安全媒体与 FFmpeg 已验证 | 明确费用授权、测试账号和审计范围。 |
+| 长时播放逐帧 A/V drift | UNVERIFIABLE | 页面播放、timecode、J/L-cut 数据、AAC 48kHz 成片 | 暴露只读 media clock telemetry 并执行长时 drift 上限测试。 |
+| Season UI 真实 pointer drag | UNVERIFIABLE | store 集成与前端状态操作已验证 | 在支持完整 pointer/dataTransfer 的浏览器 E2E 环境执行跨集拖拽并刷新核对。 |
+
+## 0.5 修复后最终回答
+
+1. **第 0～10 步是否整体验收通过？** **PARTIAL**；原 2 个 P0 均已关闭，但通用上游 Provider rebuild 消费仍未形成实际证据。
+2. **是否已经形成完整的非商业功能闭环？** 本地安全媒体的 Resolver→NLE→QA→render→master→export→provenance 闭环已形成；“上游变更后自动调用真实生成 Provider 重建全部受影响媒体”的闭环仍为 PARTIAL。
+3. **哪些功能只有代码或页面但没有真正接通？** 通用 rebuild task 已有真实状态与原子发布契约，但没有本次可实际消费各类任务的免费 Provider worker；收费媒体生成仍未运行。
+4. **是否仍存在 mock、旁路或假完成？** 没有发现新的 Resolver/QA/export 旁路或伪 completed；验收 fixture 的 `deterministic_mock` provenance 仍明确标注为测试数据，不冒充生产成功。
+5. **是否可以开始下一阶段？** 若下一阶段依赖真实上游自动重建，**不可以**；须先关闭剩余 P1。若只继续已闭环的本地编辑、QA、render/export，可由项目负责人接受该风险后推进。
+6. **必须先修复什么？** 实现并实际运行通用 rebuild consumer：安全 claim pending task、调用明确 Provider、验证产物/hash、事务发布 artifact successor/current、失败可重试，随后在同一新版本链上重跑 QA、render 与 export。
+
 > 验收日期：2026-08-12（Asia/Taipei）  
 > 验收基线：branch `main`，commit `046112762d6b82c7c61413b1f59d4d9e39d895a8`  
 > 验收原则：以当前代码、隔离数据库、当前 API/UI、独立 worker 与实际文件为准；历史报告仅作问题索引。  
@@ -349,4 +420,3 @@
 4. **是否仍存在 mock、旁路或假完成？** 没有发现生产 Provider 失败静默 fallback 为 mock，也没有伪 completed task；但验收 fixture 的媒体 provenance 明确是 deterministic mock，不能证明外部生产生成。更严重的是存在 Resolver/stale/QA/export 旁路：blocked/stale 链仍能真实渲染并导出 ready。
 5. **是否可以开始下一阶段？** 不可以。
 6. **如果不能，必须先修复哪些 P0/P1？** 先修 P0-1 render target 与 Resolver/QA/stale 强绑定、P0-2 export 同链/QA/stale 强绑定；随后修 P1-1 impact/rebuild/artifact current 闭环、P1-2 一键验收自隔离、P1-3 页面/API/DB 统一状态投影。修复后必须用全新隔离项目从小说导入开始，完成上游二次变更、实际重建、新 QA、新 render、新 export，并证明旧链只可追溯不可误认 current。
-

@@ -107,6 +107,7 @@ let polling = false;
 let qcRunning = 0;
 let lastStaleRecoveryAt = 0;
 const activeJobs = new Map();
+const activeWaveformJobs = new Map();
 const tools = {
   ffmpeg: { available: false, version: null, checked_at: null, error: null },
   ffprobe: { available: false, version: null, checked_at: null, error: null },
@@ -546,11 +547,51 @@ async function prepareAudio(request) {
   };
 }
 
+async function generateWaveform(request) {
+  assertAllowedKeys(request, new Set([
+    'operation', 'source', 'target_path', 'width', 'height', 'colors',
+  ]), 'generate_waveform');
+  const source = await resolveMediaSource(request.source, 'source');
+  const targetPath = await resolveOutputFile(request.target_path, 'target_path');
+  const width = numberField(request.width, 1200, 64, 8192, 'width', true);
+  const height = numberField(request.height, 160, 32, 2048, 'height', true);
+  const colors = String(request.colors || '0x5d7cff').trim();
+  if (!/^(?:0x)?[0-9a-f]{6,8}$/i.test(colors)) {
+    throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'waveform colors must be a hexadecimal color', false);
+  }
+  const partialPath = await resolveOutputFile(`${targetPath}.${crypto.randomBytes(6).toString('hex')}.partial.png`, 'partial target_path');
+  await removePartial(partialPath);
+  try {
+    await runProcess(config.ffmpeg, [
+      '-y', '-v', 'error', '-i', source, '-filter_complex',
+      `aformat=channel_layouts=mono,showwavespic=s=${width}x${height}:colors=${colors}`,
+      '-frames:v', '1', partialPath,
+    ], { timeoutMs: Math.min(config.renderTimeoutMs, 120000), maxCapture: 2097152 });
+    await fsp.rename(partialPath, targetPath);
+  } catch (error) {
+    await removePartial(partialPath);
+    throw error;
+  }
+  const probe = await parseProbe(targetPath);
+  const stream = (probe.streams || []).find((item) => item.codec_type === 'video');
+  if (!stream || Number(stream.width) !== width || Number(stream.height) !== height) {
+    throw new WorkerError('OUTPUT_FILE_INVALID', 'generated waveform is not a parseable image at the requested size', true);
+  }
+  return {
+    success: true,
+    operation: 'generate_waveform',
+    stdout: JSON.stringify({ status: 'succeeded', output_path: targetPath, width, height }),
+    stderr: '',
+    exitCode: 0,
+  };
+}
+
 async function runWorkflowMediaOperation(request) {
   const operation = String(request.operation || '');
   if (operation === 'generate_mock_video') return generateMockVideo(request);
   if (operation === 'prepare_video') return prepareVideo(request);
   if (operation === 'prepare_audio') return prepareAudio(request);
+  if (operation === 'generate_waveform') return generateWaveform(request);
   throw new WorkerError('TIMELINE_VALIDATION_FAILED', 'media operation is unsupported', false);
 }
 
@@ -938,6 +979,20 @@ async function recoverStaleJobs() {
   if (result.rowCount) {
     console.warn(JSON.stringify({ level: 'warn', event: 'stale_jobs_recovered', count: result.rowCount }));
   }
+  const waveformResult = await pool.query(`
+    UPDATE drama.media_processing_jobs
+       SET status='timeout',
+           retry_count=retry_count+1,
+           completed_at=now(),
+           error_code='WAVEFORM_TIMEOUT',
+           error_message='waveform worker execution expired; task can be queued safely again',
+           updated_at=now()
+     WHERE operation='generate_waveform' AND status='processing'
+       AND COALESCE(started_at,created_at) < now() - make_interval(secs => $1)
+    RETURNING job_id`, [staleSeconds]);
+  if (waveformResult.rowCount) {
+    console.warn(JSON.stringify({ level: 'warn', event: 'stale_waveform_jobs_recovered', count: waveformResult.rowCount }));
+  }
 }
 
 async function claimJobs(renderJobId, batchSize) {
@@ -974,6 +1029,82 @@ async function claimJobs(renderJobId, batchSize) {
     throw error;
   } finally {
     client.release();
+  }
+}
+
+async function claimWaveformJobs(batchSize) {
+  if (batchSize <= 0) return [];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(`
+      WITH candidates AS (
+        SELECT id FROM drama.media_processing_jobs
+         WHERE status='pending' AND operation='generate_waveform'
+         ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED
+      )
+      UPDATE drama.media_processing_jobs job
+         SET status='processing',started_at=now(),completed_at=NULL,error_code=NULL,error_message=NULL,updated_at=now()
+        FROM candidates WHERE job.id=candidates.id RETURNING job.*`, [batchSize]);
+    await client.query('COMMIT');
+    return result.rows;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function processWaveformJob(job) {
+  if (activeWaveformJobs.has(job.job_id)) return;
+  activeWaveformJobs.set(job.job_id, true);
+  try {
+    const parameters = job.parameters && typeof job.parameters === 'object' ? job.parameters : {};
+    const targetPath = String(parameters.target_path || '');
+    await generateWaveform({
+      operation: 'generate_waveform', source: job.input_url, target_path: targetPath,
+      width: parameters.width, height: parameters.height, colors: parameters.colors,
+    });
+    const resolved = await resolveExistingFile(targetPath, 'waveform target_path');
+    const contentHash = await sha256File(resolved.path);
+    const outputUrl = publicUrl(resolved.path);
+    if (!outputUrl) throw new WorkerError('OUTPUT_FILE_INVALID', 'waveform output URL could not be derived', true);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const completed = await client.query(`UPDATE drama.media_processing_jobs
+        SET status='succeeded',output_url=$2,parameters=parameters||jsonb_build_object(
+          'output_hash',$3::text,'file_size_bytes',$4::bigint,'worker_id',$5::text),
+          completed_at=now(),updated_at=now()
+        WHERE job_id=$1 AND status='processing' RETURNING job_id`,
+      [job.job_id, outputUrl, contentHash, resolved.stat.size, workerId]);
+      if (completed.rowCount !== 1) throw new WorkerError('MEDIA_JOB_STATE_CONFLICT', 'waveform job is no longer processing', false);
+      if (parameters.timeline_item_id) {
+        const linked = await client.query(`UPDATE drama.edit_timeline_items
+          SET waveform_url=$2,updated_at=now()
+          WHERE timeline_item_id=$1 AND project_id=$3 AND episode_id=$4`,
+        [parameters.timeline_item_id, outputUrl, job.project_id, job.episode_id]);
+        if (linked.rowCount !== 1) throw new WorkerError('MEDIA_JOB_TARGET_MISSING', 'waveform timeline item no longer exists', false);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+    console.info(JSON.stringify({ level: 'info', event: 'waveform_succeeded', job_id: job.job_id, content_hash: contentHash }));
+  } catch (caught) {
+    const error = normalizeProcessError(caught);
+    await pool.query(`UPDATE drama.media_processing_jobs SET status='failed',retry_count=retry_count+1,
+      error_code=$2,error_message=$3,completed_at=now(),updated_at=now()
+      WHERE job_id=$1 AND status='processing'`, [job.job_id, error.code, safeMessage(error)]).catch((dbError) => {
+      console.error(JSON.stringify({ level: 'error', event: 'waveform_failure_not_persisted', job_id: job.job_id, message: safeMessage(dbError) }));
+    });
+    console.error(JSON.stringify({ level: 'error', event: 'waveform_failed', job_id: job.job_id, code: error.code, retryable: Boolean(error.retryable) }));
+  } finally {
+    activeWaveformJobs.delete(job.job_id);
   }
 }
 
@@ -1300,10 +1431,17 @@ async function pollOnce() {
       await recoverStaleJobs();
       lastStaleRecoveryAt = now;
     }
-    const capacity = Math.max(0, config.concurrency - activeJobs.size);
+    const capacity = Math.max(0, config.concurrency - activeJobs.size - activeWaveformJobs.size);
     if (capacity > 0) {
       const jobs = await claimJobs(null, Math.min(capacity, config.batchSize));
       dispatchJobs(jobs);
+      const remaining = Math.max(0, capacity - jobs.length);
+      if (remaining > 0) {
+        const waveformJobs = await claimWaveformJobs(Math.min(remaining, config.batchSize));
+        for (const job of waveformJobs) processWaveformJob(job).catch((error) => {
+          console.error(JSON.stringify({ level: 'error', event: 'unhandled_waveform_error', job_id: job.job_id, message: safeMessage(error) }));
+        });
+      }
     }
   } catch (error) {
     console.error(JSON.stringify({ level: 'error', event: 'poll_failed', message: safeMessage(error) }));
@@ -1612,7 +1750,7 @@ async function healthResponse() {
       status: !config.enabled ? 'disabled' : healthy ? 'healthy' : 'degraded',
       worker_id: workerId,
       enabled: config.enabled,
-      active_jobs: activeJobs.size,
+      active_jobs: activeJobs.size + activeWaveformJobs.size,
       max_concurrency: config.concurrency,
       qc_running: qcRunning,
       database,
@@ -1782,7 +1920,7 @@ async function initialize() {
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.info(JSON.stringify({ level: 'info', event: 'media_worker_shutdown', signal, active_jobs: activeJobs.size }));
+    console.info(JSON.stringify({ level: 'info', event: 'media_worker_shutdown', signal, active_jobs: activeJobs.size + activeWaveformJobs.size }));
     clearInterval(pollTimer);
     clearInterval(toolTimer);
     server.close();
@@ -1791,11 +1929,11 @@ async function initialize() {
       context.cancel?.();
     }
     const deadline = Date.now() + 10000;
-    while (activeJobs.size && Date.now() < deadline) {
+    while ((activeJobs.size || activeWaveformJobs.size) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     await pool.end().catch(() => {});
-    process.exit(activeJobs.size ? 1 : 0);
+    process.exit(activeJobs.size || activeWaveformJobs.size ? 1 : 0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
