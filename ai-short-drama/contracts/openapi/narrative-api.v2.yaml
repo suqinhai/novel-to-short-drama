@@ -1504,8 +1504,8 @@ components:
               target_entity_id: {$ref: '#/components/schemas/ID'}
               range_start_ms: {type: integer, minimum: 0}
               range_end_ms: {type: integer, minimum: 1}
-              status: {type: string, enum: [pending, running, succeeded, failed, cancelled]}
-              provider: {type: string, const: workflow}
+              status: {type: string, enum: [pending, claimed, running, retry_wait, succeeded, failed, cancelled]}
+              provider: {type: string, description: Explicit registered provider route; never an implicit mock fallback}
     ID:
       type: string
       minLength: 1

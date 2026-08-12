@@ -1070,7 +1070,7 @@ func insertShotContinuity(ctx context.Context, tx pgx.Tx, projectID, episodeID, 
 		}
 		var inherited *string
 		_ = tx.QueryRow(ctx, `SELECT continuity_entry_id FROM drama.continuity_ledger_entries WHERE project_id=$1 AND episode_id=$2 AND shot_id=$3 AND is_current ORDER BY updated_at DESC LIMIT 1`, projectID, episodeID, shot.ShotID).Scan(&inherited)
-		_, err = tx.Exec(ctx, `INSERT INTO drama.continuity_ledger_entries(continuity_entry_id,project_id,episode_id,episode_number,scene_id,shot_id,scope,sequence_number,input_state,output_state,inherited_from_entry_id,validation_status,diagnostics,state_hash,is_current,shot_sequence_version_id) VALUES($1,$2,$3,$4,$5,$6,'shot',$7,$8::jsonb,$9::jsonb,$10,'valid','[]'::jsonb,$11,false,$12)`, id, projectID, episodeID, episodeNumber, shot.SceneID, shot.ShotID, shot.ShotOrder, input, output, inherited, stateHash, sequenceID)
+		_, err = tx.Exec(ctx, `INSERT INTO drama.continuity_ledger_entries(continuity_entry_id,project_id,episode_id,episode_number,scene_id,shot_id,scope,sequence_number,input_state,output_state,inherited_from_entry_id,validation_status,diagnostics,state_hash,is_current,shot_sequence_version_id,continuity_version) VALUES($1,$2,$3,$4,$5,$6,'shot',$7,$8::jsonb,$9::jsonb,$10,'valid','[]'::jsonb,$11,false,$12,(SELECT COALESCE(max(continuity_version),0)+1 FROM drama.continuity_ledger_entries WHERE project_id=$2 AND episode_id=$3 AND scope='shot' AND sequence_number=$7))`, id, projectID, episodeID, episodeNumber, shot.SceneID, shot.ShotID, shot.ShotOrder, input, output, inherited, stateHash, sequenceID)
 		if err != nil {
 			return nil, err
 		}
@@ -1220,12 +1220,8 @@ func (s *Store) UpdateShotEditRebuildTaskStatus(
 	ctx context.Context, projectID, episodeID, planID, taskID string, input RebuildTaskStatusInput,
 ) (IncrementalRebuild, error) {
 	status := strings.ToLower(strings.TrimSpace(input.Status))
-	if status != "running" && status != "succeeded" && status != "failed" && status != "cancelled" {
-		return IncrementalRebuild{}, fmt.Errorf("%w: real rebuild tasks only accept running, succeeded, failed or cancelled", shoteditor.ErrInvalidEdit)
-	}
-	output := input.Output
-	if len(output) == 0 {
-		output = json.RawMessage(`{}`)
+	if status != "cancelled" {
+		return IncrementalRebuild{}, fmt.Errorf("%w: rebuild execution state is worker-owned; this endpoint only accepts cancelled", shoteditor.ErrInvalidEdit)
 	}
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
@@ -1234,17 +1230,16 @@ func (s *Store) UpdateShotEditRebuildTaskStatus(
 	defer tx.Rollback(ctx)
 	var task IncrementalRebuild
 	err = tx.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
-		status=$5,output=$6::jsonb,error_code=$7,error_message=$8,
-		completed_at=CASE WHEN $5 IN('succeeded','failed','cancelled') THEN now() ELSE NULL END
+		status='cancelled',error_code='REBUILD_CANCELLED_BY_USER',error_message=$5,
+		completed_at=now(),claim_token=NULL,lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=NULL,updated_at=now()
 		FROM drama.shot_edit_plans plan
 		WHERE task.shot_edit_plan_id=plan.shot_edit_plan_id AND plan.project_id=$1 AND plan.episode_id=$2
 		  AND task.shot_edit_plan_id=$3 AND task.rebuild_task_id=$4
-		  AND ((task.status='pending' AND $5 IN('running','failed','cancelled'))
-		    OR (task.status='running' AND $5 IN('succeeded','failed','cancelled')))
+		  AND task.status IN('pending','claimed','running','retry_wait')
 		RETURNING task.rebuild_task_id,task.action,task.target_entity_type,task.target_entity_id,
 		  task.artifact_id,task.range_start_ms,task.range_end_ms,task.status,task.provider,
 		  task.input,task.output,task.error_code,task.error_message,task.created_at,task.completed_at`,
-		projectID, episodeID, planID, taskID, status, output, input.ErrorCode, input.ErrorMessage).Scan(
+		projectID, episodeID, planID, taskID, input.ErrorMessage).Scan(
 		&task.RebuildTaskID, &task.Action, &task.TargetEntityType, &task.TargetEntityID, &task.ArtifactID,
 		&task.RangeStartMS, &task.RangeEndMS, &task.Status, &task.Provider, &task.Input, &task.Output,
 		&task.ErrorCode, &task.ErrorMessage, &task.CreatedAt, &task.CompletedAt)
@@ -1253,11 +1248,6 @@ func (s *Store) UpdateShotEditRebuildTaskStatus(
 	}
 	if err != nil {
 		return IncrementalRebuild{}, err
-	}
-	if status == "succeeded" {
-		if err = publishRebuildArtifactSuccessor(ctx, tx, task, output); err != nil {
-			return IncrementalRebuild{}, err
-		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return IncrementalRebuild{}, err

@@ -13,8 +13,11 @@ const freshDatabase = process.env.PHASE5_FRESH_DATABASE || 'short_drama_phase5_a
 const legacyDatabase = process.env.PHASE5_LEGACY_DATABASE || 'short_drama_phase5_legacy_upgrade';
 const compilerDatabase = process.env.PHASE5_COMPILER_DATABASE || 'short_drama_phase5_compiler_e2e';
 const isolationBaseDatabase = process.env.PHASE5_ISOLATION_BASE_DATABASE || 'short_drama_phase5_isolation_base';
+const rebuildClosureDatabase = process.env.REBUILD_CLOSURE_DATABASE || 'short_drama_phase5_rebuild_closure';
+const rebuildWorkerDatabase = 'short_drama_phase5_case_rebuild_worker';
+const rebuildStateDatabase = 'short_drama_phase5_case_rebuild_state';
 const safeDatabase = /^short_drama_phase5_[a-z0-9_]+$/;
-for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase]) {
+for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase, rebuildClosureDatabase]) {
   if (!safeDatabase.test(database)) throw new Error(`refusing unsafe test database name: ${database}`);
 }
 
@@ -46,9 +49,12 @@ const migrationFiles = [
   'database/30-step-0-7-p0-p1-closure.sql',
   'database/31-step-8-10-p0-p1-closure.sql',
   'database/32-final-delivery-chain-closure.sql',
+  'database/33-rebuild-consumer-closure.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
+const rebuildMigration = 'database/33-rebuild-consumer-closure.sql';
+const preRebuildContractFiles = contractFiles.filter((file) => file !== rebuildMigration);
 const verifyFiles = [
   'database/06-verify-narrative-foundation.sql', 'database/07-verify-adaptation-compiler.sql',
   'database/08-verify-chapter-impact-analysis.sql', 'database/09-verify-phase5-contract-corrections.sql',
@@ -69,6 +75,7 @@ const verifyFiles = [
   'database/29-verify-prompt-lab-professional-export.sql',
   'database/31-verify-step-8-10-p0-p1-closure.sql',
   'database/32-verify-final-delivery-chain-closure.sql',
+  'database/33-verify-rebuild-consumer-closure.sql',
 ];
 
 function loadEnv() {
@@ -153,11 +160,25 @@ try {
   recreate(legacyDatabase);
   for (const file of legacyBaseFiles) sqlFile(legacyDatabase, file, `legacy base ${file}`);
   sqlFile(legacyDatabase, 'test-data/phase1-legacy-seed.sql', 'seed explicit legacy IDs');
-  for (const file of contractFiles) sqlFile(legacyDatabase, file, `legacy upgrade ${file}`);
-  for (const file of verifyFiles) sqlFile(legacyDatabase, file, `legacy verify ${file}`);
+  for (const file of preRebuildContractFiles) sqlFile(legacyDatabase, file, `legacy upgrade ${file}`);
+	for (const file of verifyFiles.filter((item) => item !== 'database/33-verify-rebuild-consumer-closure.sql')) {
+	  sqlFile(legacyDatabase, file, `legacy verify ${file}`);
+	}
   sqlFile(legacyDatabase, 'test-data/phase1-contract-seed.sql', 'seed traced Narrative IR fixture');
   sqlFile(legacyDatabase, 'test-data/phase3-compiler-db-seed.sql', 'seed adaptation compiler fixture');
   sqlFile(legacyDatabase, 'test-data/phase5-postproduction-fixture.sql', 'seed complete Phase 5 post-production mock episode');
+  sqlFile(legacyDatabase, rebuildMigration, `legacy upgrade ${rebuildMigration}`);
+	sqlFile(legacyDatabase, 'database/33-verify-rebuild-consumer-closure.sql',
+	  'legacy verify database/33-verify-rebuild-consumer-closure.sql');
+  run('Generic rebuild consumer full delivery closure E2E', 'node', ['scripts/run-rebuild-consumer-closure-e2e.js'], {
+    env: {...commandEnv, REBUILD_CLOSURE_DATABASE: rebuildClosureDatabase,
+      REBUILD_CLOSURE_SOURCE_DATABASE: legacyDatabase, PHASE5_POSTGRES_CONTAINER: container},
+  });
+  recreateClone(rebuildWorkerDatabase, legacyDatabase);
+  recreateClone(rebuildStateDatabase, legacyDatabase);
+  sqlFile(rebuildWorkerDatabase, 'test-data/phase4-chapter-impact-e2e.sql', 'worker impact seed');
+  sqlFile(rebuildWorkerDatabase, 'test-data/rebuild-consumer-e2e-seed.sql', 'worker rebuild task seed');
+  sqlFile(rebuildStateDatabase, 'test-data/rebuild-consumer-state-machine-seed.sql', 'worker state-machine seed');
   sqlFile(legacyDatabase, 'test-data/phase18-effective-input-resolver-acceptance.sql',
     'Effective Input Resolver authority, isolation, blocking and provenance acceptance');
   recreateClone(isolationBaseDatabase, legacyDatabase);
@@ -219,13 +240,18 @@ try {
     run('CMS frontend production build', 'npm', ['run', 'build'], {cwd: frontendCwd});
   }
   const mediaWorkerCwd = path.join(root, 'scripts/media-worker');
+  const mediaWorkerTestEnv = {...commandEnv,
+    REBUILD_E2E_DATABASE_URL: databaseURL(rebuildWorkerDatabase), REBUILD_E2E_EXPECT_IMPACT: 'true',
+    REBUILD_STATE_DATABASE_URL: databaseURL(rebuildStateDatabase)};
   if (process.platform === 'win32') {
-    run('Media worker post-production tests', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm test'], {cwd: mediaWorkerCwd});
+    run('Media worker post-production and rebuild tests', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm test'], {cwd: mediaWorkerCwd, env: mediaWorkerTestEnv});
     run('Media worker syntax checks', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm run check'], {cwd: mediaWorkerCwd});
   } else {
-    run('Media worker post-production tests', 'npm', ['test'], {cwd: mediaWorkerCwd});
+    run('Media worker post-production and rebuild tests', 'npm', ['test'], {cwd: mediaWorkerCwd, env: mediaWorkerTestEnv});
     run('Media worker syntax checks', 'npm', ['run', 'check'], {cwd: mediaWorkerCwd});
   }
+  drop(rebuildWorkerDatabase);
+  drop(rebuildStateDatabase);
   const veoAdapterCwd = path.join(root, 'scripts/veo-adapter');
   if (process.platform === 'win32') {
     run('Veo adapter tests', process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm test'], {cwd: veoAdapterCwd});
@@ -241,7 +267,7 @@ try {
     'validate-phase4-performance-continuity.js', 'validate-phase17.js',
     'validate-phase18.js',
     'validate-phase20.js', 'validate-phase21.js', 'validate-phase27.js', 'validate-phase28.js',
-    'validate-phase29.js', 'validate-phase31.js', 'validate-phase32.js',
+    'validate-phase29.js', 'validate-phase31.js', 'validate-phase32.js', 'validate-rebuild-consumer.js',
     'validate-video-provider-retry-idempotency.js',
     'adaptation-compiler.test.js']) {
     run(`node scripts/${script}`, 'node', [`scripts/${script}`]);
@@ -269,7 +295,8 @@ try {
   if (process.env.PHASE5_KEEP_DATABASES === '1') {
     process.stdout.write('\nKeeping isolated Phase 5 databases for diagnosis as explicitly requested by PHASE5_KEEP_DATABASES=1\n');
   } else {
-    for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase]) {
+    for (const database of [freshDatabase, legacyDatabase, compilerDatabase, isolationBaseDatabase, rebuildClosureDatabase,
+      'short_drama_phase5_case_rebuild_worker', 'short_drama_phase5_case_rebuild_state']) {
       try { drop(database); } catch (error) { failed = true; console.error(`cleanup failed for ${database}: ${error.message}`); }
     }
   }

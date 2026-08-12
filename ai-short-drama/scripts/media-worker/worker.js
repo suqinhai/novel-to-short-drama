@@ -13,6 +13,7 @@ const {
   buildRenderPlan,
   normalizeSettings,
 } = require('./ffmpeg-templates');
+const { RebuildConsumer, RebuildError } = require('./rebuild-consumer');
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const AUDIO_KINDS = new Set(['dialogue', 'narration', 'bgm', 'sound_effect', 'ambience', 'other']);
@@ -70,6 +71,13 @@ const config = Object.freeze({
   token: String(process.env.MEDIA_WORKER_TOKEN || ''),
   blackSeconds: Number(process.env.QC_MAX_BLACK_SECONDS || 1),
   silenceSeconds: Number(process.env.QC_MAX_SILENCE_SECONDS || 2),
+  rebuildEnabled: envBoolean('REBUILD_WORKER_ENABLED', true),
+  rebuildLocalConformanceEnabled: envBoolean('REBUILD_LOCAL_CONFORMANCE_ENABLED', false),
+  rebuildLeaseSeconds: envInteger('REBUILD_LEASE_SECONDS', 60, 5, 3600),
+  rebuildHeartbeatSeconds: envInteger('REBUILD_HEARTBEAT_SECONDS', 10, 2, 3600),
+  rebuildProviderTimeoutSeconds: envInteger('REBUILD_PROVIDER_TIMEOUT_SECONDS', 120, 1, 86400),
+  rebuildRetryDelaySeconds: envInteger('REBUILD_RETRY_DELAY_SECONDS', 5, 1, 3600),
+  rebuildMaxOutputBytes: envInteger('REBUILD_MAX_OUTPUT_MB', 2048, 1, 1048576) * 1024 * 1024,
 });
 
 if (!Number.isFinite(config.blackSeconds) || config.blackSeconds < 0 || config.blackSeconds > 3600) {
@@ -108,6 +116,7 @@ let qcRunning = 0;
 let lastStaleRecoveryAt = 0;
 const activeJobs = new Map();
 const activeWaveformJobs = new Map();
+let rebuildConsumer = null;
 const tools = {
   ffmpeg: { available: false, version: null, checked_at: null, error: null },
   ffprobe: { available: false, version: null, checked_at: null, error: null },
@@ -914,7 +923,7 @@ function aspectRatio(width, height) {
 }
 
 function normalizeProcessError(error) {
-  if (error instanceof WorkerError || error instanceof TemplateError) return error;
+  if (error instanceof WorkerError || error instanceof TemplateError || error instanceof RebuildError) return error;
   if (error?.code === 'ENOENT') {
     return new WorkerError('FFMPEG_NOT_AVAILABLE', 'media executable is not available', false);
   }
@@ -1443,6 +1452,11 @@ async function pollOnce() {
         });
       }
     }
+    if (rebuildConsumer && rebuildConsumer.active.size < config.concurrency) {
+      rebuildConsumer.runOnce().catch((error) => {
+        console.error(JSON.stringify({ level: 'error', event: 'rebuild_task_failed', code: error.code || 'REBUILD_FAILED', message: safeMessage(error) }));
+      });
+    }
   } catch (error) {
     console.error(JSON.stringify({ level: 'error', event: 'poll_failed', message: safeMessage(error) }));
   } finally {
@@ -1753,6 +1767,11 @@ async function healthResponse() {
       active_jobs: activeJobs.size + activeWaveformJobs.size,
       max_concurrency: config.concurrency,
       qc_running: qcRunning,
+      rebuild: {
+        enabled: config.rebuildEnabled,
+        local_conformance_enabled: config.rebuildLocalConformanceEnabled,
+        active_tasks: rebuildConsumer?.active.size || 0,
+      },
       database,
       tools,
       storage: { root: '$MEDIA_STORAGE', writable: true },
@@ -1778,6 +1797,16 @@ async function handleRequest(request, response) {
       const body = await readJsonBody(request);
       const result = await runWorkflowMediaOperation(body);
       jsonResponse(response, 200, result);
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/rebuild-tasks/claim-or-run') {
+      if (!rebuildConsumer) throw new RebuildError('REBUILD_WORKER_DISABLED', 'rebuild consumer is disabled', false);
+      if (rebuildConsumer.active.size >= config.concurrency) {
+        jsonResponse(response, 202, { success: true, accepted: false, status: 'busy', worker_id: workerId });
+        return;
+      }
+      const result = await rebuildConsumer.runOnce();
+      jsonResponse(response, 200, { success: true, accepted: Boolean(result), status: result ? 'succeeded' : 'idle', worker_id: workerId, result });
       return;
     }
     if (request.method === 'POST' && url.pathname === '/jobs/claim-or-run') {
@@ -1883,6 +1912,31 @@ async function initialize() {
   await fsp.writeFile(writeTest, 'ok', { mode: 0o600 });
   await fsp.unlink(writeTest);
   await refreshToolState();
+  if (config.rebuildEnabled) {
+    let externalProviders = {};
+    if (process.env.REBUILD_PROVIDER_ENDPOINTS_JSON) {
+      try {
+        externalProviders = JSON.parse(process.env.REBUILD_PROVIDER_ENDPOINTS_JSON);
+      } catch (_) {
+        throw new Error('REBUILD_PROVIDER_ENDPOINTS_JSON must be valid JSON');
+      }
+    }
+    rebuildConsumer = new RebuildConsumer({
+      pool,
+      storagePath: storageRoot,
+      publicBaseUrl: config.publicBaseUrl,
+      workerId: `rebuild-${workerId}`.slice(0, 128),
+      leaseSeconds: config.rebuildLeaseSeconds,
+      heartbeatSeconds: config.rebuildHeartbeatSeconds,
+      providerTimeoutSeconds: config.rebuildProviderTimeoutSeconds,
+      retryDelaySeconds: config.rebuildRetryDelaySeconds,
+      maxOutputBytes: config.rebuildMaxOutputBytes,
+      ffmpeg: config.ffmpeg,
+      ffprobe: config.ffprobe,
+      localConformanceEnabled: config.rebuildLocalConformanceEnabled,
+      externalProviders,
+    });
+  }
 
   const server = http.createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
@@ -1906,6 +1960,7 @@ async function initialize() {
       storage: '$MEDIA_STORAGE',
       ffmpeg_available: tools.ffmpeg.available,
       ffprobe_available: tools.ffprobe.available,
+      rebuild_enabled: Boolean(rebuildConsumer),
     }));
   });
 
@@ -1923,6 +1978,7 @@ async function initialize() {
     console.info(JSON.stringify({ level: 'info', event: 'media_worker_shutdown', signal, active_jobs: activeJobs.size + activeWaveformJobs.size }));
     clearInterval(pollTimer);
     clearInterval(toolTimer);
+    rebuildConsumer?.shutdown();
     server.close();
     for (const context of activeJobs.values()) {
       context.cancelled = true;

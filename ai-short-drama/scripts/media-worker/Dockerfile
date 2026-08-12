@@ -28,7 +28,7 @@ COPY scripts/media-worker/package.json ./package.json
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 
-COPY scripts/media-worker/worker.js scripts/media-worker/ffmpeg-templates.js ./
+COPY scripts/media-worker/worker.js scripts/media-worker/ffmpeg-templates.js scripts/media-worker/rebuild-consumer.js ./
 
 RUN mkdir -p /data/storage \
     && chown -R node:node /app /data/storage

@@ -67,6 +67,8 @@ services:
       - ./database/31-verify-step-8-10-p0-p1-closure.sql:/opt/drama/31-verify-step-8-10-p0-p1-closure.sql:ro
       - ./database/32-final-delivery-chain-closure.sql:/opt/drama/32-final-delivery-chain-closure.sql:ro
       - ./database/32-verify-final-delivery-chain-closure.sql:/opt/drama/32-verify-final-delivery-chain-closure.sql:ro
+      - ./database/33-rebuild-consumer-closure.sql:/opt/drama/33-rebuild-consumer-closure.sql:ro
+      - ./database/33-verify-rebuild-consumer-closure.sql:/opt/drama/33-verify-rebuild-consumer-closure.sql:ro
       - ./database/28-verify-cross-layer-quality-gate.sql:/opt/drama/28-verify-cross-layer-quality-gate.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -340,6 +342,13 @@ services:
       S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       MOCK_MODE: ${MOCK_MODE:-false}
+      REBUILD_WORKER_ENABLED: ${REBUILD_WORKER_ENABLED:-true}
+      REBUILD_LOCAL_CONFORMANCE_ENABLED: ${REBUILD_LOCAL_CONFORMANCE_ENABLED:-false}
+      REBUILD_LEASE_SECONDS: ${REBUILD_LEASE_SECONDS:-60}
+      REBUILD_HEARTBEAT_SECONDS: ${REBUILD_HEARTBEAT_SECONDS:-10}
+      REBUILD_PROVIDER_TIMEOUT_SECONDS: ${REBUILD_PROVIDER_TIMEOUT_SECONDS:-120}
+      REBUILD_RETRY_DELAY_SECONDS: ${REBUILD_RETRY_DELAY_SECONDS:-5}
+      REBUILD_MAX_OUTPUT_MB: ${REBUILD_MAX_OUTPUT_MB:-2048}
       CANDIDATE_ENABLE_DETERMINISTIC_MOCK: ${CANDIDATE_ENABLE_DETERMINISTIC_MOCK:-false}
       MEDIA_WORKER_ENABLED: ${MEDIA_WORKER_ENABLED:-true}
       MEDIA_WORKER_URL: ${MEDIA_WORKER_URL:-http://media-worker:8090}
@@ -472,6 +481,14 @@ services:
       QC_MAX_SILENCE_SECONDS: ${QC_MAX_SILENCE_SECONDS:-2}
       QC_AUDIO_VIDEO_DRIFT_MS: ${QC_AUDIO_VIDEO_DRIFT_MS:-200}
       MOCK_MODE: ${MOCK_MODE:-false}
+      REBUILD_WORKER_ENABLED: ${REBUILD_WORKER_ENABLED:-true}
+      REBUILD_LOCAL_CONFORMANCE_ENABLED: ${REBUILD_LOCAL_CONFORMANCE_ENABLED:-false}
+      REBUILD_LEASE_SECONDS: ${REBUILD_LEASE_SECONDS:-60}
+      REBUILD_HEARTBEAT_SECONDS: ${REBUILD_HEARTBEAT_SECONDS:-10}
+      REBUILD_PROVIDER_TIMEOUT_SECONDS: ${REBUILD_PROVIDER_TIMEOUT_SECONDS:-120}
+      REBUILD_RETRY_DELAY_SECONDS: ${REBUILD_RETRY_DELAY_SECONDS:-5}
+      REBUILD_MAX_OUTPUT_MB: ${REBUILD_MAX_OUTPUT_MB:-2048}
+      REBUILD_PROVIDER_ENDPOINTS_JSON: ${REBUILD_PROVIDER_ENDPOINTS_JSON:-{}}
     volumes:
       - ./storage:/data/storage
     depends_on:

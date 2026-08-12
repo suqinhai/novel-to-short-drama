@@ -79,7 +79,7 @@ func TestPluggableCandidateFrozenReplayAndDownstreamConsumption(t *testing.T) {
 		t.Fatalf("execute retry duplicated or changed the plan: %#v err=%v", appliedReplay, err)
 	}
 	for _, rebuild := range change.RebuildTasks {
-		if rebuild.Status != "pending" || rebuild.Provider != "workflow" {
+		if rebuild.Status != "pending" || rebuild.Provider != "local_conformance" {
 			t.Fatalf("rebuild was not pending for a real worker: %#v", rebuild)
 		}
 	}

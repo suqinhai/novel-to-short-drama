@@ -161,7 +161,7 @@ func TestLocalEditingFourScenariosIntegration(t *testing.T) {
 				t.Fatalf("execute: status=%s err=%v", record.Status, err)
 			}
 			for _, task := range record.RebuildTasks {
-				if task.Status != "pending" || task.Provider != "workflow" ||
+				if task.Status != "pending" || task.Provider != "local_conformance" ||
 					task.CompletedAt != nil {
 					t.Fatalf("rebuild was falsely completed without execution: %+v", task)
 				}

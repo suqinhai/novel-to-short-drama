@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -515,6 +513,13 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 		planID, after, afterHash, semanticHash, sourceType, changeKind); err != nil {
 		return ChangePlan{}, err
 	}
+	if entityType == "adaptation_plan" {
+		if err = publishVersionedAdaptationPlanArtifact(
+			ctx, tx, projectID, planID, entityID, currentVersion+1, afterHash,
+		); err != nil {
+			return ChangePlan{}, err
+		}
+	}
 	if entityType == "scene" {
 		if err = versionAdjacentScenes(
 			ctx, tx, projectID, planID, entityID, changes,
@@ -550,6 +555,55 @@ func (s *Store) ExecuteChangePlan(ctx context.Context, projectID, planID string)
 		return ChangePlan{}, err
 	}
 	return s.GetChangePlan(ctx, projectID, planID)
+}
+
+func publishVersionedAdaptationPlanArtifact(
+	ctx context.Context, tx pgx.Tx, projectID, changePlanID, entityID string,
+	version int, contentHash string,
+) error {
+	var predecessorID string
+	err := tx.QueryRow(ctx, `SELECT artifact_id FROM drama.artifacts
+		WHERE project_id=$1 AND artifact_type='adaptation_plan'
+		  AND native_entity_id=$2 AND is_current FOR UPDATE`, projectID, entityID).
+		Scan(&predecessorID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	successorID := "artifact_ev_" + contentHash[:24]
+	if _, err = tx.Exec(ctx, `UPDATE drama.artifacts SET is_current=false,
+		validity_status='superseded',updated_at=now() WHERE artifact_id=$1`, predecessorID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,
+		native_entity_id,revision_number,content_hash,validity_status,is_current,idempotency_key,metadata)
+		VALUES($1,'adaptation_plan',$2,$3,$4,$5,'valid',true,$6,
+		  jsonb_build_object('change_plan_id',$7::text,'predecessor_artifact_id',$8::text))`,
+		successorID, projectID, entityID, version, contentHash,
+		"change-plan:artifact:"+changePlanID, changePlanID, predecessorID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO drama.artifact_current_bindings(
+		artifact_current_binding_id,project_id,target_type,target_id,component_scope,current_artifact_id)
+		VALUES('acb_ev_'||substr(encode(drama.digest(convert_to($1||':'||$2,'UTF8'),'sha256'),'hex'),1,24),
+		  $1,'adaptation_plan',$2,'whole',$3)
+		ON CONFLICT(project_id,target_type,target_id,component_scope) DO UPDATE SET
+		  current_artifact_id=EXCLUDED.current_artifact_id,selected_at=now()`,
+		projectID, entityID, successorID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO drama.artifact_dependencies(artifact_dependency_id,
+		upstream_artifact_id,downstream_artifact_id,dependency_type,dependency_selector,
+		observed_upstream_hash,invalidates_on,idempotency_key)
+	SELECT 'ad_ev_'||substr(encode(drama.digest(convert_to($1||':'||dependency.downstream_artifact_id,'UTF8'),'sha256'),'hex'),1,24),
+	  $1,dependency.downstream_artifact_id,dependency.dependency_type,
+	  dependency.dependency_selector||jsonb_build_object('source_change_plan_id',$3::text),
+	  $4,dependency.invalidates_on,'change-plan:dependency:'||$1||':'||dependency.downstream_artifact_id
+	FROM drama.artifact_dependencies dependency WHERE dependency.upstream_artifact_id=$2
+	ON CONFLICT(idempotency_key) DO NOTHING`, successorID, predecessorID, changePlanID, contentHash)
+	return err
 }
 
 func readEntitySnapshot(ctx context.Context, tx pgx.Tx, entityType, entityID string) (json.RawMessage, error) {
@@ -739,7 +793,7 @@ func createPendingRebuildTasks(
 	taskNumber := 0
 	for _, action := range actions {
 		targets, err := resolvePendingRebuildTargets(
-			ctx, tx, action, entityType, entityID, changes, startMS, endMS,
+			ctx, tx, projectID, action, entityType, entityID, changes, startMS, endMS,
 		)
 		if err != nil {
 			return err
@@ -1142,12 +1196,8 @@ func (s *Store) UpdateRebuildTaskStatus(
 	ctx context.Context, projectID, planID, taskID string, input RebuildTaskStatusInput,
 ) (IncrementalRebuild, error) {
 	status := strings.ToLower(strings.TrimSpace(input.Status))
-	if status != "running" && status != "succeeded" && status != "failed" && status != "cancelled" {
-		return IncrementalRebuild{}, fmt.Errorf("%w: invalid rebuild task status", localedit.ErrInvalidPlan)
-	}
-	output := input.Output
-	if len(output) == 0 {
-		output = json.RawMessage(`{}`)
+	if status != "cancelled" {
+		return IncrementalRebuild{}, fmt.Errorf("%w: rebuild execution state is worker-owned; this endpoint only accepts cancelled", localedit.ErrInvalidPlan)
 	}
 	tx, err := s.writer.Begin(ctx)
 	if err != nil {
@@ -1156,17 +1206,16 @@ func (s *Store) UpdateRebuildTaskStatus(
 	defer tx.Rollback(ctx)
 	var task IncrementalRebuild
 	err = tx.QueryRow(ctx, `UPDATE drama.incremental_rebuild_tasks task SET
-		status=$4,output=$5::jsonb,error_code=$6,error_message=$7,
-		completed_at=CASE WHEN $4 IN('succeeded','failed','cancelled') THEN now() ELSE NULL END
+		status='cancelled',error_code='REBUILD_CANCELLED_BY_USER',error_message=$4,
+		completed_at=now(),claim_token=NULL,lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=NULL,updated_at=now()
 		FROM drama.change_plans plan
 		WHERE task.change_plan_id=plan.change_plan_id AND plan.project_id=$1
 		  AND task.change_plan_id=$2 AND task.rebuild_task_id=$3
-		  AND ((task.status='pending' AND $4 IN('running','failed','cancelled'))
-		    OR (task.status='running' AND $4 IN('succeeded','failed','cancelled')))
+		  AND task.status IN('pending','claimed','running','retry_wait')
 		RETURNING task.rebuild_task_id,task.action,task.target_entity_type,task.target_entity_id,
 		  task.artifact_id,task.range_start_ms,task.range_end_ms,task.status,task.provider,
 		  task.input,task.output,task.error_code,task.error_message,task.created_at,task.completed_at`,
-		projectID, planID, taskID, status, output, input.ErrorCode, input.ErrorMessage).Scan(
+		projectID, planID, taskID, input.ErrorMessage).Scan(
 		&task.RebuildTaskID, &task.Action, &task.TargetEntityType, &task.TargetEntityID,
 		&task.ArtifactID, &task.RangeStartMS, &task.RangeEndMS, &task.Status, &task.Provider,
 		&task.Input, &task.Output, &task.ErrorCode, &task.ErrorMessage, &task.CreatedAt,
@@ -1178,54 +1227,10 @@ func (s *Store) UpdateRebuildTaskStatus(
 	if err != nil {
 		return IncrementalRebuild{}, err
 	}
-	if status == "succeeded" {
-		if err = publishRebuildArtifactSuccessor(ctx, tx, task, output); err != nil {
-			return IncrementalRebuild{}, err
-		}
-	}
 	if err = tx.Commit(ctx); err != nil {
 		return IncrementalRebuild{}, err
 	}
 	return task, nil
-}
-
-func publishRebuildArtifactSuccessor(ctx context.Context, tx pgx.Tx, task IncrementalRebuild, output json.RawMessage) error {
-	if task.ArtifactID == nil || strings.TrimSpace(*task.ArtifactID) == "" {
-		return nil
-	}
-	var payload map[string]any
-	if json.Unmarshal(output, &payload) != nil {
-		return fmt.Errorf("%w: rebuild output must be a JSON object", ErrConflict)
-	}
-	nativeID := strings.TrimSpace(fmt.Sprint(payload["native_entity_id"]))
-	contentHash := strings.TrimSpace(fmt.Sprint(payload["content_hash"]))
-	if nativeID == "" || nativeID == "<nil>" || len(contentHash) != 64 {
-		return fmt.Errorf("%w: succeeded rebuild output requires native_entity_id and sha256 content_hash", ErrConflict)
-	}
-	var oldType, projectID string
-	var oldRevision int
-	err := tx.QueryRow(ctx, `SELECT artifact_type,project_id,revision_number FROM drama.artifacts
-		WHERE artifact_id=$1 FOR UPDATE`, *task.ArtifactID).Scan(&oldType, &projectID, &oldRevision)
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256([]byte(task.RebuildTaskID + ":" + contentHash))
-	successorID := "artifact_rebuild_" + hex.EncodeToString(digest[:])[:24]
-	if _, err = tx.Exec(ctx, `UPDATE drama.artifacts SET is_current=false,
-		validity_status=CASE WHEN validity_status='valid' THEN 'superseded' ELSE validity_status END,updated_at=now()
-		WHERE artifact_id=$1`, *task.ArtifactID); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO drama.artifacts(artifact_id,artifact_type,project_id,native_entity_id,
-		revision_number,content_hash,validity_status,is_current,idempotency_key,metadata)
-		VALUES($1,$2,$3,$4,$5,$6,'valid',true,$7,jsonb_build_object('rebuild_task_id',$8::text,'predecessor_artifact_id',$9::text))`,
-		successorID, oldType, projectID, nativeID, oldRevision+1, contentHash,
-		"rebuild:artifact:"+task.RebuildTaskID, task.RebuildTaskID, *task.ArtifactID); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `UPDATE drama.artifact_current_bindings SET current_artifact_id=$2,selected_at=now()
-		WHERE current_artifact_id=$1`, *task.ArtifactID, successorID)
-	return err
 }
 
 func intValue(value, delta any) int {

@@ -337,7 +337,7 @@ components:
             coverage_report: {type: array, items: {type: object}}
             continuity_conflicts: {type: array, items: {type: object}}
             handoff_preview: {type: array, items: {type: object}}
-            rebuild_tasks: {type: array, items: {type: object, properties: {status: {enum: [pending, running, succeeded, failed, cancelled]}}}}
+            rebuild_tasks: {type: array, items: {type: object, properties: {status: {enum: [pending, claimed, running, retry_wait, succeeded, failed, cancelled]}}}}
     DialogueTimingValidationRequest:
       type: object
       required: [items]

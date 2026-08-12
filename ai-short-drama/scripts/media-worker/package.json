@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "node worker.js",
-    "check": "node --check worker.js && node --check ffmpeg-templates.js",
+    "check": "node --check worker.js && node --check ffmpeg-templates.js && node --check rebuild-consumer.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

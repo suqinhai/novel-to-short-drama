@@ -219,7 +219,7 @@ func TestPhase5PostProductionMockChainIntegration(t *testing.T) {
 		}
 		targetTypes := map[string]bool{}
 		for _, task := range record.RebuildTasks {
-			if task.Status != "pending" || task.Provider != "workflow" || task.CompletedAt != nil {
+			if task.Status != "pending" || task.Provider != "local_conformance" || task.CompletedAt != nil {
 				t.Fatalf("media rebuild was falsely marked complete: %#v", task)
 			}
 			if task.RangeStartMS == nil || task.RangeEndMS == nil ||

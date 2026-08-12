@@ -981,7 +981,7 @@ func materializeTimelineChange(
 }
 
 func resolvePendingRebuildTargets(
-	ctx context.Context, tx pgx.Tx, action, entityType, entityID string,
+	ctx context.Context, tx pgx.Tx, projectID, action, entityType, entityID string,
 	changes []localedit.Change, fallbackStart, fallbackEnd *int64,
 ) ([]pendingRebuildTarget, error) {
 	targets := []pendingRebuildTarget{{
@@ -1008,7 +1008,7 @@ func resolvePendingRebuildTargets(
 			if action != "update_continuity" && action != "regenerate_image" {
 				for _, id := range dialogueIDs {
 					resolved, err := resolvePendingRebuildTargets(
-						ctx, tx, action, "dialogue", id, changes, fallbackStart, fallbackEnd,
+						ctx, tx, projectID, action, "dialogue", id, changes, fallbackStart, fallbackEnd,
 					)
 					if err != nil {
 						return nil, err
@@ -1019,7 +1019,7 @@ func resolvePendingRebuildTargets(
 			if action != "regenerate_voice" && action != "update_subtitle" {
 				for _, id := range sceneIDs {
 					resolved, err := resolvePendingRebuildTargets(
-						ctx, tx, action, "scene", id, changes, fallbackStart, fallbackEnd,
+						ctx, tx, projectID, action, "scene", id, changes, fallbackStart, fallbackEnd,
 					)
 					if err != nil {
 						return nil, err
@@ -1029,6 +1029,73 @@ func resolvePendingRebuildTargets(
 			}
 			return dedupePendingTargets(targets), nil
 		}
+	}
+	if entityType == "adaptation_plan" {
+		var query string
+		switch action {
+		case "regenerate_voice", "update_subtitle":
+			query = `SELECT 'dialogue',dialogue.dialogue_id
+				FROM drama.adaptation_episode_plans plan
+				JOIN drama.episode_outlines outline ON outline.project_id=$1
+				  AND outline.episode_number=plan.episode_number
+				JOIN LATERAL(SELECT script_id FROM drama.episode_scripts
+				  WHERE episode_id=outline.episode_id AND status='approved'
+				  ORDER BY version DESC LIMIT 1) script ON true
+				JOIN drama.script_scenes scene ON scene.script_id=script.script_id
+				JOIN drama.dialogues dialogue ON dialogue.scene_id=scene.scene_id
+				WHERE plan.adaptation_plan_id=$2
+				ORDER BY plan.episode_number,scene.scene_number,dialogue.sequence_number`
+		case "regenerate_image", "regenerate_video":
+			query = `SELECT 'storyboard_shot',shot.shot_id
+				FROM drama.adaptation_episode_plans plan
+				JOIN drama.episode_outlines outline ON outline.project_id=$1
+				  AND outline.episode_number=plan.episode_number
+				JOIN LATERAL(SELECT storyboard_id FROM drama.storyboards
+				  WHERE episode_id=outline.episode_id AND status='approved'
+				  ORDER BY version DESC LIMIT 1) storyboard ON true
+				JOIN drama.storyboard_shots shot ON shot.storyboard_id=storyboard.storyboard_id
+				WHERE plan.adaptation_plan_id=$2
+				ORDER BY plan.episode_number,shot.shot_order`
+		case "update_continuity":
+			query = `SELECT 'continuity_ledger_entry',continuity.continuity_entry_id
+				FROM drama.adaptation_episode_plans plan
+				JOIN drama.episode_outlines outline ON outline.project_id=$1
+				  AND outline.episode_number=plan.episode_number
+				JOIN drama.continuity_ledger_entries continuity
+				  ON continuity.project_id=outline.project_id AND continuity.episode_id=outline.episode_id
+				  AND continuity.is_current
+				WHERE plan.adaptation_plan_id=$2
+				ORDER BY plan.episode_number,continuity.scope,continuity.sequence_number`
+		case "recompose_timeline":
+			query = `SELECT 'edit_timeline',timeline.timeline_id
+				FROM drama.adaptation_episode_plans plan
+				JOIN drama.episode_outlines outline ON outline.project_id=$1
+				  AND outline.episode_number=plan.episode_number
+				JOIN LATERAL(SELECT timeline_id FROM drama.edit_timelines
+				  WHERE episode_id=outline.episode_id AND is_current
+				  ORDER BY version DESC LIMIT 1) timeline ON true
+				WHERE plan.adaptation_plan_id=$2 ORDER BY plan.episode_number`
+		}
+		rows, queryErr := tx.Query(ctx, query, projectID, entityID)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		defer rows.Close()
+		result := []pendingRebuildTarget{}
+		for rows.Next() {
+			var target pendingRebuildTarget
+			if queryErr = rows.Scan(&target.EntityType, &target.EntityID); queryErr != nil {
+				return nil, queryErr
+			}
+			result = append(result, target)
+		}
+		if queryErr = rows.Err(); queryErr != nil {
+			return nil, queryErr
+		}
+		if len(result) == 0 {
+			return nil, fmt.Errorf("%w: adaptation plan has no rebuild targets for %s", ErrConflict, action)
+		}
+		return dedupePendingTargets(result), nil
 	}
 	switch entityType {
 	case "dialogue":
