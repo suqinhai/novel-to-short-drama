@@ -1,5 +1,123 @@
 # 第 0～10 步最终验收报告
 
+> **最终复验结论（2026-08-13，Asia/Taipei；branch `main`；HEAD `b127025d5793e14f7992d52e071732a45ec02ef4`）**
+> **总体结论：FAIL。当前 P0 = 0，P1 = 1。** 通用 rebuild consumer 已实际执行通过，第一次上游变化传播和完整本地交付链通过，全量自动测试 `294/294` 通过；但同一新项目的第二次连续上游变化在新 master artifact 发布时发生内容哈希式 ID 碰撞，未产生第二个 master/export，并留下 stale master 仍被 current binding 引用的状态。该结果不满足“两次上游变化传播均通过”“P1 = 0”“页面、API、数据库和工作流状态一致”，因此不得沿用下方历史报告的 PASS/PARTIAL 结论。
+> 本节是当前真实 HEAD 的最新独立终验记录；**下方 2026-08-12 及更早验收历史全部保留，不删除、不改写。**
+
+## A. 2026-08-13 当前 HEAD 最终复验
+
+### A.1 最终判定与问题计数
+
+- **第 0～10 步整体验收：FAIL。** 自动测试矩阵全绿不能覆盖本次实际复现的连续第二次同内容 render 发布冲突。
+- **本地非商业功能闭环：尚未完整形成。** 单次 `impact → stale → Worker → local_conformance → successor/current → Resolver → 新 QA → FFmpeg render/master → 新 export → provenance` 已闭环；第二次在 `render → master artifact publication` 断裂。
+- **当前缺陷计数：P0 = 0，P1 = 1。** P1 是同一根因及其状态投影后果，不重复拆分计数。
+- **是否存在功能代码未真正接通：存在。** 通用 rebuild consumer 本身已经真正接通；未接通的是“连续版本可能产生相同 master 内容哈希”时的 artifact successor 发布与 current 切换。
+- **真实小说 UAT：不可以进入。** 应先修复本节 P1，并在全新库中重跑同一“双连续变化、同内容 render”验收；收费外部 Provider 的生成质量仍需另行授权验证。
+- **完整主链证据边界：未达到整链 PASS。** 本次新库确实从新小说文本和新项目记录开始，但 Source/IR/Spec/script/storyboard/初始媒体到基线 timeline/master 的下游状态由当前验收 fixture 分阶段物化，并未在无收费授权环境中让同一个项目逐段调用所有外部生成 Provider。它证明数据库、API、workflow 契约、后期交付和两轮本地 rebuild 消费者链，不等于“真实外部 Provider 从小说生成到成片”的单项目运行证据。
+
+### A.2 基线、隔离与执行约束
+
+| 项目 | 本次实际值 |
+|---|---|
+| 日期 / 时区 | 2026-08-13 / Asia/Taipei |
+| branch / HEAD | `main` / `b127025d5793e14f7992d52e071732a45ec02ef4` |
+| 自动验收 fresh DB | `short_drama_phase5_finalfresh_20260813_b127025`，以及 runner 创建的 legacy/compiler/isolation/rebuild 等独立库 |
+| 双变化专项 DB | `short_drama_phase5_finaltwice2_20260813_b127025`，由当前 HEAD 的 00～33 migration 在空库创建 |
+| 测试项目 / 小说输入 | `p_phase1_legacy` / `终验雨夜`；两章文本实际持久化为“林夏在暴雨中推开旧宅的门，门后留下发光钥匙。”和“手机显示失踪父亲的坐标，钥匙与坐标指向钟楼。” |
+| 独立执行面 | 独立 PostgreSQL 数据库、独立 media-worker 容器、独立 storage、隔离 API `127.0.0.1:8897`、隔离 frontend `127.0.0.1:5177` |
+| 代码约束 | 未修改业务代码、migration、workflow、测试代码或 Git 历史；专项驱动仅在系统临时目录的 backend 副本中执行，结束后已删除 |
+| 外部调用 | 未调用收费模型、图片、视频或 TTS Provider；rebuild 使用显式 `local_conformance`，render 使用本地 FFmpeg |
+
+全新库使用当前工作树的 migration 文件，不沿用运行中容器内的旧 migration 副本；00～33 空库迁移、两次幂等重放、legacy upgrade 和全部 verify 均通过。验收结束后隔离数据库、worker、API、frontend、storage 和临时专项驱动均已清理。
+
+### A.3 全量自动测试与构建
+
+`node scripts/run-phase5-acceptance.js` 实际退出码为 0，最终输出：`PASS Phase 5 automated acceptance: 294 commands exited 0`。
+
+| 范围 | 结果 | 本次证据 |
+|---|---|---|
+| 后端完整测试 / 静态检查 | PASS | 全部 Go package tests 通过；`go vet ./...` 通过 |
+| 前端完整测试 | PASS | 86 / 86 |
+| 前端生产构建 | PASS | 构建成功；只有非阻断 chunk-size warning |
+| media worker test/check | PASS | 11 / 11；语法检查通过 |
+| Veo adapter test/check | PASS | 14 / 14；未调用收费 Veo |
+| 空库迁移 / 幂等迁移 / legacy upgrade | PASS | 00～33 空库、两次 replay、legacy、全部 verify 通过 |
+| API 契约 / schema | PASS | OpenAPI、JSON Schema 和 API contract 测试通过 |
+| workflow schema / SQL / 引用 | PASS | workflow JSON、143 条 SQL PREPARE、引用与 compose/health 校验通过 |
+| rebuild consumer 专项 E2E | PASS（单次闭环） | 通用 consumer 的 claim、lease、failure、timeout、非法产物、hash mismatch、retry、幂等 publication、事务回滚及完整交付闭环通过 |
+| QA / render / export E2E | PASS（既有自动场景） | 目标 QA、真实 FFmpeg master、失效旧 export、重新导出通过 |
+| 专业导出 round-trip | PASS | 13 类格式、21 个 manifest 文件、逐文件 hash、ZIP/package hash 和 provenance 回读通过 |
+
+结论：全量套件本身无失败；本次 P1 是全量套件未覆盖的“同一项目连续第二次变化且两个 render 输出内容哈希相同”情形。
+
+### A.4 新项目主链与两次连续上游变化
+
+基线项目在新库中保存上述小说输入，并以当前验收 fixture 分阶段物化可追溯 Source/IR/Spec/episode/script/storyboard/media/timeline/master/QA/export 测试链。预置上游产物中的 `deterministic_mock` provenance 明确属于验收 fixture，不是运行时 fallback，也不作为外部生成质量或单项目实时主链证明；从 change plan 开始的两轮 rebuild 均由独立 Worker 实际消费并生成可校验文件。
+
+| 阶段 | 第一次上游变化 | 第二次上游变化 |
+|---|---|---|
+| change plan | `cp_dd2135e277cb70947266b4cb15ca8f13`，adaptation plan v1→v2 | `cp_b56c819d0476afd6df310bb93df6d4fb`，v2→v3 |
+| impact / stale | 12 个精确 impact，12 个 `valid→stale` | 12 个精确 impact，12 个 `valid→stale` |
+| Worker / Provider | 11 个 task 全部 `succeeded`，`local_conformance` | 11 个 task 全部 `succeeded`，`local_conformance` |
+| 物理产物 / publication | 11 个合法物理产物、11 个 successor publication | 11 个合法物理产物、11 个 successor publication |
+| provenance | 每项有 request hash、output hash、model version、execution mode | 同左；累计 22/22 publication provenance 完整，伪 completed = 0 |
+| timeline / current | 新 timeline `etl_rb_c035f947cd8268abbeaad9ffbe6e` 成为 current；旧 timeline superseded | 新 timeline `etl_rb_92481422397a7840280ec7bb3a5d` 发布；上一 timeline superseded |
+| Effective Input Resolver | `ready=true` | render 前 `ready=true`；API 复核仍为 `ready=true` |
+| 旧 QA 阻断 | 旧 QA 不能放行新 timeline；建立目标新 QA 后才允许 render | 第一轮 QA 已 superseded，未创建第二轮新 QA 时 render 请求被拒；新建 `qgr_bd77afc24080cc761b7d1349` 后才排队 |
+| render / master | `rj_f4da2a22f4e16f09b1c974968466b985` succeeded；`master_3dfde4e9f8c88b55f2a6a445` ready | `rj_bf40bb86a8525614ac62901fd797915a` 三次执行后 failed；没有第二个 master |
+| export | 新 export `exp_308c16401096a480a94977a06f4dcbe4` 完整生成 | 第一轮 export 自动变为 stale 且下载 HTTP 409；没有第二轮新 export |
+| 判定 | **PASS** | **FAIL** |
+
+两次 FFmpeg 输出文件实际都存在、均为合法 MP4，大小均为 1,868,794 bytes，SHA-256 均为 `d308c25a305fe1b57c574bbffb5a01fabdb156a681aa4e4ddd3804ddc6d25b6a`。第二次不是 FFmpeg 生成失败，而是其后的数据库 artifact publication 失败。
+
+### A.5 用户要求的交叉证明
+
+1. **旧版本仍可追溯：PASS。** adaptation plan v1/v2/v3 均保留，只有 v3 为 entity current；artifact history 共 53 行，timeline v1/v2/v3、两轮 change plan、impact、task、execution 和 publication 均可查询。
+2. **旧版本不能误认为 current：第一次 PASS，第二次 FAIL。** 第二次失败后 `artifact_master_d308c25a305fe1b57c574bbf` 已是 `validity_status=stale`，但仍为 `is_current=true`，episode master binding 也仍指向它。
+3. **旧 QA 不能放行新版本：PASS。** 两轮均在新 QA 之前调用 render 并被拒；历史 gate 依次为 superseded，第二轮使用目标 timeline 的新 gate 后才排队。
+4. **旧 export 失效且不可下载：PASS。** baseline `exp_25314c...` 和第一轮 `exp_308c...` 均为 stale；API/页面显示 stale，下载返回 HTTP 409。
+5. **失败重建不会替换旧 current：PASS。** worker state-machine 对 provider failure、timeout、invalid output、hash mismatch 和 publication transaction failure 均验证 predecessor 仍为 valid/current、无 successor/publication；本次累计成功 task 也不存在伪 completed。注意第二次 render 发布失败留下的是“旧 master stale 但仍 current”，属于本节 P1，不是 provider rebuild failure 测试失效。
+6. **无关对象不会误 stale：PASS。** 专项测试在两轮变更前后比对无关 BGM，版本、hash、status/current 均未变化。
+7. **页面、API、数据库和工作流状态一致：FAIL。** 页面和 `/api/v1/projects/p_phase1_legacy` 都显示 `preview_rendered`，数据库 `projects` 投影相同；但最新真实 render job 为 `failed`、最新 timeline native row 为 `failed/is_current=false`，旧 master artifact 已 stale，current binding 却仍引用它。导出页面正确显示两份历史 export 均 stale，因此不是仅有 UI 文案问题。
+8. **不存在 mock fallback、旁路或伪 completed：PASS（限定本地消费者闭环）。** 两轮 22 个 rebuild execution/publication 全部显式为 `local_conformance`，均有实际文件、hash 校验和 successor；`successor_artifact_id/output_validated_at/publication` 缺一的 succeeded task 数量为 0。fixture 的 `deterministic_mock` 有明确 provenance，未伪装成生产 Provider；收费 Provider 未运行。
+9. **本地与收费 Provider 范围已区分：PASS。** `local_conformance` 只证明消费者、文件验证、版本切换、QA/render/export 和 provenance 协议闭环，不证明收费外部模型的语义、画质、声音质量、稳定性、配额或成本。
+
+### A.6 当前 P1 根因
+
+`database/33-rebuild-consumer-closure.sql` 的 `publish_render_artifact_successors()` 使用：
+
+```sql
+master_artifact_id := 'artifact_master_' || substr(master.content_hash, 1, 24);
+```
+
+master insert 只声明 `ON CONFLICT(idempotency_key)`。当不同 generation 的合法 render 内容相同时，两个 master 得到相同 `artifact_id`、不同 `idempotency_key`，第二次 insert 命中 `artifacts_artifact_id_key` 唯一约束并回滚。Worker 最终记录：
+
+```text
+FFMPEG_FAILED: duplicate key value violates unique constraint "artifacts_artifact_id_key"
+```
+
+实际根因是 publication identity 冲突而不是 FFmpeg。回滚后数据库表现为：第二个 master/export 缺失；新 timeline artifact 为 valid/current，但 native timeline 为 failed/non-current；上一 master artifact 为 stale/current，binding 未切换；项目投影及页面仍显示 `preview_rendered`。这同时违反 successor/current、第二次完整传播和跨层状态一致性，严重度定为 **P1**。
+
+### A.7 Provider 可验证边界
+
+| Provider 范围 | 状态 | 本次能够证明的内容 |
+|---|---|---|
+| `local_conformance` rebuild Provider | 已验证 | 22 次真实消费、合法 WAV/PNG/MP4/JSON、hash/metadata 校验、transactional successor/current、provenance、失败保持旧 current |
+| 本地 FFmpeg render / technical QC | 已验证 | 实际可解码 master 文件、两次物理输出、worker retry/失败持久化 |
+| LiteLLM 文本模型（当前配置示例 `glm-5.2`，含分析、IR、Story Bible、策划、剧本、分镜、视觉提示与 QC） | **UNVERIFIABLE** | 仅验证 API/契约/失败路径；未验证外部生成质量 |
+| 图片 Provider（`generic_openai_images` 及其实际外部模型） | **UNVERIFIABLE** | 仅验证 adapter/契约/本地 conformance 文件链 |
+| 视频 Provider（`generic_async_video`、Veo 3.1 adapter/实际 Google 服务） | **UNVERIFIABLE** | Veo adapter 14/14；未调用收费视频生成 |
+| TTS Provider（`generic_sync_tts` 及其实际外部语音服务） | **UNVERIFIABLE** | 仅验证本地 conformance WAV、契约和消费者闭环 |
+
+### A.8 最终明确回答
+
+1. **第 0～10 步是否整体验收 PASS？** 否，**FAIL**。
+2. **是否形成完整的本地非商业功能闭环？** 否；单次闭环成立，但连续第二次变化在 master artifact publication 断裂。
+3. **当前 P0/P1 是否均为 0？** 否；**P0 = 0，P1 = 1**。
+4. **是否存在功能代码未真正接通？** 是；相同内容哈希的后继 master 无法发布，第二次 current/QA/master/export 链未真正接通。
+5. **哪些外部 Provider 仍是 UNVERIFIABLE？** LiteLLM/`glm-5.2` 文本生成链、`generic_openai_images` 图片链、`generic_async_video` 与真实 Veo 视频链、`generic_sync_tts` 语音链；外部 Prompt/AI 局部改写质量也包含在文本 Provider 范围内。
+6. **是否可以进入真实小说 UAT？** **不可以。** 先关闭本节 P1 并以新库重跑两次连续传播；随后在明确费用授权和验收样本后补做外部 Provider 质量 UAT。
+
 > **修复后复验结论（2026-08-12，当前 HEAD `14d888e64f7263274978e85882593ca7f3c5c2b1`）**
 > 本节是用户授权修复后基于当前工作树重新执行的结论，**取代下方原始终验的 FAIL 结论**；下方正文保留为修复前历史证据和问题复现记录。
 
