@@ -400,6 +400,85 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 		if currentTimeline != legalDraftID || currentMaster != masterID {
 			t.Fatalf("successful render did not publish current artifacts: timeline=%s master=%s", currentTimeline, currentMaster)
 		}
+
+		// A later generation can be byte-identical (for example, deterministic
+		// FFmpeg input after an upstream metadata-only change). It must publish a
+		// distinct version artifact instead of colliding through a hash-based
+		// artifact ID and leaving a stale artifact bound as current.
+		var firstMasterArtifactID string
+		if queryErr := database.pool.QueryRow(ctx, `SELECT artifact_id FROM drama.artifacts
+			WHERE artifact_type='episode_master' AND native_entity_id=$1`, masterID).
+			Scan(&firstMasterArtifactID); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		sameHashGate, gateErr := database.RunAuthoritativeTimelineQualityGate(ctx, projectID, episodeID,
+			legalDraftID, qualitygate.DefaultConfig(), false, "acceptance-identical-master")
+		if gateErr != nil {
+			t.Fatal(gateErr)
+		}
+		resolveBlockingFindings(t, ctx, database, projectID, episodeID, sameHashGate)
+		const secondRenderID = "rj_phase34_identical_master"
+		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.render_jobs(
+			render_job_id,idempotency_key,trace_id,project_id,episode_id,timeline_id,timeline_version,
+			render_type,status,command_template_id,input_manifest_path,output_path,max_retries)
+			SELECT $1,$2,$3,project_id,episode_id,timeline_id,timeline_version,
+			  render_type,'pending',command_template_id,input_manifest_path,$4,max_retries
+			FROM drama.render_jobs WHERE render_job_id=$5`, secondRenderID, "phase34-identical-master",
+			"trace-phase34-identical-master", "/results/master_phase34_identical.mp4", job.RenderJobID); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		var nextGeneration int
+		if queryErr := database.pool.QueryRow(ctx, `SELECT COALESCE(max(generation_version),0)+1
+			FROM drama.episode_masters WHERE episode_id=$1`, episodeID).Scan(&nextGeneration); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if _, persistErr := database.writer.Exec(ctx, `UPDATE drama.episode_masters SET is_current=false
+			WHERE project_id=$1 AND episode_id=$2 AND master_type='preview' AND is_current`, projectID, episodeID); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		const secondMasterID = "master_phase34_identical"
+		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.episode_masters(
+			master_id,project_id,episode_id,timeline_id,render_job_id,generation_version,master_type,
+			storage_url,width,height,aspect_ratio,fps,duration_ms,video_codec,audio_codec,sample_rate,
+			content_hash,status,is_current) VALUES($1,$2,$3,$4,$5,$6,'preview',$7,1080,1920,'9:16',24,8000,
+			'h264','aac',48000,$8,'ready',true)`, secondMasterID, projectID, episodeID, legalDraftID,
+			secondRenderID, nextGeneration, "/results/master_phase34_identical.mp4", strings.Repeat("a", 64)); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		if _, persistErr := database.writer.Exec(ctx, `UPDATE drama.render_jobs
+			SET status='succeeded',progress=100,output_url=$2,completed_at=now(),updated_at=now()
+			WHERE render_job_id=$1`, secondRenderID, "/results/master_phase34_identical.mp4"); persistErr != nil {
+			t.Fatalf("identical-content successor publication failed: %v", persistErr)
+		}
+		var secondMasterArtifactID, firstValidity, secondValidity, currentMasterArtifactID, renderStatus string
+		var firstCurrent, secondCurrent bool
+		if queryErr := database.pool.QueryRow(ctx, `SELECT artifact_id,validity_status,is_current
+			FROM drama.artifacts WHERE artifact_type='episode_master' AND native_entity_id=$1`, secondMasterID).
+			Scan(&secondMasterArtifactID, &secondValidity, &secondCurrent); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if queryErr := database.pool.QueryRow(ctx, `SELECT validity_status,is_current
+			FROM drama.artifacts WHERE artifact_id=$1`, firstMasterArtifactID).Scan(&firstValidity, &firstCurrent); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if queryErr := database.pool.QueryRow(ctx, `SELECT binding.current_artifact_id
+			FROM drama.artifact_current_bindings binding
+			WHERE binding.project_id=$1 AND binding.target_type='episode' AND binding.target_id=$2
+			  AND binding.component_scope='episode_master'`, projectID, episodeID).
+			Scan(&currentMasterArtifactID); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if queryErr := database.pool.QueryRow(ctx, `SELECT status FROM drama.render_jobs WHERE render_job_id=$1`,
+			secondRenderID).Scan(&renderStatus); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if secondMasterArtifactID == firstMasterArtifactID || secondValidity != "valid" || !secondCurrent ||
+			firstValidity != "superseded" || firstCurrent || currentMasterArtifactID != secondMasterArtifactID ||
+			renderStatus != "succeeded" {
+			t.Fatalf("identical-content successor did not switch atomically: first=%s/%s/%t second=%s/%s/%t binding=%s render=%s",
+				firstMasterArtifactID, firstValidity, firstCurrent, secondMasterArtifactID, secondValidity,
+				secondCurrent, currentMasterArtifactID, renderStatus)
+		}
 	})
 }
 

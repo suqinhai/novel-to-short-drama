@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const read = (file) => fs.readFileSync(file, 'utf8');
 const migration = read('database/33-rebuild-consumer-closure.sql');
+const renderIdentityMigration = read('database/34-render-artifact-version-identity.sql');
 const worker = read('scripts/media-worker/rebuild-consumer.js');
 const host = read('scripts/media-worker/worker.js');
 const localEdit = read('cms/backend/internal/store/local_edit.go');
@@ -17,6 +18,12 @@ for (const marker of ['FOR UPDATE SKIP LOCKED', 'lease_expires_at', 'attempt_cou
   'trg_prepare_incremental_rebuild_task', 'local_conformance', 'publish_render_artifact_successors']) {
   assert(migration.includes(marker), `migration rebuild marker missing: ${marker}`);
 }
+for (const marker of ["convert_to('episode_master:'||master.master_id", "convert_to('edit_timeline:'||NEW.timeline_id",
+  'render-artifact-version-identity-v1-20260817']) {
+  assert(renderIdentityMigration.includes(marker), `render artifact identity marker missing: ${marker}`);
+}
+assert(!renderIdentityMigration.includes("master_artifact_id:='artifact_master_'||substr(master.content_hash"),
+  'master artifact identity still depends on content hash');
 for (const marker of ['regenerate_voice', 'update_subtitle', 'regenerate_image', 'regenerate_video',
   'update_continuity', 'recompose_timeline', 'validateProviderOutput', 'probeMediaOutput',
   'REBUILD_PROVIDER_UNSUPPORTED', 'REBUILD_OUTPUT_HASH_MISMATCH', 'publishSuccess', 'persistFailure']) {

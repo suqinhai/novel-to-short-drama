@@ -50,11 +50,15 @@ const migrationFiles = [
   'database/31-step-8-10-p0-p1-closure.sql',
   'database/32-final-delivery-chain-closure.sql',
   'database/33-rebuild-consumer-closure.sql',
+  'database/34-render-artifact-version-identity.sql',
 ];
 const legacyBaseFiles = migrationFiles.slice(0, 5);
 const contractFiles = migrationFiles.slice(5);
-const rebuildMigration = 'database/33-rebuild-consumer-closure.sql';
-const preRebuildContractFiles = contractFiles.filter((file) => file !== rebuildMigration);
+const rebuildMigrations = [
+  'database/33-rebuild-consumer-closure.sql',
+  'database/34-render-artifact-version-identity.sql',
+];
+const preRebuildContractFiles = contractFiles.filter((file) => !rebuildMigrations.includes(file));
 const verifyFiles = [
   'database/06-verify-narrative-foundation.sql', 'database/07-verify-adaptation-compiler.sql',
   'database/08-verify-chapter-impact-analysis.sql', 'database/09-verify-phase5-contract-corrections.sql',
@@ -76,6 +80,7 @@ const verifyFiles = [
   'database/31-verify-step-8-10-p0-p1-closure.sql',
   'database/32-verify-final-delivery-chain-closure.sql',
   'database/33-verify-rebuild-consumer-closure.sql',
+  'database/34-verify-render-artifact-version-identity.sql',
 ];
 
 function loadEnv() {
@@ -161,15 +166,20 @@ try {
   for (const file of legacyBaseFiles) sqlFile(legacyDatabase, file, `legacy base ${file}`);
   sqlFile(legacyDatabase, 'test-data/phase1-legacy-seed.sql', 'seed explicit legacy IDs');
   for (const file of preRebuildContractFiles) sqlFile(legacyDatabase, file, `legacy upgrade ${file}`);
-	for (const file of verifyFiles.filter((item) => item !== 'database/33-verify-rebuild-consumer-closure.sql')) {
+	for (const file of verifyFiles.filter((item) => ![
+	  'database/33-verify-rebuild-consumer-closure.sql',
+	  'database/34-verify-render-artifact-version-identity.sql',
+	].includes(item))) {
 	  sqlFile(legacyDatabase, file, `legacy verify ${file}`);
 	}
   sqlFile(legacyDatabase, 'test-data/phase1-contract-seed.sql', 'seed traced Narrative IR fixture');
   sqlFile(legacyDatabase, 'test-data/phase3-compiler-db-seed.sql', 'seed adaptation compiler fixture');
   sqlFile(legacyDatabase, 'test-data/phase5-postproduction-fixture.sql', 'seed complete Phase 5 post-production mock episode');
-  sqlFile(legacyDatabase, rebuildMigration, `legacy upgrade ${rebuildMigration}`);
-	sqlFile(legacyDatabase, 'database/33-verify-rebuild-consumer-closure.sql',
-	  'legacy verify database/33-verify-rebuild-consumer-closure.sql');
+  for (const file of rebuildMigrations) sqlFile(legacyDatabase, file, `legacy upgrade ${file}`);
+	for (const file of ['database/33-verify-rebuild-consumer-closure.sql',
+	  'database/34-verify-render-artifact-version-identity.sql']) {
+	  sqlFile(legacyDatabase, file, `legacy verify ${file}`);
+	}
   run('Generic rebuild consumer full delivery closure E2E', 'node', ['scripts/run-rebuild-consumer-closure-e2e.js'], {
     env: {...commandEnv, REBUILD_CLOSURE_DATABASE: rebuildClosureDatabase,
       REBUILD_CLOSURE_SOURCE_DATABASE: legacyDatabase, PHASE5_POSTGRES_CONTAINER: container},

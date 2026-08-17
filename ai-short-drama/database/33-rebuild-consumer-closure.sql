@@ -59,8 +59,16 @@ BEGIN
   WHERE project_id=NEW.project_id AND artifact_type='edit_timeline' AND native_entity_id=NEW.timeline_id
   ORDER BY is_current DESC,revision_number DESC,created_at DESC LIMIT 1;
   IF timeline_artifact_id IS NULL THEN timeline_hash:=drama.timeline_content_hash(NEW.timeline_id); END IF;
-  timeline_artifact_id:=COALESCE(timeline_artifact_id,'artifact_timeline_'||substr(timeline_hash,1,24));
-  master_artifact_id:='artifact_master_'||substr(master.content_hash,1,24);
+  SELECT artifact_id INTO master_artifact_id FROM drama.artifacts
+  WHERE project_id=NEW.project_id AND artifact_type='episode_master' AND native_entity_id=master.master_id
+  ORDER BY is_current DESC,revision_number DESC,created_at DESC LIMIT 1;
+  -- Artifact identity tracks the versioned native entity, not its bytes. Two
+  -- independently published versions may legitimately have identical output
+  -- hashes and must still retain separate lineage/current-binding records.
+  timeline_artifact_id:=COALESCE(timeline_artifact_id,'artifact_timeline_'||substr(encode(drama.digest(
+    convert_to('edit_timeline:'||NEW.timeline_id,'UTF8'),'sha256'),'hex'),1,32));
+  master_artifact_id:=COALESCE(master_artifact_id,'artifact_master_'||substr(encode(drama.digest(
+    convert_to('episode_master:'||master.master_id,'UTF8'),'sha256'),'hex'),1,32));
 
   UPDATE drama.artifacts artifact SET is_current=false,
     validity_status=CASE WHEN validity_status='valid' THEN 'superseded' ELSE validity_status END,
