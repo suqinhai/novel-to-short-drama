@@ -411,22 +411,23 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 			Scan(&firstMasterArtifactID); queryErr != nil {
 			t.Fatal(queryErr)
 		}
+		restored, restoreErr := database.RestoreNLETimelineDraft(ctx, projectID, episodeID, legalDraftID, nil)
+		if restoreErr != nil || restored.Timeline.ParentTimelineID == nil ||
+			*restored.Timeline.ParentTimelineID != legalDraftID || restored.Timeline.IsCurrent {
+			t.Fatalf("identical-content successor draft was not created: %#v err=%v", restored, restoreErr)
+		}
+		secondTimelineID := restored.Timeline.TimelineID
 		sameHashGate, gateErr := database.RunAuthoritativeTimelineQualityGate(ctx, projectID, episodeID,
-			legalDraftID, qualitygate.DefaultConfig(), false, "acceptance-identical-master")
+			secondTimelineID, qualitygate.DefaultConfig(), false, "acceptance-identical-master")
 		if gateErr != nil {
 			t.Fatal(gateErr)
 		}
 		resolveBlockingFindings(t, ctx, database, projectID, episodeID, sameHashGate)
-		const secondRenderID = "rj_phase34_identical_master"
-		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.render_jobs(
-			render_job_id,idempotency_key,trace_id,project_id,episode_id,timeline_id,timeline_version,
-			render_type,status,command_template_id,input_manifest_path,output_path,max_retries)
-			SELECT $1,$2,$3,project_id,episode_id,timeline_id,timeline_version,
-			  render_type,'pending',command_template_id,input_manifest_path,$4,max_retries
-			FROM drama.render_jobs WHERE render_job_id=$5`, secondRenderID, "phase34-identical-master",
-			"trace-phase34-identical-master", "/results/master_phase34_identical.mp4", job.RenderJobID); persistErr != nil {
-			t.Fatal(persistErr)
+		secondJob, secondRenderErr := database.ConfirmNLETimelineRender(ctx, projectID, episodeID, secondTimelineID)
+		if secondRenderErr != nil || secondJob.Status != "pending" {
+			t.Fatalf("identical-content successor render was not released: %#v err=%v", secondJob, secondRenderErr)
 		}
+		secondRenderID := secondJob.RenderJobID
 		var nextGeneration int
 		if queryErr := database.pool.QueryRow(ctx, `SELECT COALESCE(max(generation_version),0)+1
 			FROM drama.episode_masters WHERE episode_id=$1`, episodeID).Scan(&nextGeneration); queryErr != nil {
@@ -441,7 +442,7 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 			master_id,project_id,episode_id,timeline_id,render_job_id,generation_version,master_type,
 			storage_url,width,height,aspect_ratio,fps,duration_ms,video_codec,audio_codec,sample_rate,
 			content_hash,status,is_current) VALUES($1,$2,$3,$4,$5,$6,'preview',$7,1080,1920,'9:16',24,8000,
-			'h264','aac',48000,$8,'ready',true)`, secondMasterID, projectID, episodeID, legalDraftID,
+			'h264','aac',48000,$8,'ready',true)`, secondMasterID, projectID, episodeID, secondTimelineID,
 			secondRenderID, nextGeneration, "/results/master_phase34_identical.mp4", strings.Repeat("a", 64)); persistErr != nil {
 			t.Fatal(persistErr)
 		}
