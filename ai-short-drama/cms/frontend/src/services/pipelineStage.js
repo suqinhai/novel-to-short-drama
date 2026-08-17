@@ -69,6 +69,7 @@ const completedStageCheckpoints = new Set([
   'audio_plan_completed',
   'stage_4_completed',
   'final_rendered',
+  'stage_5_completed',
 ])
 
 const exactStageLabels = {

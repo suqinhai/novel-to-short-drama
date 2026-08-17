@@ -37,6 +37,8 @@ test('reports completed production stages as a stable overall percentage', () =>
   assert.equal(getPipelineProgress('unknown_stage', 'running').percentage, 0)
   assert.equal(getPipelineProgress('storyboard_approved', 'stage_2_completed').completedStages, 6)
   assert.equal(getPipelineProgress('stage_4_completed', 'stage_4_completed').completedStages, 10)
+  assert.equal(getPipelineProgress('stage_5_completed', 'stage_5_completed').completedStages, pipelineStages.length)
+  assert.equal(getPipelineProgress('stage_5_completed', 'stage_5_completed').percentage, 100)
 })
 
 test('uses readable labels for known, completed and unknown stages', () => {

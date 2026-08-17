@@ -428,6 +428,31 @@ func TestStep810P0P1ClosureIntegration(t *testing.T) {
 			t.Fatalf("identical-content successor render was not released: %#v err=%v", secondJob, secondRenderErr)
 		}
 		secondRenderID := secondJob.RenderJobID
+		const secondTimelineArtifactID = "artifact_phase34_preexisting_timeline"
+		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.artifacts(
+			artifact_id,artifact_type,project_id,native_entity_id,revision_number,content_hash,
+			validity_status,is_current,idempotency_key,metadata)
+			SELECT $1,'edit_timeline',$2,$3,version,drama.timeline_content_hash($3),
+			  'stale',false,'acceptance:phase34:preexisting-timeline',jsonb_build_object('episode_id',$4::text)
+			FROM drama.edit_timelines WHERE timeline_id=$3`, secondTimelineArtifactID, projectID,
+			secondTimelineID, episodeID); persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		var existingResolverArtifactID string
+		if queryErr := database.pool.QueryRow(ctx, `SELECT snapshot->'resolver_artifact_ids'->>0
+			FROM drama.quality_gate_runs WHERE gate_run_id=$1`, sameHashGate.GateRunID).Scan(
+			&existingResolverArtifactID); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if _, persistErr := database.writer.Exec(ctx, `INSERT INTO drama.artifact_dependencies(
+			artifact_dependency_id,upstream_artifact_id,downstream_artifact_id,dependency_type,
+			dependency_selector,observed_upstream_hash,idempotency_key)
+			SELECT 'ad_phase34_preexisting',$1,$2,'effective_input_to_timeline','{}'::jsonb,
+			  content_hash,'acceptance:phase34:preexisting-effective-input'
+			FROM drama.artifacts WHERE artifact_id=$1
+			ON CONFLICT DO NOTHING`, existingResolverArtifactID, secondTimelineArtifactID); persistErr != nil {
+			t.Fatal(persistErr)
+		}
 		var nextGeneration int
 		if queryErr := database.pool.QueryRow(ctx, `SELECT COALESCE(max(generation_version),0)+1
 			FROM drama.episode_masters WHERE episode_id=$1`, episodeID).Scan(&nextGeneration); queryErr != nil {

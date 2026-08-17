@@ -21,6 +21,7 @@ export const statusLabels = {
   pending_review: '待审核',
   needs_review: '需审核',
   completed: '已完成',
+  stage_5_completed: '已完成',
   partially_failed: '部分失败',
   succeeded: '已生成',
   ready: '已就绪',
@@ -40,6 +41,7 @@ export const statusLabels = {
   stale: '待更新',
   draft: '草稿',
   failed: '异常',
+  stage_5_failed: '异常',
   invalid: '无效',
   conflicting: '有冲突',
   unhealthy: '异常',
@@ -59,7 +61,7 @@ export const statusLabels = {
 }
 
 export const statusTones = {
-  completed: 'success', succeeded: 'success', ready: 'success', valid: 'success', passed: 'success',
+  completed: 'success', stage_5_completed: 'success', succeeded: 'success', ready: 'success', valid: 'success', passed: 'success',
   approved: 'success', published: 'success', reviewed: 'success', aligned: 'success', active: 'success',
   locked: 'success', healthy: 'success', regenerated: 'success', replaced: 'success',
   running: 'info', generating: 'info', processing: 'info', rendering: 'info', validating: 'info',
@@ -68,7 +70,7 @@ export const statusTones = {
   ready_to_continue: 'info', pending_review: 'warning', needs_review: 'warning', warning: 'warning',
   degraded: 'warning', stale: 'warning', conflicting: 'warning', manual_required: 'warning',
   partially_failed: 'warning', waiting_asset_lock: 'warning', waiting_storyboard_image_review: 'warning',
-  failed: 'danger', invalid: 'danger', unhealthy: 'danger', timeout: 'danger', rejected: 'danger',
+  failed: 'danger', stage_5_failed: 'danger', invalid: 'danger', unhealthy: 'danger', timeout: 'danger', rejected: 'danger',
   pending: 'neutral', queued: 'neutral', claimed: 'neutral', paused: 'neutral', draft: 'neutral', cancelled: 'neutral',
   skipped: 'neutral', archived: 'neutral', superseded: 'neutral', removed: 'neutral', dismissed: 'neutral',
 }

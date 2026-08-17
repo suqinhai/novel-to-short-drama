@@ -13,7 +13,11 @@ BEGIN
   END IF;
   SELECT checksum INTO existing_checksum FROM drama.schema_migrations WHERE version='34';
   IF existing_checksum IS NOT NULL
-     AND existing_checksum <> 'render-artifact-version-identity-v1-20260817' THEN
+     AND existing_checksum NOT IN(
+       'render-artifact-version-identity-v1-20260817',
+       'render-artifact-version-identity-v2-20260817',
+       'render-artifact-version-identity-v3-20260817'
+     ) THEN
     RAISE EXCEPTION 'migration 34 checksum mismatch: %',existing_checksum;
   END IF;
 END $$;
@@ -97,7 +101,7 @@ BEGIN
   VALUES('ad_'||substr(encode(drama.digest(convert_to(timeline_artifact_id||master_artifact_id,'UTF8'),'sha256'),'hex'),1,24),
     timeline_artifact_id,master_artifact_id,'timeline_to_master',jsonb_build_object('episode_id',NEW.episode_id),
     timeline_hash,'render:dependency:'||timeline_artifact_id||':'||master_artifact_id)
-  ON CONFLICT(idempotency_key) DO NOTHING;
+  ON CONFLICT DO NOTHING;
 
   FOR upstream_id IN SELECT jsonb_array_elements_text(COALESCE((SELECT snapshot->'resolver_artifact_ids'
       FROM drama.quality_gate_runs WHERE gate_run_id=NEW.quality_gate_run_id),'[]'::jsonb)) LOOP
@@ -109,19 +113,75 @@ BEGIN
       upstream_id,timeline_artifact_id,'effective_input_to_timeline',
       jsonb_build_object('resolution_id',NEW.effective_input_resolution_id),upstream_hash,
       'render:input:'||upstream_id||':'||timeline_artifact_id)
-    ON CONFLICT(idempotency_key) DO NOTHING;
+    ON CONFLICT DO NOTHING;
   END LOOP;
   PERFORM drama.refresh_project_delivery_projection(NEW.project_id);
   RETURN NEW;
 END $$;
 
+-- A current rebuild timeline remains the Resolver authority when its render
+-- attempt fails. Keeping it current allows the audited render_failed retry
+-- path to create a new render job; demoting it leaves the project with no
+-- Resolver timeline and makes the documented retry path unreachable.
+CREATE OR REPLACE FUNCTION drama.promote_timeline_after_render()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target_episode TEXT;
+BEGIN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN RETURN NEW; END IF;
+
+  SELECT episode_id INTO target_episode FROM drama.edit_timelines
+  WHERE timeline_id=NEW.timeline_id FOR UPDATE;
+  IF target_episode IS NULL THEN RETURN NEW; END IF;
+
+  IF NEW.status='succeeded' THEN
+    UPDATE drama.edit_timelines
+       SET is_current=false,
+           approval_state=CASE WHEN approval_state IN ('approved','restored') THEN 'superseded' ELSE approval_state END,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE episode_id=target_episode AND is_current AND timeline_id<>NEW.timeline_id;
+
+    UPDATE drama.edit_timelines
+       SET is_current=true,approval_state='approved',status='completed',
+           approved_render_job_id=NEW.render_job_id,approved_at=CURRENT_TIMESTAMP,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE timeline_id=NEW.timeline_id AND approval_state='rendering';
+  ELSIF NEW.status IN ('failed','timeout','cancelled') THEN
+    UPDATE drama.edit_timelines
+       SET approval_state='render_failed',status='failed',updated_at=CURRENT_TIMESTAMP
+     WHERE timeline_id=NEW.timeline_id AND approval_state='rendering';
+  END IF;
+  RETURN NEW;
+END $$;
+
+-- Repair only the state produced by the old failure branch: the authoritative
+-- artifact binding still names the render_failed timeline and the episode has
+-- no native current timeline. No successful/current sibling is overwritten.
+UPDATE drama.edit_timelines timeline
+SET is_current=true,updated_at=CURRENT_TIMESTAMP
+WHERE timeline.approval_state='render_failed'
+  AND NOT EXISTS(SELECT 1 FROM drama.edit_timelines current_timeline
+    WHERE current_timeline.episode_id=timeline.episode_id AND current_timeline.is_current)
+  AND EXISTS(SELECT 1 FROM drama.artifact_current_bindings binding
+    JOIN drama.artifacts artifact ON artifact.artifact_id=binding.current_artifact_id
+    WHERE binding.project_id=timeline.project_id AND binding.target_type='episode'
+      AND binding.target_id=timeline.episode_id AND binding.component_scope='edit_timeline'
+      AND artifact.artifact_type='edit_timeline' AND artifact.native_entity_id=timeline.timeline_id
+      AND artifact.is_current AND artifact.validity_status='valid');
+
 SELECT NOT EXISTS(SELECT 1 FROM drama.schema_migrations WHERE version='34') AS phase34_apply \gset
 \if :phase34_apply
 INSERT INTO drama.schema_migrations(version,description,checksum)
-VALUES('34','version-identity render artifacts for equal-content successor publication',
-  'render-artifact-version-identity-v1-20260817');
+VALUES('34','version-identity render artifacts with idempotent publication and retryable render failures',
+  'render-artifact-version-identity-v3-20260817');
 \else
-\echo 'migration 34 already applied with matching checksum; function reasserted'
+UPDATE drama.schema_migrations
+SET description='version-identity render artifacts with idempotent publication and retryable render failures',
+  checksum='render-artifact-version-identity-v3-20260817'
+WHERE version='34' AND checksum IN(
+  'render-artifact-version-identity-v1-20260817',
+  'render-artifact-version-identity-v2-20260817'
+);
+\echo 'migration 34 already applied with compatible checksum; function reasserted'
 \endif
 COMMIT;
 \set ON_ERROR_STOP on

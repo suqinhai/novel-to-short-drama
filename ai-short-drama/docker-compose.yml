@@ -69,6 +69,8 @@ services:
       - ./database/32-verify-final-delivery-chain-closure.sql:/opt/drama/32-verify-final-delivery-chain-closure.sql:ro
       - ./database/33-rebuild-consumer-closure.sql:/opt/drama/33-rebuild-consumer-closure.sql:ro
       - ./database/33-verify-rebuild-consumer-closure.sql:/opt/drama/33-verify-rebuild-consumer-closure.sql:ro
+      - ./database/34-render-artifact-version-identity.sql:/opt/drama/34-render-artifact-version-identity.sql:ro
+      - ./database/34-verify-render-artifact-version-identity.sql:/opt/drama/34-verify-render-artifact-version-identity.sql:ro
       - ./database/28-verify-cross-layer-quality-gate.sql:/opt/drama/28-verify-cross-layer-quality-gate.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

@@ -6,6 +6,8 @@ test('translates production statuses to Chinese and hides unknown raw codes', ()
   assert.equal(getStatusLabel('running'), '生产中')
   assert.equal(getStatusLabel('validating'), '校验中')
   assert.equal(getStatusLabel('superseded'), '已被替代')
+  assert.equal(getStatusLabel('stage_5_completed'), '已完成')
+  assert.equal(getStatusLabel('stage_5_failed'), '异常')
   assert.equal(getStatusLabel('custom_status'), '未知状态')
 })
 
